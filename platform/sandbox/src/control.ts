@@ -1136,9 +1136,11 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   }
 
   /**
-   * The lease is over: its sandbox paused unless a run started in it since. A pause that
-   * does not land now (E2B busy, or unreachable) is kept asked (`releasing`) and the look
-   * takes it again, backing off: an idle sandbox is reaped, never left to its ceiling.
+   * The lease is over: its sandbox paused once nothing lives in it, unless a job launched in
+   * it since (`#launch`, which ends the ask). A pause that cannot land now (a job of the
+   * lease still ending: stopped, or its posts refused; E2B busy, or unreachable) is kept
+   * asked (`releasing`) and the look takes it again, backing off: an idle sandbox is reaped,
+   * never left to its ceiling.
    */
   async release(request: { lease_id: string }): Promise<{ paused: boolean }> {
     if (!LEASE.test(request.lease_id)) {
@@ -1163,8 +1165,10 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   }
 
   /**
-   * A released sandbox paused, unless its runner has a live run (then it is no longer
-   * released). Whether it is paused now; `releasing` stays while the pause has not landed.
+   * A released sandbox paused once its runner has no live job. Whether it is paused now;
+   * `releasing` stays while the pause has not landed: a job still live is one of the released
+   * lease ending (the owner gives a lease back only once none of its jobs stands), and a job
+   * launched since ends the ask.
    */
   async #reap(row: Row): Promise<boolean> {
     const e2b = this.#e2b();
@@ -1181,7 +1185,6 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       return found.state === "paused";
     }
     if ((await this.#runnerState(row.authority, handle, found)).live > 0) {
-      this.#sql.exec("UPDATE sandboxes SET releasing = 0 WHERE authority = ?", row.authority);
       return false;
     }
     if (await e2b.pause(found.sandboxID) === "busy") {

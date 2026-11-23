@@ -22,7 +22,7 @@
  * changes nothing a manifest holds: the export's and the manifest's own bookkeeping, and a
  * session's renewal; it marks nothing.
  */
-import { slotBusy } from "../../contract/src/slots";
+import { slotBusy, slotted, type SlotPool } from "../../contract/src/slots";
 
 /** What the object's modules use of its storage: SQL, and `transactionSync`. */
 export interface OwnerStorage {
@@ -54,6 +54,12 @@ export async function unitsNow<T>(take: (signal: AbortSignal) => Promise<T>): Pr
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** A lane's `slotted`: `work` run holding `units` of `pool` taken now (`unitsNow`), or `busy`. */
+export function slottedNow<T>(pool: SlotPool, units: number, work: () => Promise<T>):
+    Promise<T> {
+  return unitsNow((signal) => slotted(pool, units, work, signal));
 }
 
 function thenable(value: unknown): boolean {

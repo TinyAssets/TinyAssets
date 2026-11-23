@@ -4,11 +4,11 @@
  * on the vendor's sign-in with none there is `signin_required`; past the concurrency ceiling
  * or behind an owner that waited longer a run waits in the platform's line, never refused,
  * until a freed sandbox rings it; a release pauses an idle sandbox, and one whose pause did
- * not land is reaped by the look; the look renews a sandbox before its runtime ceiling, at a
- * quiet moment or forced at the edge, resumes one paused while a lease runs in it, and is
- * armed again on every path; an erasure kills every sandbox of the owner, paused and strays
- * included. The runner is the Worker's own, by digest: a
- * create uploads and installs it before its first command, a resume with it there sends
+ * not land, or whose released lease's jobs were still ending, is reaped by the look; the look
+ * renews a sandbox before its runtime ceiling, at a quiet moment or forced at the edge,
+ * resumes one paused while a lease runs in it, and is armed again on every path; an erasure
+ * kills every sandbox of the owner, paused and strays included. The runner is the Worker's
+ * own, by digest: a create uploads and installs it before its first command, a resume with it there sends
  * nothing more, an absent one is installed and asked again, bytes not their digest launch
  * nothing, and a sandbox on another runner keeps it while anything lives and adopts the
  * Worker's at the first start that finds nothing living, whatever protocol the other speaks;
@@ -651,20 +651,32 @@ describe("cancel and release", () => {
       .toEqual({ cancelled: false });
   });
 
-  it("pauses on release only when the runner has no live run, and only for its lease",
-     async () => {
+  it("pauses on release once the runner has no live job, only for its lease, and keeps the " +
+     "pause asked while a stopped job of the lease is still ending", async () => {
     await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 1, quiet: true } });
     const who = owner();
+    const releasing = async () => (await runInDurableObject(stub(who), (_i, state) =>
+      state.storage.sql.exec<{ releasing: number }>("SELECT releasing FROM sandboxes")
+        .toArray()))[0]!.releasing;
     await stub(who).start(start());
+    // A job of the released lease still lives (stopped, still ending): not paused now, and
+    // the pause stays asked.
     expect(await stub(who).release({ lease_id: LEASE.lease_id })).toEqual({ paused: false });
+    expect(await releasing()).toBe(1);
     expect(await stub(who).release({ lease_id: hex(32, "0") })).toEqual({ paused: false });
-    await e2b("/script", { state: { live: 0, quiet: true } });
+    // A job launched since, under a new lease, ends the ask.
     const second = { lease_id: hex(32, "e"), epoch: 2 };
     await stub(who).start(start({ run: `run_${hex(32, "6")}`, lease: second }));
-    expect(await stub(who).release({ lease_id: second.lease_id })).toEqual({ paused: true });
+    expect(await releasing()).toBe(0);
+    expect(await stub(who).release({ lease_id: second.lease_id })).toEqual({ paused: false });
+    expect(await releasing()).toBe(1);
+    // Its job ended: the look pauses it (or the runtime's own run of it did already).
+    await e2b("/script", { state: { live: 0, quiet: true } });
+    await runDurableObjectAlarm(stub(who));
     const pauses = (await seen()).calls.filter((call) => call.path.endsWith("/pause"));
     expect(pauses).toHaveLength(1);
     expect(pauses[0]!.body).toEqual({ memory: true });
+    expect((await seen()).sandboxes[0]!.state).toBe("paused");
     // Paused and idle: nothing more to look at.
     expect(await alarmOf(who)).toBeNull();
   });

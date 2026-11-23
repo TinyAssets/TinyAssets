@@ -19,8 +19,9 @@ import { AGENT_DISABLED, AGENT_UNDEFINED } from "../../contract/src/agent-defini
 import { AUTHORITY_CHANGED } from "../src/authority";
 import { RUN_NO_MAILBOX } from "../src/ledger";
 import { RUN_STARTS_NONE, SANDBOX_ONLY } from "../src/owner-do";
-import { INLINE_BYTES, QUEUE_BYTES, QUEUE_ROWS } from "../../contract/src/limits";
+import { INLINE_BYTES, QUEUE_BYTES, QUEUE_ROWS, SLOT_WAIT_MS } from "../../contract/src/limits";
 import { slotBusy } from "../../contract/src/slots";
+import { clock } from "../src/clock";
 import { NO_CONVERSATION, NO_RUN, QUEUE_FULL, RUN_ENDED, SESSION_REFUSED, SIGNIN_LAPSED,
          TIER_RUNS, UNATTENDED_REFUSED } from "../src/runs";
 import { PLATFORM_TIER_ONLY } from "../src/admission";
@@ -34,10 +35,10 @@ import {
 import { RANKING } from "../../contract/src/paths";
 import type { ActionRule } from "../../contract/src/policy-document";
 import type { Tiers } from "../../contract/src/control";
-import { ADMITTED_FILE_BYTES } from "../src/holds";
+import { ADMITTED_FILE_BYTES, ownerSlots } from "../src/holds";
 import { secretOf, until } from "../../ci/workerd";
 import { drainDue, failure, gateFor, laneAt, spaceOf } from "./support";
-import { LANE_CALL_MS } from "../src/schedule";
+import { LANE_CALL_MS, LANE_RETRY_S } from "../src/schedule";
 import { SANDBOX_WAITING, type SandboxStart } from "../../contract/src/sandbox";
 
 afterEach(() => {
@@ -624,8 +625,8 @@ describe("a run's settle", () => {
   });
 
   it("sends a start refused for the moment again, the same start, while the run holds its " +
-     "grant; one whose wait ends past the bound, or whose run was cancelled, is failed by " +
-     "the refusal's own code", async () => {
+     "grant; one whose wait ends past the bound is failed by the refusal's own code, and one " +
+     "whose run was cancelled, as cancelled", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
     const gate = gateFor(env.SANDBOX_GATE, r.name);
@@ -663,7 +664,7 @@ describe("a run's settle", () => {
       return run !== past.run_id && run !== again.run_id && run !== "";
     }, "the refused start");
     await r.stub.agentCancel(r.bind(), { run_id: run });
-    expect(await waiting).toMatchObject({ state: "failed", code: "object_overloaded" });
+    expect(await waiting).toMatchObject({ state: "failed", code: "cancelled" });
     expect(await sent(run)).toHaveLength(1);
     expect((await recorder(r.stub)).starts.filter((start) => start.run === run)).toEqual([]);
   });
@@ -685,8 +686,8 @@ describe("a run's cancel", () => {
     expect((await recorder(r.stub)).cancels).toHaveLength(1);
   });
 
-  it("asked while its start is out, stops the run its start then starts, and gives one its " +
-     "start refuses for a sandbox no wait", async () => {
+  it("asked while its start is out, stops the run its start then starts, and settles one its " +
+     "start answers with no sandbox or a refusal as cancelled, with no wait", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
     const submit = (id: string) => r.stub.agentSubmit(r.bind({ control: OPEN_RECORD }),
@@ -709,18 +710,21 @@ describe("a run's cancel", () => {
                            { frames: [], end: { exit_code: null } });
     expect(await r.stub.agentStatus(r.bind(), { run_id: run }))
       .toMatchObject({ state: "failed", code: "cancelled" });
-    // No room for its sandbox: a cancelled run waits for none, and settles by that answer.
-    await scripted(r.stub, { answer: { started: false, code: SANDBOX_WAITING } });
-    let refused = "";
-    const answer = await whileOut(r.name, "start", () => submit("o-2"), async () => {
-      refused = (await recorder(r.stub)).starts.at(-1)!.run;
-      await r.stub.agentCancel(r.bind(), { run_id: refused });
-    });
-    expect(answer).toMatchObject({ run_id: refused, state: "failed", code: SANDBOX_WAITING });
-    expect(await r.sql("SELECT run FROM run_inputs")).toEqual([]);
-    expect(await r.sql("SELECT id FROM runs WHERE sandbox_wait = 1")).toEqual([]);
-    // Nothing launched: only the cancel's own reached the sandbox.
-    expect(await cancels(refused)).toBe(1);
+    // No room for its sandbox, or a refusal: a cancelled run waits for none, and settles as
+    // the cancel the owner asked, whatever its start answered after.
+    for (const [code, id] of [[SANDBOX_WAITING, "o-2"], ["sandbox_unconfigured", "o-3"]] as const) {
+      await scripted(r.stub, { answer: { started: false, code } });
+      let refused = "";
+      const answer = await whileOut(r.name, "start", () => submit(id), async () => {
+        refused = (await recorder(r.stub)).starts.at(-1)!.run;
+        await r.stub.agentCancel(r.bind(), { run_id: refused });
+      });
+      expect(answer).toMatchObject({ run_id: refused, state: "failed", code: "cancelled" });
+      expect(await r.sql("SELECT run FROM run_inputs")).toEqual([]);
+      expect(await r.sql("SELECT id FROM runs WHERE sandbox_wait = 1")).toEqual([]);
+      // Nothing launched: only the cancel's own reached the sandbox.
+      expect(await cancels(refused)).toBe(1);
+    }
   });
 });
 
@@ -1135,6 +1139,45 @@ describe("the admission unit", () => {
     expect(await started(undefined)).toEqual([]);
     expect(await started({ ...TIERS, free: { ...TIERS.free, runs: 2 } }))
       .toEqual([own.run_id]);
+  });
+
+  it("reads a waiting run's agent file on the lane without waiting on the pool: refused busy " +
+     "at once, the lane holds, and the run starts once the pool frees", async () => {
+    const r = await gated();
+    const { run, start } = await ownerRun(r.stub, r.bind(), SIGNED_IN);
+    // An agent.json past an inline file: its read holds the isolate's pool.
+    const path = "/workspace/agents/main/agent.json";
+    const session = r.session();
+    const { entry } = await r.stub.fileStat(session, { path });
+    await r.stub.fileWrite(session, { path, expected_etag: entry!.etag, content: new TextEncoder()
+      .encode(JSON.stringify(SIGNED_IN).padEnd(INLINE_BYTES + 1, " ")) });
+    const waiting = await submit(r, run.conversation_id, "after", "p-1");
+    // Every unit of the pool held elsewhere, its reserve too, and no call waiting for one.
+    const pool = ownerSlots();
+    const large = await pool.acquire(pool.capacity - pool.reserve, "", undefined, true);
+    const reserve = await pool.acquire(pool.reserve);
+    try {
+      await r.stub.runEvents(runnerBinding(r, start), { frames: [], end: { exit_code: 0 } });
+      // The pool's units stay held through the pass, so a read that waited would be refused
+      // only by the pool's own timer, `SLOT_WAIT_MS` on: finishing inside it is the
+      // never-waiting, by the code's constant.
+      const before = Date.now();
+      const began = clock();
+      await drainDue(r.stub);
+      expect(Date.now() - before).toBeLessThan(SLOT_WAIT_MS);
+      expect(await r.sql("SELECT state FROM runs WHERE id = ?", waiting.run_id))
+        .toEqual([{ state: "waiting" }]);
+      const held = (await laneAt(r.stub, "runs"))!;
+      expect(held).toBeGreaterThanOrEqual(began + slotBusy().retryAfter!);
+      expect(held).toBeLessThan(began + LANE_RETRY_S);
+    } finally {
+      large.release();
+      reserve.release();
+    }
+    await r.sql("UPDATE cf_agents_jobs SET time = 0 WHERE id = 'owner-schedule/runs'");
+    await drainDue(r.stub);
+    expect((await recorder(r.stub)).starts.map((each) => each.run))
+      .toEqual([run.run_id, waiting.run_id]);
   });
 });
 

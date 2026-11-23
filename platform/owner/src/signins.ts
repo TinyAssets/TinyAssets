@@ -406,7 +406,7 @@ export interface SigninsDoorNeeds extends Pick<DoorUnits, "door">,
   readonly signins: Signins;
   readonly files: Pick<Files, "leaseRenew" | "leaseSignins" | "liveLeases" | "sandboxLease">;
   readonly grants: { live(client: string): boolean };
-  readonly launcher: Pick<Launcher, "leaseFreed" | "openLease">;
+  readonly launcher: Pick<Launcher, "landed" | "leaseFreed" | "openLease" | "stopAfter">;
   readonly notices: Pick<Notices, "add">;
   readonly relay: Pick<Relay, "relay" | "settled">;
   readonly runs: Pick<Runs, "reportSignin" | "signins">;
@@ -474,24 +474,26 @@ export const signinsDoors = Object.freeze({
       urls: signinUrls(begun.row.id) };
     const answer = await startOutcome("a sign-in", () => o.sandbox.signin(signin),
                                       () => o.door(() => o.signins.owned(begun.row.id)));
-    const standing = await o.door(() => {
+    const ended = await o.door(() => {
       if (answer.started === true && o.signins.owned(begun.row.id)) {
-        return true;
+        return null;
       }
       o.signins.end(begun.row.id);
-      o.launcher.leaseFreed(begun.lease.lease_id, begun.lease.epoch);
-      return false;
+      if (answer.started === false) {
+        o.launcher.leaseFreed(begun.lease.lease_id, begun.lease.epoch);
+        return { stopped: null };
+      }
+      // Its CLI may have launched (no answer it can read), or did after its row ended (the
+      // owner stopped it, or it was lost, while its start was out): stopped, as a run's is,
+      // and its sandbox released after the stop (`landed`).
+      return o.launcher.landed(begun.lease, () => o.sandbox.signinCancel({
+        authority: begun.row.authority, id: begun.row.id }));
     });
-    if (standing) {
+    if (ended === null) {
       return signinView(begun.row);
     }
-    if (answer.started !== false) {
-      // Its CLI may have launched (no answer it can read), or did after its row ended (the
-      // owner stopped it, or it was lost, while its start was out): stopped, as a run's is.
-      await o.sandbox.signinCancel({ authority: begun.row.authority, id: begun.row.id })
-        .catch((error) => console.error("a sign-in's stop after its start did not reach the " +
-                                        "sandbox", error));
-    }
+    await ended.stopped?.catch((error: unknown) =>
+      console.error("a sign-in's stop after its start did not reach the sandbox", error));
     if (answer.started === true) {
       throw new Refusal("refused", NO_SIGNIN);  // it ended before its start answered
     }
@@ -517,7 +519,12 @@ export const signinsDoors = Object.freeze({
       if (done.ended) {
         o.launcher.leaseFreed(lease.lease_id, lease.epoch);
       }
-      return { ...done, frames: r.frames };
+      // Its CLI stopped (what it showed is not the vendor's page, or it is past its deadline),
+      // before its lease's release.
+      const row = done.row;
+      return { ...done, frames: r.frames, stopped: !done.stopped ? null
+        : o.launcher.stopAfter(() => o.sandbox.signinCancel({ authority: row.authority,
+                                                              id: row.id })) };
     });
     // Only what the trusted side kept: each frame's own, checked event.
     const last = frames.at(-1);
@@ -527,11 +534,7 @@ export const signinsDoors = Object.freeze({
     if (ended) {
       o.relay.settled(row.id);  // its tail goes with it
     }
-    if (stopped) {
-      // Its CLI stopped: what it showed is not the vendor's page, or it is past its deadline.
-      await o.sandbox.signinCancel({ authority: row.authority, id: row.id })
-        .catch(() => console.error("a refused sign-in's stop did not reach the sandbox"));
-    }
+    await stopped?.catch(() => console.error("a refused sign-in's stop did not reach the sandbox"));
     return { accepted: frames.length, ended };
   },
   /**
@@ -555,18 +558,19 @@ export const signinsDoors = Object.freeze({
    * once nothing holds it, so a start still out or waiting to be sent again is never sent
    * again, one that launches late is stopped as its answer comes (`signinStart`), and its
    * runner's next post is refused; then its CLI stopped in the sandbox, whether one was live
-   * there to stop (`cancelled`).
+   * there to stop (`cancelled`), before that lease's sandbox is released (`stopAfter`).
    */
   async signinCancel(o: SigninsDoorNeeds, door: Door<SigninRequestById>):
       Promise<{ cancelled: boolean }> {
-    const row = await o.door(() => {
+    const { row, stopped } = await o.door(() => {
       const row = o.signins.get(door.check().r["id"]);
       o.signins.end(row.id);
       o.launcher.leaseFreed(row.lease_id, row.epoch);
-      return row;
+      return { row, stopped: o.launcher.stopAfter(() => o.sandbox.signinCancel({
+        authority: row.authority, id: row.id })) };
     });
     o.relay.settled(row.id);  // its tail goes with it
-    return o.sandbox.signinCancel({ authority: row.authority, id: row.id });
+    return stopped;
   },
   /**
    * The sign-ins in progress, and each engine's presence in the owner's own sandbox as its

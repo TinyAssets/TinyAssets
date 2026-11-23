@@ -203,11 +203,24 @@ describe("a sign-in", () => {
     expect((await recorder(r.stub)).releases).toEqual([{ lease_id: signin.lease.lease_id }]);
   });
 
-  it("is stopped by the owner, and ends with no sandbox to start in", async () => {
+  it("is stopped by the owner before its sandbox is released, and ends with no sandbox to " +
+     "start in", async () => {
     const r = await gated();
     const { id } = await r.stub.signinStart(r.bind(), { engine: "codex" }) as { id: string };
     const signin = await lastSignin(r);
-    expect(await r.stub.signinCancel(r.bind(), { id })).toEqual({ cancelled: true });
+    const gate = gateFor(env.SANDBOX_GATE, r.name);
+    await gate.arm("signinCancel", { hold: "before" });
+    const cancelled = r.stub.signinCancel(r.bind(), { id });
+    await gate.held("signinCancel");
+    // While its stop is out, its lease's release waits for the stop's answer: a release that
+    // went first would find the sign-in still live and pause nothing.
+    expect((await gate.calls()).map((call) => call.method)).not.toContain("release");
+    await gate.release("signinCancel");
+    expect(await cancelled).toEqual({ cancelled: true });
+    await until(async () => (await recorder(r.stub)).releases.length > 0, "the release");
+    expect((await gate.calls()).map((call) => call.method)
+      .filter((method) => method === "signinCancel" || method === "release"))
+      .toEqual(["signinCancel", "release"]);
     expect((await recorder(r.stub)).signinCancels).toEqual([{ authority: "owner", id }]);
     // Ended at once, on the trusted side: its lease given back, and its runner's next post
     // refused, whatever the sandbox did.
@@ -224,21 +237,28 @@ describe("a sign-in", () => {
     expect(await s.sql("SELECT authority FROM sandbox_leases")).toEqual([]);
   });
 
-  it("stopped while its start is out, is stopped again once it started, and refused",
-     async () => {
+  it("stopped while its start is out, is stopped again once it started, its sandbox released " +
+     "after that stop, and refused", async () => {
     const r = await gated();
+    const releases = async () => (await recorder(r.stub)).releases.length;
     const started = whileOut(r.name, "signin", () => failure(() =>
       r.stub.signinStart(r.bind(), { engine: "codex" })), async () => {
       const [row] = (await r.stub.signinList(r.bind())).signins;
       expect(row).toMatchObject({ state: "starting" });
       await r.stub.signinCancel(r.bind(), { id: row!.id });
       expect((await r.stub.signinList(r.bind())).signins).toEqual([]);
+      await until(async () => await releases() === 1, "the stop's release");
     });
     expect((await started).message).toBe(NO_SIGNIN);
-    // The owner's stop, while it may not have launched yet; then its fence, once it had.
+    // The owner's stop, while it may not have launched yet; then its fence, once it had. Each
+    // is followed by the lease's release: the first reached the sandbox before the late start
+    // resumed it, so only the second finds it with nothing left to run.
     const id = (await lastSignin(r)).id;
     expect((await recorder(r.stub)).signinCancels)
       .toEqual([{ authority: "owner", id }, { authority: "owner", id }]);
+    await until(async () => await releases() === 2, "the late stop's release");
+    expect((await gateFor(env.SANDBOX_GATE, r.name).calls()).map((call) => call.method))
+      .toEqual(["signin", "signinCancel", "release", "signinCancel", "release"]);
     expect(await r.sql("SELECT authority FROM sandbox_leases")).toEqual([]);
   });
 

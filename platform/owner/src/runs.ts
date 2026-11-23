@@ -46,9 +46,10 @@
  * no CLI holds.
  *
  * **Settle** (`settle`), once, in a unit: `succeeded` from the runner's end with exit 0 and
- * no error event, `failed` otherwise (a cancel's is `cancelled`; a revoked or changed
- * client grant's `revoked`, at once), `unknown` when the runner was lost (its lease lapsed,
- * its own heartbeat lapsed, or a start whose answer never came). Unknown is never
+ * no error event, `failed` otherwise (a cancelled run's is `cancelled`, whatever failed it
+ * after the cancel; a revoked or changed client grant's `revoked`, at once), `unknown` when
+ * the runner was lost (its lease lapsed, its own heartbeat lapsed, or a start whose answer
+ * never came). Unknown is never
  * replayed. The run grant goes with it (a cancel revokes it at once), and the lease when no
  * live run holds it any more; every settle prunes the receipts to `RUNS_KEPT`.
  * There is no platform deadline: a run's lease's tokens live while its heartbeat renews it
@@ -1279,16 +1280,19 @@ export class Runs {
   /**
    * In a unit: the run settled, once: its state, why (`code`) and the runner's exit; its
    * grant revoked; its streams ended; and the lease given back when no live run holds it.
-   * False for a run not live.
+   * A run the owner cancelled that fails is `cancelled`, whatever failed it after the cancel
+   * (its runner's end, its late start's answer, a revocation): the owner asked first, and
+   * reads their own ask. False for a run not live.
    */
   settle(runId: string, state: "succeeded" | "failed" | "unknown", code: string | null,
          exitCode: number | null, now: number): boolean {
     const settled = this.#sql.exec<{ conversation: string; lease_id: string | null;
                                      epoch: number | null; mail: string | null;
                                      agent: string }>(
-      "UPDATE runs SET state = ?, code = ?, exit_code = ?, settled_at = ? WHERE id = ? " +
-        `AND ${UNSETTLED} RETURNING conversation, lease_id, epoch, mail, agent`, state, code,
-      exitCode, now, runId).toArray();
+      "UPDATE runs SET state = ?, code = CASE WHEN cancel_requested = 1 AND ? = 'failed' " +
+        "THEN 'cancelled' ELSE ? END, exit_code = ?, settled_at = ? WHERE id = ? " +
+        `AND ${UNSETTLED} RETURNING conversation, lease_id, epoch, mail, agent`, state, state,
+      code, exitCode, now, runId).toArray();
     if (settled.length === 0) {
       return false;
     }
@@ -1407,10 +1411,9 @@ export class Runs {
       if (!failed) {
         this.#lift(row, now);  // the vendor served it: its limit has passed
       }
-      this.settle(runId, settled, row.cancel_requested === 1 ? "cancelled"
-        : failed && limited ? VENDOR_LIMIT : end.exit_code !== 0 ? "exit"
-          : error !== null ? "engine_error" : deferred ? TOOL_DEFERRED : null,
-                  end.exit_code, now);
+      this.settle(runId, settled, failed && limited ? VENDOR_LIMIT
+        : end.exit_code !== 0 ? "exit" : error !== null ? "engine_error"
+          : deferred ? TOOL_DEFERRED : null, end.exit_code, now);
     }
     return { conversation: row.conversation, frames: relayed, settled };
   }

@@ -93,11 +93,12 @@ must be prepared.
 3. **A start's answer is recorded against the run as it then stands** (`#start`). A run stands
    while it holds its grant. Only a run that stands gets a second chance: its start sent again
    (`startOutcome`'s `stands`, as before) or its wait for a sandbox (`SANDBOX_WAITING &&
-   standing`). A run that no longer stands is settled by its start's own code. Whatever may have
-   launched and no longer stands is stopped: a start with no readable answer (as before), and
-   now one that answered `started` after its run stopped standing. That run is marked running,
-   so its runner's end settles it `failed` `cancelled`, and it is cancelled again in the
-   sandbox, where the launch is now on the chain.
+   standing`). A run that no longer stands is settled by its start's own code (a cancelled one
+   `cancelled` since `lane-followups.md`). Whatever may have launched and no longer stands is
+   stopped: a start with no readable answer (as before), and now one that answered `started`
+   after its run stopped standing. That run is marked running, so its runner's end settles it
+   `failed` `cancelled`, and it is cancelled again in the sandbox, where the launch is now on
+   the chain.
 4. **A sign-in's stop ends its row at once** (`signinCancel`). In one unit the row is ended and
    the lease is freed once nothing holds it. Then the relay is settled and the sandbox's cancel
    is sent. The door still answers the sandbox's `cancelled`. `signinStart` reads `owned` in the
@@ -122,6 +123,6 @@ must be prepared.
 
 ## Owed
 
-- [ ] `launch.ts` `#whole` and `bodies.ts` `fetch`: a lane's read of an agent file or a placed
+- [x] `launch.ts` `#whole` and `bodies.ts` `fetch`: a lane's read of an agent file or a placed
   mail body waits on the pool, where a lane takes units only now (`unitsNow`). Research first
   whether the lane's reads take them now and hold on `busy` (`untangle/lane-pool-wait`).

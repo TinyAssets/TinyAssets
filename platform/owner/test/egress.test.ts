@@ -47,7 +47,7 @@ import {
   sandboxOf,
   scripted, whileOut,
 } from "./runs-support";
-import { secretOf } from "../../ci/workerd";
+import { secretOf, until } from "../../ci/workerd";
 import {
   type NetworkPlan, SANDBOX_WAITING, type SandboxSignin, type SandboxStart,
 } from "../../contract/src/sandbox";
@@ -1775,10 +1775,18 @@ describe("a live lease's network re-applied after an egress write", () => {
       expect(await r.sql("SELECT state, code FROM runs WHERE id = ?", start.run))
         .toEqual([{ state: "failed", code: NETWORK_UNCONFIRMED }]);
       expect(await r.sql("SELECT id FROM sandbox_signins")).toEqual([]);
+      await until(async () => (await recorder(r.stub)).releases.length > 0, "the release");
       const seen = await recorder(r.stub);
       expect(seen.cancels).toContainEqual({ run: start.run });
       expect(seen.signinCancels).toContainEqual({ authority: "owner", id });
-      expect(seen.releases).toContainEqual({ lease_id: start.lease.lease_id });
+      expect(seen.releases).toEqual([{ lease_id: start.lease.lease_id }]);
+      // Each stop reached the sandbox before the lease's release, which drops the lease's
+      // launched runs (a cancel after it finds nothing to stop) and pauses only a sandbox
+      // nothing lives in.
+      const order = (await gateFor(env.SANDBOX_GATE, r.name).calls()).map((call) => call.method)
+        .filter((method) => ["cancel", "signinCancel", "release"].includes(method));
+      expect([order.slice(0, -1).sort(), order.at(-1)])
+        .toEqual([["cancel", "signinCancel"], "release"]);
       // The runners' next posts are refused, so each stops its CLI inside the sandbox
       // whatever the sandbox Worker does; the lease's egress token admits nothing.
       for (const refused of [
