@@ -19,14 +19,8 @@ export const IMPORTS: ImportRules = Object.freeze({
   worker: "contract",
   called: "the contract",
   banned: Object.freeze([{
-    pattern: /^(?:process|node:process|globalThis|caches|WebSocket|DurableObject|WorkerEntrypoint|getByName)$/,
+    pattern: /^(?:fetch|process|node:process|globalThis|caches|WebSocket|DurableObject|WorkerEntrypoint|getByName)$/,
     says: "names %s, the runtime's I/O",
-  }, {
-    // A tool's name too (the table's `fetch`), which the table's types name by tool
-    // (`requests.ts` `ToolDoors`).
-    pattern: /^fetch$/,
-    says: "names %s, the runtime's I/O",
-    homes: ["contract/src/requests.ts"],
   }]),
 });
 

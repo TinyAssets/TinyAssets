@@ -132,8 +132,10 @@ the same set; a reader with no type is refused rather than passed.
   enumeration and reflection (`Object.keys`, `for in`, `Reflect.get`, `Object.hasOwn`), and a
   generic helper's read (`get(answer, "field")`), which reads no field by its type. A declared
   field read only so is reported as not read, which fails loudly.
-- **`fetch` in the contract**: the ban on the runtime's I/O names is lexical, and a tool is
-  named `fetch`; `requests.ts` (`ToolDoors`) is that name's one home (`contract/guards/rules.ts`).
+- **`fetch` as a tool's name**: the banned names are the runtime's, and a type's own
+  declaration runs nothing, so the scanner (`ci/kit/imports.ts` `isolationProblems`) reads no
+  banned name in an interface or a type alias; `ToolDoors` names the tool `fetch` as data, in
+  every closure that reaches `requests.ts` (the contract's, the importer's), with no home.
 
 ## As built
 
@@ -141,7 +143,7 @@ the same set; a reader with no type is refused rather than passed.
 - `doors/guards/answer-reads.test.ts`: the three tests above, the readers and the probe
   compiled once.
 - `contract/requests.ts`: `ToolDoors`; `contract/doors.json`: `agentSubmit`, `agentCancel`
-  `unread: ["result"]`; `contract/guards/rules.ts`: `fetch`'s home.
+  `unread: ["result"]`; `ci/kit/imports.ts`: no banned name in a type's declaration.
 - `doors/src/app.ts`: `Route` answers a value, `Headed` or a `Response`; `valued` is gone;
   `AppPath`, `AppAnswer`; `doors/src/connect.ts`: the connect routes answer values;
   `doors/src/kit.ts`: `Headed`; `doors/src/pages.ts`: `STATIC`, `STATIC_PREFIX` exported.

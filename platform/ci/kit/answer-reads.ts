@@ -51,13 +51,15 @@ const ANSWER_TYPES = Object.freeze(["contract/src/requests.ts", "contract/src/ow
 
 /**
  * The platform's compiler options (its `tsconfig.json`), with its scripts compiled too, and
- * `paths` where the doors serve their app's scripts at a path of their own.
+ * `paths` where the doors serve their app's scripts at a path of their own (each from
+ * `platform/`, as the compiler would otherwise read them from the working directory).
  */
 function options(paths: Readonly<Record<string, readonly string[]>>): ts.CompilerOptions {
   const read = ts.readConfigFile(join(PLATFORM, "tsconfig.json"), ts.sys.readFile);
   const parsed = ts.parseJsonConfigFileContent(read.config, ts.sys, PLATFORM).options;
   return { ...parsed, allowJs: true, checkJs: false,
-           paths: Object.fromEntries(Object.entries(paths).map(([key, to]) => [key, [...to]])) };
+           paths: Object.fromEntries(Object.entries(paths).map(([key, to]) =>
+             [key, to.map((each) => join(PLATFORM, each))])) };
 }
 
 /**

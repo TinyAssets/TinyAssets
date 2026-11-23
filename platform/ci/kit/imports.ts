@@ -90,14 +90,20 @@ export function owns(rules: ImportRules, path: string): boolean {
 /** A specifier that names a place, not a package: an absolute path or a URL. */
 const ABSOLUTE = /^(?:\/|file:|[a-z][a-z0-9+.-]*:\/\/)/i;
 
-/** Each way `source` (at `path` from `platform/`) breaks `rules`. */
+/**
+ * Each way `source` (at `path` from `platform/`) breaks `rules`. A banned name is the runtime's,
+ * so a type's own declaration (an interface, a type alias), which no runtime runs, names none:
+ * a tool's name there (the table's `fetch`) is data.
+ */
 export function isolationProblems(rules: ImportRules, path: string, source: string): string[] {
   const file = parse(path, source);
   const problems: string[] = [];
   const report = reporter(file, problems);
-  const visit = (node: ts.Node): void => {
-    if (ts.isIdentifier(node) || ts.isPrivateIdentifier(node) || ts.isStringLiteralLike(node)
-        || ts.isTemplateHead(node) || ts.isTemplateMiddle(node) || ts.isTemplateTail(node)) {
+  const visit = (node: ts.Node, typed = false): void => {
+    typed ||= ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node);
+    if (!typed && (ts.isIdentifier(node) || ts.isPrivateIdentifier(node)
+        || ts.isStringLiteralLike(node) || ts.isTemplateHead(node) || ts.isTemplateMiddle(node)
+        || ts.isTemplateTail(node))) {
       for (const name of rules.banned) {
         const match = name.pattern.exec(node.text);
         if (match !== null && !(name.homes ?? []).includes(path)) {
@@ -121,7 +127,7 @@ export function isolationProblems(rules: ImportRules, path: string, source: stri
     } else if (ts.isImportTypeNode(node)) {
       report(node, "imports a type by path");
     }
-    ts.forEachChild(node, visit);
+    ts.forEachChild(node, (child) => visit(child, typed));
   };
   visit(file);
   return problems;
