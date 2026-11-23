@@ -10,7 +10,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { Refusal } from "../../contract/src/refusal";
 import { guarded } from "../src/failure";
-import { EGRESS_BODY_MAX } from "../../contract/src/limits";
+import { EGRESS_BODY_MAX, METERED_COST_MAX } from "../../contract/src/limits";
 import { GATEWAY_POOL_SLOTS, gatewaySlots } from "../src/held";
 import Gateway, { ConnectGateway, EgressGateway } from "../src/index";
 import { doorbellSecret, sealDoorbell } from "../src/doorbell";
@@ -388,6 +388,31 @@ describe("the gateway Worker", () => {
     // its reservation. Reserved as no router, it is priced as the model it named.
     expect(await settled(true)).toEqual({ state: "unknown" });
     expect(await settled(false)).toMatchObject({ state: "succeeded", cost: 0 });
+  });
+
+  it("settles a call at the bill its answer reports up to METERED_COST_MAX, and past it " +
+     "unknown", async () => {
+    const egress = new EgressGateway(createExecutionContext(), env);
+    const blob = (await connect.seal("alice", C1, 1, "sk-or", OPENROUTER)).blob;
+    const paid = builtinCatalog().provider("openrouter")!.getModels()
+      .find((model) => model.api === "openai-completions" && model.cost.output > 0)!;
+    const settled = async (bill: string) => {
+      const answer = await egress.forward("alice", C1, 1, blob, posted("/api/v1/chat/completions",
+        JSON.stringify({ model: paid.id, stream: true, messages: [{ role: "user", content: "hi" }] }),
+        steer({ bill })), granting([]), new ReadableStream());
+      await answer.response.text();
+      return new Response(answer.outcome).text();
+    };
+    // A bill far above any reservation is what the vendor charged: the owner's to record.
+    for (const bill of [0.42, 5_000, METERED_COST_MAX]) {
+      expect(JSON.parse(await settled(String(bill))))
+        .toEqual({ state: "succeeded", tokens: 18, cost: bill });
+    }
+    // Past it, no counter holds it exactly: no bill, so unknown, never a line the owner reads
+    // as Infinity or as no cost at all.
+    for (const bill of ["9000000001", "1e308"]) {
+      expect(await settled(bill)).toBe('{"state":"unknown"}\n');
+    }
   });
 
   it("leaves a metered answer its provider goes silent on to its caller, whose leaving ends it",

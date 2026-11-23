@@ -95,7 +95,7 @@ import type { OwnerStorage } from "./gate";
 import type { SandboxLease } from "./files";
 import { costMicros, keptFrom, largestFitting, periods, priced, SETTLED_WITHIN_S } from "./money";
 import { EGRESS_BEAT_S, type Outcome, OUTCOMES } from "../../contract/src/egress";
-import { type MeterOutcome, MODEL_NAME } from "../../contract/src/gateway";
+import { meteredCost, type MeterOutcome, MODEL_NAME } from "../../contract/src/gateway";
 import type {
   EgressOpened, EgressRefusal, EgressRequest, EgressReserved, ReserveRequest,
 } from "../../contract/src/owner";
@@ -352,8 +352,7 @@ function spendOutcome(value: unknown): MeterOutcome {
       && (!("served" in value) || (typeof served === "string" && MODEL_NAME.test(served)))
       && value["state"] === "succeeded"
       && typeof value["tokens"] === "number" && Number.isSafeInteger(value["tokens"])
-      && value["tokens"] >= 0 && typeof value["cost"] === "number"
-      && Number.isFinite(value["cost"]) && value["cost"] >= 0) {
+      && value["tokens"] >= 0 && meteredCost(value["cost"])) {
     return { state: "succeeded", tokens: value["tokens"], cost: value["cost"],
              ...(served === undefined ? {} : { served: served as string }) };
   }
@@ -551,11 +550,11 @@ export class Egress {
   /**
    * The µ$ held in `period` (`d:<day>` or `m:<month>`), by `source` or by every source: the
    * counters the charges' triggers move (`model_spend`), which the caps here and the runs'
-   * own limits (`runs.ts`) read. A read.
+   * own limits (`runs.ts`) read. A read, by `TOTAL`, since SQLite's `SUM` throws past 2^63.
    */
   spent(period: string, source: string | null): number {
     return this.#sql.exec<{ cost: number }>(
-      "SELECT COALESCE(SUM(cost), 0) AS cost FROM model_spend WHERE period = ? " +
+      "SELECT TOTAL(cost) AS cost FROM model_spend WHERE period = ? " +
         "AND (? IS NULL OR source = ?)", period, source, source).one().cost;
   }
 
