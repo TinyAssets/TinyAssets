@@ -234,7 +234,8 @@ and every code of one, is as before.
 
 - [ ] untangle/door-types-handlers: each handler's request is its row's (`DoorRequests`) and
   `Call.r` is typed by it, so the type halves of the modules' checks and their hand-copied
-  request interfaces go.
+  request interfaces go; `registerAgent`'s handler then tells the owner itself as `#fields`
+  does (`origin` and `run` null), not by `origin` alone, a second copy of that rule (review).
 - [ ] live: the stage and its rollback target serve doors from this tree; then
   `deploy/handed.ts`'s by-name fallback (`untyped`) and the plan line naming it go
   (untangle/door-types-fallback).
