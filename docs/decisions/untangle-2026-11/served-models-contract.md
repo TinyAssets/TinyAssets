@@ -74,6 +74,9 @@ refuses the removal until this commit (or a later one) is served again.
   - A shape's `from` is not checked against its sender's code: the contract guard holds that
     each parser reads its shape by name, and senders build their shapes inline. A sender guard
     would need every sender to build each shape by name; the step makes the data able to say
-    the truth, and a builder who stops a call marks it, as a door's is marked.
+    the truth, and a builder who stops a call marks it, as a door's is marked. (A door's mark
+    is held by `tsc`: `OwnerDoors` leaves a dropped door out. A shape has no generated sender
+    type, so its fields and its mark are equally unchecked; for `strength_read`, `tsc` holds
+    the owner anyway, since its `GatewayService` has no `strength`. Review, #5840.)
   - An answer shape gone (its sender deploys first) is not held, as before; `handed: false`
     acts on requests, the only shapes the hold refuses as gone.

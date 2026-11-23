@@ -159,4 +159,6 @@ lane makes each active connection's row due at once, so none needs a reconnect.
 ## Owed
 
 - [ ] live: at the stage, the owner's OpenRouter connection's next lane pass reads `GET /api/v1/models/user` (`connection_listing`), its sources row lists none of the 9 free ids the vendor dropped (`cohere/north-mini-code:free` among them), and the next `auto` run is on a free model the listing lists.
-- [ ] untangle/served-models-contract: the gateway's `strength` and the `strength_read` shape go once the stage serves no owner version that calls them.
+- [x] untangle/served-models-contract: the gateway's `strength` and the `strength_read` shape go once the stage serves no owner version that calls them.
+  #5840 found the hold reads the shapes data, not the calls, and marked `strength_read` `handed: false`; the removal is the next item.
+- [ ] untangle/strength-out: the gateway's `strength`, its entrypoint method and the `strength_read` shape go once the stage serves an owner of #5840 or later, whose shapes mark `strength_read` `handed: false` (`served-models-contract.md`).
