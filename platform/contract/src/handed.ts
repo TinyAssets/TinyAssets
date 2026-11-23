@@ -31,11 +31,19 @@ export function handedShapes(): Readonly<Record<ShapeName, Shape>> {
   return frozen(table.shapes as Record<ShapeName, Shape>);
 }
 
+/** A shape's fields, by part. */
+export type Listed = Pick<Shape, "required" | "always" | "optional" | "dropped">;
+
 /**
- * The fields a parser of `name` takes, as `keyed` holds them: each required one, then any
- * always, optional or dropped one.
+ * What a parser of `shape` takes, as `keyed` holds it: each required field, then any always,
+ * optional or dropped one.
  */
-export function taken(name: ShapeName): readonly [readonly string[], readonly string[]] {
-  const { required, optional, always = [], dropped = [] } = handedShapes()[name];
+export function takes({ required, always = [], optional, dropped = [] }: Listed):
+    readonly [readonly string[], readonly string[]] {
   return [required, [...always, ...optional, ...dropped]];
+}
+
+/** What a parser of the shape `name` takes (`takes`). */
+export function taken(name: ShapeName): readonly [readonly string[], readonly string[]] {
+  return takes(handedShapes()[name]);
 }

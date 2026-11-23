@@ -30,7 +30,7 @@
 import tree from "../contract/handed.json" with { type: "json" };
 import table from "../contract/doors.json" with { type: "json" };
 import type { Args, DoorArgs, DoorRow } from "../contract/src/doors.ts";
-import type { Shape } from "../contract/src/handed.ts";
+import { type Listed, type Shape, takes } from "../contract/src/handed.ts";
 
 import { WORKERS } from "./facts.ts";
 
@@ -88,14 +88,6 @@ export function sideAt(commit: string, read: FileAt): Before {
                       shapes: cut(handed !== null ? HANDED_JSON : BINDINGS_JSON) } };
 }
 
-/** The fields one side hands, always and sometimes, and the ones it takes and drops. */
-interface Fields {
-  readonly required: readonly string[];
-  readonly always: readonly string[];
-  readonly optional: readonly string[];
-  readonly dropped: readonly string[];
-}
-
 /** What a problem says of a field, by which of the two is the version before. */
 interface Words {
   /** A field handed that the taker does not take. */
@@ -104,19 +96,15 @@ interface Words {
   readonly unhanded: (field: string) => string;
 }
 
-/** Each way `taken` refuses what `handed` hands, in `words`. */
-function fieldProblems(handed: Fields, taken: Fields, words: Words): string[] {
-  const takes = new Set([...taken.required, ...taken.always, ...taken.optional, ...taken.dropped]);
-  const always = [...handed.required, ...handed.always];
+/** Each way a parser of `taken` refuses what `handed` hands, in `words`. */
+function fieldProblems(handed: Listed, taken: Listed, words: Words): string[] {
+  const [requires, optional] = takes(taken);
+  const took = new Set([...requires, ...optional]);
+  const always = [...handed.required, ...handed.always ?? []];
   return [
-    ...[...always, ...handed.optional].filter((field) => !takes.has(field)).map(words.untaken),
-    ...taken.required.filter((field) => !always.includes(field)).map(words.unhanded),
+    ...[...always, ...handed.optional].filter((field) => !took.has(field)).map(words.untaken),
+    ...requires.filter((field) => !always.includes(field)).map(words.unhanded),
   ];
-}
-
-function shapeFields(shape: Shape): Fields {
-  return { required: shape.required, always: shape.always ?? [], optional: shape.optional,
-           dropped: shape.dropped ?? [] };
 }
 
 /** `worker`'s version before, as a problem names it. */
@@ -138,14 +126,14 @@ function request(shape: Shape): boolean {
 function shapeProblems(name: string, now: Shape, then: Shape): string[] {
   const what = `the shape ${name}`;
   return request(now)
-    ? fieldProblems(shapeFields(then), shapeFields(now), {
+    ? fieldProblems(then, now, {
       untaken: (field) => `${what} no longer takes ${field}, which ${before(now.from)} hands: ` +
         "drop it first (taken and left out), and take it out once the stage serves no " +
         `${now.from} version that hands it`,
       unhanded: (field) => `${what} requires ${field}, which ${before(now.from)} does not ` +
         `always hand: take it as always first, and require it once the stage serves no ${
           now.from} version that does not` })
-    : fieldProblems(shapeFields(now), shapeFields(then), {
+    : fieldProblems(now, then, {
       untaken: (field) => `${what} hands ${field}, which ${before(now.to)} does not take: ` +
         "take it first (dropped: taken, not yet handed), and hand it once the stage serves no " +
         `${now.to} version that refuses it`,
@@ -162,8 +150,8 @@ function requestSides(args: Args | { readonly owner: Args; readonly outside: Arg
   return "refused" in args ? { "": args } : { owner: args.owner, outside: args.outside };
 }
 
-function argsFields(args: Args): Fields {
-  return { required: Object.keys(args.required), always: [], optional: Object.keys(args.optional),
+function argsFields(args: Args): Listed {
+  return { required: Object.keys(args.required), optional: Object.keys(args.optional),
            dropped: args.dropped ?? [] };
 }
 
