@@ -11,8 +11,7 @@
  * - **Mint**, from the owner's browser in session: the object's `keyMint`, one unit that
  *   counts the live keys strictly (`MAX_KEYS`, the owner-set clients' own bound), sets the
  *   grant (the key's own origin, source `api_key`, revision 0; full unless the mint names
- *   scopes, when the key's agent is registered with it, where its scopes act), applies
- *   an agent's held key request with it when the owner names one (`proposal`), and writes
+ *   scopes, when the key's agent is registered with it, where its scopes act), and writes
  *   the key's row; then the directory entry, then the secret, once. A refused mint writes
  *   no entry; an entry that fails to write leaves a grant the owner can revoke.
  * - **Use** (`presentedKey`, the one check of both doors a key opens, `/api` and `/mcp`):
@@ -32,7 +31,6 @@
  * calls are bounded by the tier's simultaneous runs, the owner's own settings and vendors'
  * limits.
  */
-import { object } from "../../contract/src/checks";
 import { sha256Hex } from "../../contract/src/digest";
 import { HEX16, randomHex } from "../../contract/src/ids";
 import { KEY_NAME_MAX } from "../../contract/src/limits";
@@ -109,24 +107,20 @@ interface Minted {
 }
 
 /**
- * Mint a key for the bound owner: the object's mint (its row, its grant, the count, a held
- * request applied), then the directory entry, then the secret once.
+ * Mint a key for the bound owner: the object's mint (its row, its grant, the count), then the
+ * directory entry, then the secret once.
  */
 export async function mintKey(env: DoorsEnv, { binding, stub }: Bound, request: unknown):
     Promise<Minted> {
-  const { name, scopes, proposal } = (request ?? {}) as { name?: unknown; scopes?: unknown;
-                                                          proposal?: unknown };
+  const { name, scopes } = (request ?? {}) as { name?: unknown; scopes?: unknown };
   if (typeof name !== "string" || name.trim() === "") {
     throw new Refusal("invalid", `key name required (at most ${KEY_NAME_MAX} characters)`);
   }
-  if (!Array.isArray(scopes) || (proposal !== undefined && !object(proposal))) {
-    throw new Refusal("invalid", "a key's scopes are a list (none for a full key), and its " +
-                      "request, where it names one, the card shown");
+  if (!Array.isArray(scopes)) {
+    throw new Refusal("invalid", "a key's scopes are a list: none for a full key");
   }
   const minted = newKey();
-  const row = await stub.keyMint(binding, {
-    key_id: minted.keyId, name, scopes,
-    ...(proposal === undefined ? {} : { proposal }) });
+  const row = await stub.keyMint(binding, { key_id: minted.keyId, name, scopes });
   await putKey(env, minted.keyId,
                { o: binding.owner, h: sha256Hex(minted.secret), c: row.created_at });
   return { key: minted.key, key_id: minted.keyId, name: row.name, created_at: row.created_at,

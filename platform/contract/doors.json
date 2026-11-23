@@ -783,7 +783,7 @@
           "key_id": { "type": "string" }, "name": { "type": "string" },
           "scopes": { "type": "array" }
         },
-        "optional": { "proposal": { "type": "object" } }
+        "optional": {}, "dropped": ["proposal"]
       }
     },
     {

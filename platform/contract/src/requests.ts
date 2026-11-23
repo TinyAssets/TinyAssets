@@ -180,7 +180,6 @@ export interface DoorRequests {
     readonly key_id: string;
     readonly name: string;
     readonly scopes: readonly unknown[];
-    readonly proposal?: Readonly<Record<string, unknown>>;
   };
   readonly ownerErase: { readonly confirm: string };
   readonly erasureBegin: { readonly confirm: string };

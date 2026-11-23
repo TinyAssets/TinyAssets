@@ -146,6 +146,6 @@ owner's approval, so a scoped key gets its agent at mint, by the one path an age
 
 ## Owed
 
-- [ ] `untangle/policy-answers`: a key request applied on Home mints a scoped key whose agent registers where the card's scopes act; a card naming several spaces is refused at the mint by `centerOf`, whose text names `command_center_id`, which the mint does not take: that lane decides whether a key request names one space.
+- [x] `untangle/policy-answers`: a key request applied on Home mints a scoped key whose agent registers where the card's scopes act; a card naming several spaces is refused at the mint by `centerOf`, whose text names `command_center_id`, which the mint does not take: that lane decides whether a key request names one space. Done (`untangle/drop-key-request`): policy-answers made no key request kind, and the half-flow is gone, so no card names any space.
 - [ ] `untangle/key-agent-change`: a full key's mailbox, and a key's agent changing its delivery (`mcp_event` for Muse by key, `mcp-keys.md` 5), are reached only by `outside-agents`, which no screen calls; research whether a key files its own `agent_register` card for the owner to answer on Home, so `outside-agents` and its session pairing go.
 - [ ] live: after the next deploy of the owner and the doors, on the stage: the old scoped `TA_PROBE_KEY` is refused with `NOT_AN_AGENT`'s new remedy, and a key minted with a name alone passes the platform canary's keyed checks.

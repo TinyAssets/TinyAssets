@@ -10,8 +10,7 @@
  *   scoped key's agent (below) and this row in one unit, the live keys counted in that unit,
  *   so two concurrent mints cannot pass the count by one. The count is the owner's set clients' own bound
  *   (`GRANT_LIMITS.maxOwnerClients`, the 10 GB's share: each key's grant is an owner-set
- *   client), held equal by a test. An agent's held key request (a policy card,
- *   `api_key_request`) is applied with the grant, once, its scopes the card's.
+ *   client), held equal by a test.
  * - **A scoped key's agent**: a narrowed grant acts where its one enabled agent is registered
  *   (`OwnerDO.#universe`), so a key minted naming scopes is registered there in the mint's
  *   unit, by the one rule every agent registers by (`Ledger.register`): the key's own origin
@@ -135,20 +134,16 @@ export class Keys {
   }
 }
 
-/** A key's mint (`keyMint`): its id, name and scopes, and an agent's held request. */
+/** A key's mint (`keyMint`): its id, name and scopes. */
 export interface KeyMintRequest {
   readonly key_id: string;
   readonly name: string;
   readonly scopes: unknown;
-  readonly proposal?: Readonly<Record<string, unknown>>;
 }
 
 // -- THE DOORS: the `keys` rows' handlers (`owner/doors.json`) ------------------------------------
 
-/**
- * What the `keys` doors reach: the keys, and the grant, a scoped key's agent and the held
- * request a mint sets.
- */
+/** What the `keys` doors reach: the keys, and the grant and a scoped key's agent a mint sets. */
 export interface KeysDoorNeeds extends Pick<ObjectReads, "storage"> {
   readonly keys: Keys;
   readonly grants: {
@@ -164,9 +159,6 @@ export interface KeysDoorNeeds extends Pick<ObjectReads, "storage"> {
              request: { command_center_id: unknown; display_name: unknown;
                         delivery_method: unknown; recipe_id: unknown }, now: number): unknown;
   };
-  readonly policy: {
-    applyKeyRequest(session: LiveSession, proposal: unknown, scopes: unknown, now: number): void;
-  };
 }
 
 export const keysDoors = Object.freeze({
@@ -174,8 +166,7 @@ export const keysDoors = Object.freeze({
    * Mint an API key's record and its grant, in the owner's session, in one unit: the live
    * keys counted there (`MAX_KEYS`, strict), the grant set (source `api_key`, revision 0;
    * scoped when it names scopes, else full), a scoped key's agent registered where its
-   * scopes act, an agent's held key request applied with it when one is named (`proposal`),
-   * and the key's row. The binder then writes the key's
+   * scopes act, and the key's row. The binder then writes the key's
    * directory entry and shows its secret once (`doors/src/api-keys.ts`); the object never
    * sees the secret.
    */
@@ -197,9 +188,6 @@ export const keysDoors = Object.freeze({
         o.ledger.register(origin, { kind: "api_key", ref: key }, {
           command_center_id: centerOf(set, undefined), display_name: name,
           delivery_method: "pull", recipe_id: null }, now);
-      }
-      if (r["proposal"] !== undefined) {
-        o.policy.applyKeyRequest(session, r["proposal"], set.scopes, now);
       }
       return { ...row, scopes: set.scopes, revision: set.revision };
     });

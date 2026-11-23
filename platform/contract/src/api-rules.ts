@@ -1,6 +1,6 @@
 /**
  * The one table of the model APIs the gateway runs, keyed by pi-ai's API id (`APIS`): each
- * row says how its adapter fetches, whether a declared endpoint may speak it, and what a
+ * row says whether a declared endpoint may speak it, and what a
  * metered sandbox call must look like: no provider is named here and no code branches on
  * one. `meter.ts` holds every rule against pi-ai's own call,
  * learned with no network, so the data cannot drift from what pi-ai sends:
@@ -262,12 +262,6 @@ const MISTRAL: ApiRules = Object.freeze({ ...COMPLETIONS, usage: Object.freeze([
 /** What the gateway holds of one pi-ai API it runs. */
 interface ApiRow {
   /**
-   * Whether pi-ai's adapter takes `options.fetch`. One that refuses it (Google's,
-   * `google-generative-ai.js:36-38`) calls the global `fetch`, which the gateway interposes
-   * (`gateway/src/egress.ts`), so the call's endpoint guard sees every request either way.
-   */
-  readonly takesFetch: boolean;
-  /**
    * Whether a declared endpoint (`custom`, with its own models) may speak it: the gateway
    * holds pi-ai's lazy adapter for each such API (`gateway/src/catalog.ts` `DECLARED`, keyed
    * by `DeclaredApi`, so the two cannot differ).
@@ -277,23 +271,23 @@ interface ApiRow {
 }
 
 /**
- * The pi-ai 1.4.0 APIs the gateway runs, by API id: those a sandbox call can be metered on,
+ * The pi-ai APIs the gateway runs, by API id: those a sandbox call can be metered on,
  * since egress is the one model path and an API with no rules could be sealed but never
  * used. Each is one some source record speaks, and a credential is sealed only for an API
- * with a row (`egress-scope.ts` `upstream`). Each sends every request through `fetch`
- * (`takesFetch`; `anthropic-messages.js:422`, `openai-responses.js:138`,
- * `openai-completions.js:186`, `mistral-conversations.js:180`). Every other API is refused as
- * `invalid_source`: Bedrock signs with a Node HTTP handler outside `fetch`, and
- * `openai-codex-responses` is the legacy ChatGPT backend (Sign in with ChatGPT reaches only
- * `POST /v1/responses`, through `openai-responses`), with a WebSocket transport
+ * with a row (`egress-scope.ts` `upstream`). Each adapter sends every request through the
+ * `fetch` it is handed (the gateway's meter test learns each API-key source's call with the
+ * global `fetch` refusing), and an API gets a row only once its adapter does. Every other
+ * API is refused as `invalid_source`: Bedrock signs with a Node HTTP handler outside
+ * `fetch`, and `openai-codex-responses` is the legacy ChatGPT backend (Sign in with ChatGPT
+ * reaches only `POST /v1/responses`, through `openai-responses`), with a WebSocket transport
  * and per-session caches kept in module state.
  */
 const APIS = Object.freeze({
-  "anthropic-messages": Object.freeze({ takesFetch: true, declared: true, rules: ANTHROPIC }),
-  "openai-completions": Object.freeze({ takesFetch: true, declared: true, rules: COMPLETIONS }),
-  "mistral-conversations": Object.freeze({ takesFetch: true, declared: false, rules: MISTRAL }),
-  "openai-responses": Object.freeze({ takesFetch: true, declared: true, rules: RESPONSES }),
-  "google-generative-ai": Object.freeze({ takesFetch: false, declared: true, rules: GOOGLE }),
+  "anthropic-messages": Object.freeze({ declared: true, rules: ANTHROPIC }),
+  "openai-completions": Object.freeze({ declared: true, rules: COMPLETIONS }),
+  "mistral-conversations": Object.freeze({ declared: false, rules: MISTRAL }),
+  "openai-responses": Object.freeze({ declared: true, rules: RESPONSES }),
+  "google-generative-ai": Object.freeze({ declared: true, rules: GOOGLE }),
 }) satisfies Readonly<Record<string, ApiRow>>;
 
 /** An API a declared endpoint may speak (`ApiRow.declared`). */
@@ -314,11 +308,6 @@ function row(api: string): ApiRow | null {
 /** The API's rules, or null: the gateway does not run it, so a call on it is never metered. */
 export function apiRules(api: string): ApiRules | null {
   return row(api)?.rules ?? null;
-}
-
-/** Whether pi-ai's adapter for `api` takes `options.fetch` (`ApiRow.takesFetch`). */
-export function takesFetch(api: string): boolean {
-  return row(api)?.takesFetch === true;
 }
 
 /** Whether a declared endpoint may speak `api` (`ApiRow.declared`). */

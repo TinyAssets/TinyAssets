@@ -5,8 +5,9 @@ table (`contract/doors.json`) declared each request field's JSON type, and the d
 hold read those types across serving versions, but the owner did not enforce them: its fields
 step (`requestFields`) held a request's names to the table, and each module checked types again
 in its own code, so a type the table said was true only while someone kept that code in step by
-hand (#5822's owner took integer cursors in code alone while the table said string), and 150
-fields (148 at #5830, two doors since) were `{}`, typed on neither side.
+hand (#5822's owner took integer cursors in code alone while the table said string), and 149
+fields were `{}`, typed on neither side (148 at #5830; 150 at 1ae659350, two doors since; 149
+once #5835 dropped `keyMint`'s `proposal`).
 
 ## Research (Fact 14), from the code and git
 
@@ -33,8 +34,8 @@ fields (148 at #5830, two doors since) were `{}`, typed on neither side.
   `agentStatus` and `agentCancel` (`no_run`, `no_schedule`), the sync doors' `lease_id` and
   `epoch` (`sync_fenced`), and the collection cursors (`cursor_invalid`, which #5829 named for
   "a cursor no answer gave", a string or not).
-- **The 150 untyped fields' types**, each from its module's check (and the doors' TypeScript
-  where they build it): 88 `string`, 30 `integer`, 17 `array`, 5 `object`, 2 `boolean`, and
+- **The 149 untyped fields' types**, each from its module's check (and the doors' TypeScript
+  where they build it): 88 `string`, 30 `integer`, 17 `array`, 4 `object`, 2 `boolean`, and
   `["string", "null"]` (`ownerExport` `cursor`, `fileUploadCommit` `expected_etag`, the outside
   `registerAgent` `recipe_id`), `["integer", "null"]` (`max_wakes_per_hour`,
   `fileUploadCommit` `mode`), `["number", "null"]` (`wakeSubscribe` `expires_at`), every JSON
@@ -87,7 +88,7 @@ name refusal is `invalid` with the row's words (`args.refused`).
    `number`, `takesType`, now the one rule the hold and the step share), else `invalid` with
    the row's words and the types it names (`invalid file request: expected_etag is a string`).
    An `undefined` field where the row takes one stays its module's. One place, from the table.
-2. **Every field names its type.** The table refuses a field schema with none, so the 150 `{}`
+2. **Every field names its type.** The table refuses a field schema with none, so the 149 `{}`
    fields are typed (above). The vocabulary gains `bytes` (a `Uint8Array`, which only RPC
    carries), and the table refuses it on a tool's served field, since `/mcp` serves JSON
    Schema.
@@ -135,7 +136,7 @@ and every code of one, is as before.
   grant's profile is one of directory, custom" for a non-string profile, and "outside scopes
   require exact universe, agent and capability" for a key's scopes that are no list, which the
   doors' mint now refuses before it mints, as it refuses a missing name: "a key's scopes are a
-  list (none for a full key), and its request, where it names one, the card shown".
+  list: none for a full key".
 - **Narrowed.** A present `null` for an optional field typed otherwise (`max_bytes`, `after`,
   `conversation_id`, `at`, `request_id`, `etag`, ...) was read as absent by `?? null`; it is now
   refused, as `/mcp` refused it already. A `runDecide` `check` other than true or false, a
@@ -145,11 +146,11 @@ and every code of one, is as before.
 ## Expand, then contract, across the deploy order
 
 - **The plan's hold**, run on this tree against the doors at 1ae659350 (the stage after the
-  current deploy) and f3bf49268: no problem, and the 150 newly typed fields "held by name
+  current deploy), f3bf49268 and a5dc841df (main): no problem, and the 149 newly typed fields "held by name
   alone, the doors' version before declaring no type", as `handed-types.md` designed for the
   first typing of an untyped field. The four by-who file doors pair the old single list with
   both new lists, each taking what it handed.
-- **What the stage's doors hand those 150 fields**, read from their code (it is this tree's
+- **What the stage's doors hand those 149 fields**, read from their code (it is this tree's
   doors but the two changes below): the types above, every one (`tsc` over that code with the
   typed requests, plus the handed bodies' callers). The two the typed requests refused are
   taken: the app's `fileWrite` with a null etag and bytes is the owner's own call, which its
@@ -167,7 +168,7 @@ and every code of one, is as before.
     only by a hand edit (#5822).
   - `deploy/handed.ts` had its own copy of the `integer` under `number` rule.
 - **Every field names a type; `bytes` is a type no tool serves.**
-  - 150 fields typed on neither side; `inboundAccept`'s bytes fit no JSON type.
+  - 149 fields typed on neither side; `inboundAccept`'s bytes fit no JSON type.
 - **The owner's own wider fields are data (by who asks), not code.**
   - `heldToRead`, `UNREAD_CHANGE` and `UNREAD_WRITE`: a per-caller etag rule in `files.ts`.
   - The table said `string` for an etag and content the owner's own calls hand as null and
@@ -198,7 +199,7 @@ and every code of one, is as before.
 
 ## As built
 
-- `contract/doors.json`: the 150 fields typed; `fileWrite`, `fileRemove`, `fileRename`,
+- `contract/doors.json`: the 149 fields typed; `fileWrite`, `fileRemove`, `fileRename`,
   `fileRestore` by who asks.
 - `contract/src/doors.ts`: `FieldType` (was `JsonType`, with `bytes`), `takesType`, `typeOf`,
   `requestFields` holding types, the table refusing an untyped field and a tool's bytes field,
