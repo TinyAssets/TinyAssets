@@ -10,7 +10,10 @@
  * - its `capability`, held where the caller acts;
  * - its request (`args`): exactly the required fields and any of the optional ones, none
  *   `undefined`, else refused with the row's words; and any it lists as dropped, which the
- *   doors' version before may still hand, taken and left out (`requestFields`).
+ *   doors' version before may still hand, taken and left out (`requestFields`). Each field's
+ *   schema is its JSON type (`fieldTypes`), which the doors' `/mcp` holds outside calls to
+ *   and the door's module checks; a type the doors' version before may still hand, which
+ *   the schema names no more, is listed beside it (`droppedTypes`).
  *
  * A door the doors call no more is marked `dropped`: the object still takes it, for the
  * doors' version before, and `OwnerDoors` lacks it (`deploy/handed.ts`).
@@ -88,6 +91,37 @@ export interface Args {
    * (`deploy/handed.ts`).
    */
   readonly dropped?: readonly string[];
+  /**
+   * Types a release before handed a field, beside its schema's, which the doors hand no more
+   * and the owner still takes, until the doors the stage serves hand them no more
+   * (`deploy/handed.ts`).
+   */
+  readonly droppedTypes?: Readonly<Record<string, readonly JsonType[]>>;
+}
+
+/** The JSON types a field's schema may name. */
+const JSON_TYPES = Object.freeze(["string", "integer", "number", "boolean", "object",
+                                         "array", "null"] as const);
+export type JsonType = (typeof JSON_TYPES)[number];
+
+/**
+ * The JSON types the field `name`'s schema names, or null where it names none (any value).
+ * A schema is its type and description: what the deploy kit holds across a deploy
+ * (`deploy/handed.ts`), so any other key throws rather than narrow a field unseen.
+ */
+export function fieldTypes(name: string, schema: unknown): readonly JsonType[] | null {
+  if (!keyed(schema, [], ["type", "description"])) {
+    throw new Error(`${name}'s schema is not its type and description alone`);
+  }
+  if (schema["type"] === undefined) {
+    return null;
+  }
+  const types: unknown[] = Array.isArray(schema["type"]) ? schema["type"] : [schema["type"]];
+  if (types.length === 0 || new Set(types).size !== types.length
+      || !types.every((type) => among(JSON_TYPES, type))) {
+    throw new Error(`${name}'s type is not a JSON type, nor a list of distinct ones`);
+  }
+  return types as JsonType[];
 }
 
 /**
@@ -148,10 +182,19 @@ function argsProblems(value: unknown): string[] {
   if (typeof value["refused"] !== "string" || value["refused"] === "") {
     problems.push("arguments with no refusal");
   }
+  const typed = new Map<string, readonly JsonType[] | null>();
   for (const part of ["required", "optional"]) {
     const fields = value[part];
     if (!object(fields) || !Object.values(fields).every(object)) {
       problems.push(`${part} fields that are not schemas`);
+      continue;
+    }
+    for (const [name, schema] of Object.entries(fields)) {
+      try {
+        typed.set(name, fieldTypes(name, schema));
+      } catch (error) {
+        problems.push((error as Error).message);
+      }
     }
   }
   if (object(value["required"]) && object(value["optional"])
@@ -164,9 +207,20 @@ function argsProblems(value: unknown): string[] {
       object(fields) && key in fields)))) {
     problems.push("dropped fields that are not a list of the fields it lists no more");
   }
+  const droppedTypes = value["droppedTypes"];
+  if (droppedTypes !== undefined && (!object(droppedTypes)
+      || Object.entries(droppedTypes).some(([name, types]) => {
+        const held = typed.get(name);
+        return !Array.isArray(types) || types.length === 0 || held === undefined || held === null
+          || new Set(types).size !== types.length
+          || types.some((type) => !among(JSON_TYPES, type) || held.includes(type));
+      }))) {
+    problems.push("dropped types that are not, by a typed field it lists, types its schema " +
+                  "names not");
+  }
   for (const key of Object.keys(value)) {
-    if (!["refused", "required", "optional", "undefinedAllowed", "omitted", "dropped"]
-          .includes(key)
+    if (!["refused", "required", "optional", "undefinedAllowed", "omitted", "dropped",
+          "droppedTypes"].includes(key)
         || (["undefinedAllowed", "omitted"].includes(key) && value[key] !== true)) {
       problems.push(`an argument key ${key}`);
     }
