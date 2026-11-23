@@ -662,9 +662,12 @@ export interface DoorTypes {
         readonly vendor_verified: number; readonly agent: string;
         readonly agent_live: boolean }[] };
   };
-  readonly registerProposal: {
-    readonly answer: { readonly client: string; readonly family: string;
-                       readonly request: Readonly<Record<string, unknown>> };
+  readonly registerProposals: {
+    readonly answer: {
+      readonly cards: readonly {
+        readonly card_id: string; readonly digest: string; readonly client: string;
+        readonly family: string; readonly source_ref: string;
+        readonly request: Readonly<Record<string, unknown>> }[] };
   };
   readonly noticeList: {
     readonly answer: { readonly notices: readonly { readonly type: string;

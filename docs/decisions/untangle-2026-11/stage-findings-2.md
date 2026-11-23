@@ -163,8 +163,10 @@ the client's.
 
 ## Owed
 
-- [ ] `untangle/register-apply`: the owner's apply of a registration card in the app, (i),
+- [x] `untangle/register-apply`: the owner's apply of a registration card in the app, (i),
   (ii) or (iii) above; then `/workspace/index.md` or the connector's instructions lead a
-  client to `agent_register`.
+  client to `agent_register`. Done as (iii) (`register-apply.md`); the refusal and the
+  mailbox tools' descriptions lead a client there at its need, so the map and the
+  instructions stay.
 - [ ] live: after the next deploy of the doors and the owner, `file_read` of a removed file and
   `file_remove` of a folder without `recursive` answer their codes on the stage.

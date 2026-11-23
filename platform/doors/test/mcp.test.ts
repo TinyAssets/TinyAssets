@@ -165,8 +165,8 @@ describe.each([
     expect(proposed!.binding).toMatchObject({
       origin, source: { kind: "mcp", ref: registered.clientId }, authenticated_at: signedIn });
     const { card_id } = answerOf(filed) as { card_id: string };
-    expect(await ownDoor(alice, "registerProposal", { card_id })).toMatchObject({
-      client: origin.client, family: origin.family, source_ref: registered.clientId });
+    expect((await ownDoor(alice, "registerProposals")).cards).toMatchObject([{
+      card_id, client: origin.client, family: origin.family, source_ref: registered.clientId }]);
     await client.close();
   });
 

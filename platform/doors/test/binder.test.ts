@@ -23,10 +23,15 @@ import {
 /** The owner issuer, as the suite's config names it. */
 const ISSUER = doorsEnv.OWNER_ISSUER;
 
+/** The pending card under `cardId` of `who`'s, as the owner is shown it, if any. */
+async function pending(who: string, cardId: string | undefined) {
+  return (await ownDoor(who, "registerProposals")).cards.find((card) => card.card_id === cardId);
+}
+
 /** The card an `agent_register` call filed for `who`, as its door answers it. */
 async function cardOf(who: string, filed: Response) {
   const { card_id } = answerOf((await rpcBody(filed))["result"]) as { card_id: string };
-  return await ownDoor(who, "registerProposal", { card_id });
+  return (await pending(who, card_id))!;
 }
 
 function owner(): string {
@@ -324,10 +329,8 @@ describe("one owner's credential", () => {
     }
     // Each card is in its own owner's object alone.
     for (const [who, other] of [[alice, bob], [bob, alice]] as const) {
-      expect((await ownDoor(who, "registerProposal", { card_id: filed.get(who) }))
-        .request.display_name).toBe(who);
-      await expect(ownDoor(other, "registerProposal", { card_id: filed.get(who) }))
-        .rejects.toMatchObject({ name: "Refusal", code: "refused" });
+      expect((await pending(who, filed.get(who)))!.request["display_name"]).toBe(who);
+      expect(await pending(other, filed.get(who))).toBeUndefined();
     }
   });
 });

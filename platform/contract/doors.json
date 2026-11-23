@@ -114,17 +114,18 @@
       "args": {
         "refused": "invalid ledger request",
         "required": {
-          "command_center_id": { "type": "string", "description": "The space to register in: for a narrowed grant, the space its scopes name, which the owner sets; for a full grant, any name, such as main" },
           "display_name": { "type": "string", "description": "The agent's display name" },
           "delivery_method": { "type": "string", "description": "How the agent is reached: pull or mcp_event" },
           "recipe_id": { "type": ["string", "null"], "description": "The recipe the agent runs, or null" }
         },
-        "optional": {}
+        "optional": {
+          "command_center_id": { "type": "string", "description": "Leave it out: the agent registers where this connection's grant acts, main for a full grant, the space its scopes name for a narrowed one. Name one only when a narrowed grant names more than one space" }
+        }
       },
       "tool": {
         "name": "agent_register", "title": "Request agent registration", "readOnlyHint": false,
         "destructiveHint": false, "idempotentHint": false, "openWorldHint": false,
-        "description": "File this connection's agent registration for the owner to approve. Once approved, the connection is that agent: it has a mailbox, and posts in its rooms."
+        "description": "File this connection's agent registration for the owner to approve. The answer's approve_url is the owner's page to approve it: give it to your user, who opens it signed in to TinyAssets. Once approved, the connection is that agent: it has a mailbox, and posts in its rooms. Filing again replaces the one waiting."
       }
     },
     {
@@ -777,9 +778,19 @@
       }
     },
     {
-      "door": "registerProposal", "class": "read", "capability": null,
+      "door": "registerProposal", "class": "read", "capability": null, "dropped": true,
       "args": {
         "refused": "invalid ledger request", "required": { "card_id": {} }, "optional": {}
+      }
+    },
+    {
+      "door": "registerProposals", "class": "read", "capability": null, "args": "none"
+    },
+    {
+      "door": "registerDecline", "class": "reduce", "capability": null,
+      "args": {
+        "refused": "invalid ledger request", "required": { "card_id": {}, "digest": {} },
+        "optional": {}
       }
     },
     {

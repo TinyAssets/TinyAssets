@@ -554,7 +554,19 @@ A revoked API key's row nothing holds MAY be forgotten when the binder reports t
 - **THEN** its row is forgotten, and a call with that key is refused with "outside client has no grant"
 
 ### Requirement: An MCP agent registers through a card its client files
-An MCP client SHALL file its agent's registration on its own verified call, so the object captures the origin the binder verified, as a held card that never changes, one pending per outside identity, held until the owner applies it or its client's grant changes, with no life of its own; at the cards' bound a filing SHALL let the oldest go (the client's own at its share), never refuse for room. The owner SHALL apply it, in its session, only by the card's id and the digest it was shown, at most once, and only while the authority the card was filed under stands. A pending card SHALL hold its client's grant row, and a grant change SHALL drop the client's cards.
+An MCP client SHALL file its agent's registration on its own verified call, so the object captures the origin the binder verified, as a held card that never changes, one pending per outside identity, held until the owner applies or declines it or its client's grant changes, with no life of its own; at the cards' bound a filing SHALL let the oldest go (the client's own at its share), never refuse for room. A filing SHALL be held to the rules its apply holds, so the owner is shown only a card that applies, and SHALL register where its client's grant acts: a narrowed grant's agent in the space its scopes name (the one the client names when they name several), a full grant's in `main` unless the client names a place. Its answer SHALL name the owner app's page of the card (`approve_url`), which the client hands its user, and the filing SHALL tell the owner, with that page, in a notice. The owner SHALL see its pending cards in its app, and SHALL apply one, in its session, only by the card's id and the digest it was shown, at most once, and only while the authority the card was filed under stands; it MAY decline one by the same id and digest without a session, a narrowing. A pending card SHALL hold its client's grant row, and a grant change SHALL drop the client's cards.
+
+#### Scenario: A full grant's client registers and gets its mailbox
+- **WHEN** a client with a full grant, refused a mailbox as no registered agent, files `agent_register` naming no place, and the owner opens its `approve_url` signed in and applies it
+- **THEN** its agent is registered in `main`, and its next `inbox_digest` and `mailbox_read` answer
+
+#### Scenario: A declined or replaced card
+- **WHEN** the owner declines a card, or applies one its client has since filed again
+- **THEN** no agent is registered, the page says the card is not waiting any more, and the client's mailbox stays refused
+
+#### Scenario: A narrowed grant's registration
+- **WHEN** a client whose grant is narrowed to one space files `agent_register` naming no place
+- **THEN** its card, and the agent the owner applies, are in that space, where its grant reads its mail
 
 #### Scenario: The owner's browser names an MCP client
 - **WHEN** a call carries an MCP client's origin together with the owner's session to register an agent

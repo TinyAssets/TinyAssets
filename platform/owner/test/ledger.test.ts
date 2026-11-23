@@ -426,7 +426,9 @@ describe("outside agents register from a verified identity", () => {
     for (const call of [
       () => r.stub.outsideAgents(outside),
       () => r.stub.registerPropose(outside, request),
-      () => r.stub.registerProposal(outside, { card_id: "card_" + "0".repeat(32) }),
+      () => r.stub.registerProposals(outside),
+      () => r.stub.registerDecline(outside, { card_id: "card_" + "0".repeat(32),
+                                              digest: "0".repeat(64) }),
       () => r.stub.grantForget(outside, { client: DOT.client }),
       () => r.stub.roomPost(outside, { room_id: dm(muse), client_message_id: "c",
                                        body: "x", parent_id: null }),
@@ -649,8 +651,10 @@ describe("a refused widening's receipt", () => {
                       delivery_method: "pull", recipe_id: null };
     for (const call of [
       () => r.stub.registerAgent(r.bind(DOT), request),  // no session
-      async () => r.stub.registerAgent(r.session(null), await r.stub.registerPropose(
-        r.bind(DOT), { ...request, delivery_method: "a2a" })),  // a held card refused
+      async () => {  // a held card, applied by a digest it was not shown with
+        const { card_id } = await r.stub.registerPropose(r.bind(DOT), request);
+        return r.stub.registerAgent(r.session(null), { card_id, digest: "0".repeat(64) });
+      },
       () => r.stub.disableAgent(r.bind(DOT), { agent_id: muse, reason: "x" }),
       () => r.stub.deleteAgent(r.bind(MUSE), { agent_id: muse }),
       () => r.stub.deleteAgent(r.session(null), { agent_id: "agent_x" }),
