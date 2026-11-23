@@ -140,7 +140,7 @@ export interface KeyMintRequest {
   readonly key_id: string;
   readonly name: string;
   readonly scopes: unknown;
-  readonly proposal?: { readonly request_id: string; readonly digest: string };
+  readonly proposal?: Readonly<Record<string, unknown>>;
 }
 
 // -- THE DOORS: the `keys` rows' handlers (`owner/doors.json`) ------------------------------------

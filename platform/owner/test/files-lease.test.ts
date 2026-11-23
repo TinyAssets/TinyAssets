@@ -245,9 +245,10 @@ describe("a sync commit", () => {
   it("is refused whole only for a lost lease or no ops at all", async () => {
     const r = await rig();
     const lease = await acquire(r);
-    for (const ops of [[], "mkdir"]) {
-      expect((await failure(() => sync(r, lease, ops as SyncOp[]))).message)
-        .toBe("a sync commit holds 1 to 1000 ops");
+    for (const [ops, reason] of [[[], "a sync commit holds 1 to 1000 ops"],
+                                 ["mkdir", "invalid file request: ops is a list"]] as const) {
+      expect((await failure(() => sync(r, lease, ops as unknown as SyncOp[]))).message)
+        .toBe(reason);
     }
   });
 

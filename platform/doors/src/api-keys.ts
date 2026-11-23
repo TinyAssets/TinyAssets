@@ -32,6 +32,7 @@
  * calls are bounded by the tier's simultaneous runs, the owner's own settings and vendors'
  * limits.
  */
+import { object } from "../../contract/src/checks";
 import { sha256Hex } from "../../contract/src/digest";
 import { HEX16, randomHex } from "../../contract/src/ids";
 import { KEY_NAME_MAX } from "../../contract/src/limits";
@@ -117,6 +118,10 @@ export async function mintKey(env: DoorsEnv, { binding, stub }: Bound, request: 
                                                           proposal?: unknown };
   if (typeof name !== "string" || name.trim() === "") {
     throw new Refusal("invalid", `key name required (at most ${KEY_NAME_MAX} characters)`);
+  }
+  if (!Array.isArray(scopes) || (proposal !== undefined && !object(proposal))) {
+    throw new Refusal("invalid", "a key's scopes are a list (none for a full key), and its " +
+                      "request, where it names one, the card shown");
   }
   const minted = newKey();
   const row = await stub.keyMint(binding, {

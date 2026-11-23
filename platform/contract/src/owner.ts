@@ -7,12 +7,12 @@
  * each door its row's, the binding first (but on the two unbound doors), then its request,
  * which the object's runner checks field by field. What the table cannot say is here, by door
  * (`DoorTypes`):
- * - where the row lists the fields, exactly them (`Asked`: `DoorRequests`, which
- *   `requests.ts` writes from the table), or, where the doors hand a parsed body on as it
- *   came, that body (`Handed`, `JsonBody`), so `tsc` holds every request the doors build,
- *   and the object's handler, to the row's fields; where the doors build the request, also
- *   the value each field takes (`values`), the owner's own request type's, since the row
- *   names most fields alone;
+ * - where the row lists the fields, exactly them, each of its schema's type (`Asked`:
+ *   `DoorRequests`, which `requests.ts` writes from the table), or, where the doors hand a
+ *   parsed body on as it came, that body (`Handed`, `JsonBody`), so `tsc` holds every
+ *   request the doors build, and the object's handler, to the row's fields and types; where
+ *   the doors build a field narrower than a JSON type says (a list's items, an object's
+ *   keys), that value (`values`);
  * - where its module reads it whole (`loose`), the parameters its module takes, spelled once
  *   here (`AdmissionRequest`, `TierRequest`, the connections', the inbound bindings', the
  *   egress door's);
@@ -92,8 +92,8 @@ export type JsonBody =
   Readonly<Record<string, unknown>> & { readonly "parsed by jsonObject": true };
 
 /**
- * A door's request, by its row's fields (`requests.ts`, written from the table), and the
- * types of their values (`Values`), which the row's names alone do not give.
+ * A door's request, by its row's fields and their types (`requests.ts`, written from the
+ * table), and the values the doors build narrower than those (`Values`).
  */
 type Asked<Door extends keyof DoorRequests, Values extends object = object> =
   DoorRequests[Door] & Values;
@@ -188,10 +188,7 @@ export function resealAnswer(swept: readonly Swept[]): ResealAnswer {
 }
 
 /** A restore's generation (`owner/src/restore.ts`): its namespace (32 hex) and id (16 hex). */
-export interface RestoreBeginRequest {
-  readonly namespace: string;
-  readonly gen: string;
-}
+export type RestoreBeginRequest = DoorRequests["restoreBegin"];
 
 /**
  * How far a restore is (`owner/src/restore.ts`): its step; a failed check's words; and once
@@ -237,9 +234,7 @@ export interface RestoreHeld {
 }
 
 /** A page of what the owner's object names in the bucket (`restoreNames`), from the `from`th. */
-export interface RestoreNamesRequest {
-  readonly from: number;
-}
+export type RestoreNamesRequest = DoorRequests["restoreNames"];
 
 /**
  * What a copy back from the off-account copy may write into the owner's namespace
@@ -257,15 +252,10 @@ export interface RestoreNames {
  * own finished ones, or one of another namespace whose generation names this owner (one its
  * own holds, `r8-lost-object.md`).
  */
-export interface RestorePinRequest {
-  readonly namespace: string;
-  readonly gen: string;
-}
+export type RestorePinRequest = DoorRequests["restorePin"];
 
 /** What confirms a wipe (`restoreWipe`): `wipe-<owner>-<gen>`, as the pin's answer names it. */
-export interface RestoreWipeRequest {
-  readonly confirm: string;
-}
+export type RestoreWipeRequest = DoorRequests["restoreWipe"];
 
 /**
  * The words that confirm the platform's erasure of `owner` (`erasureBegin`, the operator's
@@ -279,9 +269,7 @@ export const eraseWords = (owner: string): string => `erase-${owner}`;
 export const ERASE_CONFIRM = "erase my account";
 
 /** What confirms an erasure: the owner's typed words (`ERASE_CONFIRM`), or the platform's. */
-export interface EraseRequest {
-  readonly confirm: string;
-}
+export type EraseRequest = DoorRequests["erasureBegin"];
 
 /**
  * A restore's hold on its owner, from the pin through the wipe (`owner/src/restore.ts`): the
@@ -408,13 +396,13 @@ export type SettleSent = {
 
 /**
  * What the door table cannot say of a door the doors call, by door: the values the doors build
- * into its row's fields (`values`), that they hand a parsed body on (`handed`), a loose door's
- * parameters after its binding (`loose`), and what they or their tests read of its answer
- * (`answer`), held to the owner's own by `OwnerDO implements OwnerDoors`. `tsc` refuses an
- * entry for no door of the table, or one its row leaves no room for: `values` or `handed` but
- * on a field list, a field the row does not list, `loose` but on a loose door
- * (`owner-doors.ts`). A door with no entry takes its row's fields, each `unknown`, and
- * answers an object the doors pass on.
+ * into its row's fields narrower than its types (`values`), that they hand a parsed body on
+ * (`handed`), a loose door's parameters after its binding (`loose`), and what they or their
+ * tests read of its answer (`answer`), held to the owner's own by `OwnerDO implements
+ * OwnerDoors`. `tsc` refuses an entry for no door of the table, or one its row leaves no room
+ * for: `values` or `handed` but on a field list, a field the row does not list, `loose` but on
+ * a loose door (`owner-doors.ts`). A door with no entry takes its row's fields, each of its
+ * type, and answers an object the doors pass on.
  */
 export interface DoorTypes {
   readonly sandboxBilled: {
@@ -433,23 +421,17 @@ export interface DoorTypes {
   readonly dataKeyRewrap: { readonly answer: RewrapAnswer };
   readonly gatewayReseal: { readonly answer: ResealAnswer };
   readonly restoreSource: { readonly answer: RestoreSource };
-  readonly restoreBegin: { readonly values: RestoreBeginRequest; readonly answer: RestoreAnswer };
+  readonly restoreBegin: { readonly answer: RestoreAnswer };
   readonly restoreStep: { readonly answer: RestoreAnswer };
-  readonly restorePin: { readonly values: RestorePinRequest; readonly answer: RestoreHold };
-  readonly restoreWipe: { readonly values: RestoreWipeRequest; readonly answer: RestoreHold };
-  readonly restoreNames: { readonly values: RestoreNamesRequest; readonly answer: RestoreNames };
-  readonly restoreHold: { readonly values: RestoreBeginRequest; readonly answer: RestoreHeld };
+  readonly restorePin: { readonly answer: RestoreHold };
+  readonly restoreWipe: { readonly answer: RestoreHold };
+  readonly restoreNames: { readonly answer: RestoreNames };
+  readonly restoreHold: { readonly answer: RestoreHeld };
   readonly sessionOpen: { readonly answer: { readonly session: string } };
   readonly sessionClose: { readonly answer: { readonly closed: number } };
   readonly socketTicket: { readonly handed: true };
-  readonly ownerErase: {
-    readonly values: EraseRequest;
-    readonly answer: { readonly erasing: true };
-  };
-  readonly erasureBegin: {
-    readonly values: EraseRequest;
-    readonly answer: { readonly erasing: true };
-  };
+  readonly ownerErase: { readonly answer: { readonly erasing: true } };
+  readonly erasureBegin: { readonly answer: { readonly erasing: true } };
   readonly erasureOutside: {
     readonly answer:
       { readonly keys: readonly string[]; readonly routes: readonly string[] } | null;
@@ -465,37 +447,23 @@ export interface DoorTypes {
   };
   readonly wakeSubscribe: {
     readonly values: {
-      readonly subscription_id: string; readonly name: string;
       readonly arguments: { readonly command_center_id: string; readonly board?: boolean;
-                            readonly rooms?: readonly string[] };
-      readonly blob: string; readonly kid: string; readonly version: number;
-      readonly expires_at: number | null };
+                            readonly rooms?: readonly string[] } };
   };
-  readonly wakeUnsubscribe: { readonly values: { readonly subscription_id: string } };
   readonly keyMint: {
-    readonly values: {
-      readonly key_id: string; readonly name: string; readonly scopes: unknown;
-      /** As the caller sent it: the object checks it (`request_id`, `digest`). */
-      readonly proposal?: unknown };
     readonly answer: { readonly name: string; readonly created_at: number;
                        readonly scopes: readonly object[] };
   };
   readonly keyList: { readonly answer: { readonly keys: readonly { readonly key_id: string }[] } };
   readonly grantRevoke: {
-    readonly values: { readonly client: string };
     readonly answer: { readonly client: string; readonly revoked: boolean;
                        readonly generation: number; readonly revision: number };
   };
-  readonly grantForget: {
-    readonly values: { readonly client: string };
-    readonly answer: { readonly forgotten: boolean };
-  };
+  readonly grantForget: { readonly answer: { readonly forgotten: boolean } };
   readonly grantSet: { readonly handed: true };
   readonly registerAgent: { readonly handed: true; readonly answer: { readonly agent_id: string } };
   readonly inboundAccept: {
-    readonly values: {
-      readonly event_id: string; readonly event_at: number; readonly body: Uint8Array;
-      readonly headers: Readonly<Record<string, string>> };
+    readonly values: { readonly headers: Readonly<Record<string, string>> };
     readonly answer: InboundAnswer;
   };
   readonly inboundCreate: {
@@ -527,68 +495,38 @@ export interface DoorTypes {
   readonly tierRead: { readonly answer: { readonly tier: TierName } };
   readonly fileRead: {
     readonly handed: true;
-    readonly values: { readonly path: string; readonly etag?: string };
     readonly answer: {
       readonly entry: { readonly size: number; readonly mode: number; readonly writer: string;
                         readonly mtime_ms: number };
       readonly inline?: Uint8Array;
       readonly chunks?: readonly { readonly sha256: string }[] };
   };
-  readonly fileWrite: {
-    readonly values: {
-      readonly path: string; readonly expected_etag: string | null;
-      readonly content: string | Uint8Array; readonly mode?: number };
-  };
   readonly ownerExport: {
     readonly handed: true;
-    readonly values: {
-      readonly cursor?: string | null; readonly export_id?: string };
     readonly answer: { readonly export_id: string; readonly lines: readonly string[];
                        readonly next: string | null; readonly pending: boolean };
   };
   readonly exportEnd: { readonly loose: [request: { readonly export_id: string }] };
-  readonly agentDoorbell: {
-    readonly values: {
-      readonly agent_id: string; readonly kind: string; readonly subscription_id: string;
-      readonly board: boolean; readonly rooms: readonly string[]; readonly blob: string;
-      readonly kid: string; readonly version: number };
-  };
+  readonly agentDoorbell: { readonly values: { readonly rooms: readonly string[] } };
   readonly fileUploadTarget: {
-    readonly values: { readonly intent_id: string };
     readonly answer: {
       readonly namespace: string; readonly key: string;
       readonly chunks: readonly { readonly sha256: string; readonly size: number }[];
       readonly pending: readonly string[] };
   };
-  readonly fileUploadStored: {
-    readonly values: {
-      readonly intent_id: string; readonly chunks: readonly string[] };
-  };
-  readonly importNotice: { readonly values: { readonly detail: string } };
-  readonly importRows: { readonly values: { readonly rows: readonly unknown[] } };
-  readonly importFiles: { readonly values: { readonly entries: readonly unknown[] } };
+  readonly fileUploadStored: { readonly values: { readonly chunks: readonly string[] } };
   readonly importFileBegin: {
-    readonly values: {
-      readonly path: string; readonly size: number; readonly mode: 0 | 1;
-      readonly content_id: string; readonly chunks: readonly string[] };
+    readonly values: { readonly mode: 0 | 1; readonly chunks: readonly string[] };
     readonly answer: { readonly skipped: true } | {
       readonly skipped: false; readonly intent_id: string; readonly namespace: string;
       readonly key: string;
       readonly chunks: readonly { readonly sha256: string; readonly size: number }[];
       readonly pending: readonly string[] };
   };
-  readonly importFileStored: {
-    readonly values: {
-      readonly intent_id: string; readonly chunks: readonly string[] };
-  };
-  readonly importFileCommit: {
-    readonly values: {
-      readonly intent_id: string; readonly path: string; readonly mode: 0 | 1;
-      readonly content_id: string; readonly mtime_ms: number };
-  };
+  readonly importFileStored: { readonly values: { readonly chunks: readonly string[] } };
+  readonly importFileCommit: { readonly values: { readonly mode: 0 | 1 } };
   readonly importCheck: {
-    readonly values: {
-      readonly part: CheckPart; readonly page: number };
+    readonly values: { readonly part: CheckPart };
     readonly answer: { readonly more: boolean };
   };
   readonly importDiscard: { readonly answer: { readonly namespace: string | null } };
@@ -618,14 +556,12 @@ export interface DoorTypes {
   };
   readonly fileSyncCommit: {
     readonly handed: true;
-    readonly values: {
-      readonly lease_id: string; readonly epoch: number; readonly ops: readonly SyncOp[] };
+    readonly values: { readonly ops: readonly SyncOp[] };
   };
   readonly fileSyncUploadBegin: { readonly handed: true };
   readonly fileSyncUploadChunks: {
     readonly handed: true;
     readonly values: {
-      readonly lease_id: string; readonly epoch: number; readonly intent_id: string;
       readonly chunks: readonly { readonly sha256: string; readonly bytes: Uint8Array }[] };
   };
   readonly fileSyncUploadAbort: { readonly handed: true };

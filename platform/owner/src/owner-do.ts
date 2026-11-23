@@ -1251,7 +1251,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       return {};
     }
     return requestFields("refused" in args ? args
-      : account.origin === null ? args.owner : args.outside, request);
+      : account.origin === null && account.run === null ? args.owner : args.outside, request);
   }
 
   /**

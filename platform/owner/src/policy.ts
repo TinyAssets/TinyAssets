@@ -592,7 +592,7 @@ export class Policy {
 
 export interface PolicyWriteRequest {
   readonly expected_generation: number;
-  readonly policy: PolicyDocument;
+  readonly policy: Readonly<Record<string, unknown>>;
 }
 export interface ProposeRequest {
   readonly change: Change;

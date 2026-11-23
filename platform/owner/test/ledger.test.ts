@@ -218,7 +218,8 @@ describe("a reader sees only its own mail", () => {
       expect((await failure(() => r.read(MUSE, 10, budget as never))).message).toBe(reason);
     }
     for (const limit of [0, 101, 1.5]) {
-      expect((await failure(() => r.read(MUSE, limit))).message).toBe("limit is 1 to 100");
+      expect((await failure(() => r.read(MUSE, limit))).message)
+        .toBe(limit === 1.5 ? "invalid ledger request: limit is an integer" : "limit is 1 to 100");
     }
     const forged = await failure(() => r.stub.mailboxRead(r.bind(MUSE),
                                                           { limit: 10, sender: "owner" } as never));
@@ -369,9 +370,10 @@ describe("outside agents register from a verified identity", () => {
       expected_generation: (await r.stub.policyRead(r.bind(null))).generation, ...extra })).agent;
     for (const [extra, reason] of [
       [{ max_wakes_per_hour: 0 }, "max_wakes_per_hour is a whole number from 1, or null for none"],
-      [{ max_wakes_per_hour: 1.5 }, "max_wakes_per_hour is a whole number from 1, or null for none"],
+      [{ max_wakes_per_hour: 1.5 },
+       "invalid policy request: max_wakes_per_hour is an integer or null"],
       [{ batch_window_s: -1 }, "batch_window_s is a whole number of seconds from 0"],
-      [{ batch_window_s: 1.5 }, "batch_window_s is a whole number of seconds from 0"],
+      [{ batch_window_s: 1.5 }, "invalid policy request: batch_window_s is an integer"],
       [{ agent_id: "agent_x" }, "agent not found"],
     ] as const) {
       expect((await failure(() => limits(extra))).message).toBe(reason);

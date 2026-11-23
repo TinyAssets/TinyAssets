@@ -1874,7 +1874,8 @@ describe("what a copy back may write (restoreNames)", () => {
     for (const from of [-1, 1.5, "0"]) {
       expect((await failure(() => o.stub.restoreNames(platform(o.name),
                                                       { from: from as number }))).message)
-        .toBe("a page of names begins at a whole row (from >= 0)");
+        .toBe(from === -1 ? "a page of names begins at a whole row (from >= 0)"
+          : "invalid restore request: from is an integer");
     }
   });
 });
