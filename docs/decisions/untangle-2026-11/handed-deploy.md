@@ -79,9 +79,13 @@ other strict cross-Worker parser is data under the same rule, which runs both wa
   version whose tag names no commit, which Cloudflare notes as `triggered_by: secret`, runs the
   code of the version its deployments listing served alone at 100% just before it first did
   (a secret change is made from the latest version, refused unless it is deployed, and deploys at
-  once), and so on back to a tagged one. Anything else untagged stops the run, naming how out: a
-  version this kit tagged deployed on it. Not `versions secret put` in `retire`: it patches the
-  latest version, not the serving one, and still leaves a hand edit in the dashboard a dead end.
+  once), and so on back to a tagged one. Anything else untagged stops the run, naming how out: the
+  commit it should run uploaded as a new version tagged as the kit tags (`versions upload`
+  keeps the latest version's secrets) and deployed at 100%; an older version deployed back is
+  refused once a secret has changed since (10220, `deploy-rollout.md`), so that is no way out
+  after a secret change in a split (found in review). Not `versions secret put` in `retire`: it
+  patches the latest version, not the serving one, and still leaves a hand edit in the dashboard
+  a dead end.
 - **The shapes file at an earlier commit** is `handed.json`, or at a commit before it
   `bindings.json`'s shapes, each the doors' to the owner, as its `about` said: the stage serves
   ecaccf90c, which has only that. A commit with neither throws.

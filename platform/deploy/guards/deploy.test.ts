@@ -2729,8 +2729,11 @@ describe("the rollout record and mode rollback", () => {
       [DOORS]: [{ version: "before-doors", percentage: 100, tag }] } });
     await stops(doors(null), `${DOORS} serves before-doors, tagged with nothing, which names no ` +
                 "commit, and Cloudflare notes it as no secret change of a version that does: " +
-                "what it hands and takes is unknown, so nothing is changed. Deploy a version " +
-                "this kit tagged on it (wrangler versions deploy <id>), then plan again");
+                "what it hands and takes is unknown, so nothing is changed. Upload the commit " +
+                "it should run as a new version tagged as this kit tags it (wrangler versions " +
+                "upload --tag <its first 12 digits>, which keeps its secrets), deploy that at " +
+                "100%, then plan again: an older version deployed back is refused once a " +
+                "secret changed since (10220)");
     await stops(doors("a".repeat(12)), `${"a".repeat(12)} is not in this checkout`);
   });
 

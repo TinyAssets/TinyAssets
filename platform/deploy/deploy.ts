@@ -1936,8 +1936,10 @@ async function servedHold(got: Pick<Values, "cloudflare" | "account">, run: Run,
       throw new Error(`${name} serves ${before.version}, tagged ${before.tag ?? "with nothing"}, ` +
                       "which names no commit, and Cloudflare notes it as no secret change of a " +
                       "version that does: what it hands and takes is unknown, so nothing is " +
-                      "changed. Deploy a version this kit tagged on it (wrangler versions " +
-                      "deploy <id>), then plan again");
+                      "changed. Upload the commit it should run as a new version tagged as this " +
+                      "kit tags it (wrangler versions upload --tag <its first 12 digits>, which " +
+                      "keeps its secrets), deploy that at 100%, then plan again: an older " +
+                      "version deployed back is refused once a secret changed since (10220)");
     }
     const { commit } = taggedAs(code.tag)!;
     commits.set(name, commit);
