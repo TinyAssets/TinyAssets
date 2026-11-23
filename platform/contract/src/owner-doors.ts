@@ -251,8 +251,7 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
     Promise<DoorAnswer<"policyProposal">>;
   policyWakeLimits(binding: Binding, request: DoorRequest<"policyWakeLimits">):
     Promise<DoorAnswer<"policyWakeLimits">>;
-  actionRequest(binding: Binding, request: DoorRequest<"actionRequest">):
-    Promise<DoorAnswer<"actionRequest">>;
+  actionRequests(binding: Binding): Promise<DoorAnswer<"actionRequests">>;
   actionApprove(binding: Binding, request: DoorRequest<"actionApprove">):
     Promise<DoorAnswer<"actionApprove">>;
   actionRefuse(binding: Binding, request: DoorRequest<"actionRefuse">):
@@ -413,7 +412,7 @@ type Loose =
       | "admissionSet" | "wakeEvents" | "signinEvents" | "tierSet" | "egressOpen" | "egressReserve"
       | "egressBeat" | "egressSettle";
 /** The doors the doors call no more, which the object still takes, its types with it. */
-type Dropped = never;
+type Dropped = "actionRequest";
 /** What `DoorTypes` may say of a door, by its row. */
 type Parts<D> = "answer" | (D extends keyof DoorRequests ? "values" | "handed"
   : D extends Loose ? "loose" : never);

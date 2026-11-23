@@ -5,8 +5,8 @@
  * browser; the first-party app's client document and redirect, which the doors serve and the
  * deploy kit's probe signs in with; the first-party resource, where the owner's own app is,
  * whose tokens the doors take for `/app/api/*` and whose pages the owner's object links the
- * owner to (`appPage`); the header every doors answer names its version in; the events
- * E2B's lifecycle hook takes; and how a route of its `routes` takes a URL.
+ * owner to (`appPage`, `waitingPage`); the header every doors answer names its version in; the
+ * events E2B's lifecycle hook takes; and how a route of its `routes` takes a URL.
  */
 import identity from "../identity.json" with { type: "json" };
 
@@ -37,11 +37,18 @@ export const APP_RESOURCE = `${ORIGIN}${identity.first_party.resource}`;
 
 /**
  * The owner app's page of `section` at `arg`, as the app reads its address (`doors/app/app.js`
- * `place`): where the owner's object links the owner (a file's folder, a registration to
- * approve).
+ * `place`): where the owner's object links the owner (a file's folder, a card to answer).
  */
 export function appPage(section: string, arg: string): string {
   return `${APP_RESOURCE}#${section}/${encodeURIComponent(arg)}`;
+}
+
+/**
+ * The owner app's page of a card waiting on the owner's answer, of either kind (an app's agent
+ * registration, an agent's held call): Home's, where every waiting card is answered.
+ */
+export function waitingPage(cardId: string): string {
+  return appPage("home", cardId);
 }
 /**
  * The header naming the doors' version that served an answer, its id (`CF_VERSION_METADATA`):

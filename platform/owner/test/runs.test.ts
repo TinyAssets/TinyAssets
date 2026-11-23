@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { verifyToken } from "../../contract/src/routing-mac";
 import { egressTokenOf } from "../../contract/src/egress";
+import { waitingPage } from "../../contract/src/identity";
 import { bundledSources } from "../../sources/src/catalog";
 import { runEnv } from "../../sources/src/run-env";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
@@ -298,17 +299,19 @@ describe("admission", () => {
       const { run, start } = await ownerRun(r.stub, r.bind());
       expect([start.mcp_servers, start.hooks.pre_tool, start.hooks.session_start])
         .toEqual([{ docs }, [], []]);
-      const waits = /^main: (.*) is left out of this run: it waits for your answer to card (\S+)$/;
+      const waits = /^main: (.*) is left out of this run: it waits for your answer at (\S+)$/;
       const dropped = (await told("definition_command_dropped")).map((detail) =>
         waits.exec(detail)!.slice(1));
       expect(dropped.map(([what]) => what).sort()).toEqual(["its MCP server local (uvx)",
         "its pre_tool hook ./hooks/guard.sh", "its session_start hook ./hooks/note.sh"]);
-      const card = dropped.find(([what]) => what!.includes("pre_tool"))![1]!;
-      expect((await told("action_request")).sort()).toEqual(dropped.map(([what, id]) =>
+      const page = dropped.find(([what]) => what!.includes("pre_tool"))![1]!;
+      expect((await told("action_request")).sort()).toEqual(dropped.map(([what, at]) =>
         `main asks to workspace.shell at ${what!.includes("MCP") ? "mcp.json" : "hooks.json"}: ` +
-        `card ${id}`).sort());
-      const shown = await r.stub.actionRequest(r.bind(), { card_id: card });
-      expect(shown.card).toMatchObject({
+        `allow or deny it at ${at}`).sort());
+      const shown = (await r.stub.actionRequests(r.bind())).cards
+        .find((each) => waitingPage(each.card_id) === page)!;
+      const card = shown.card_id;
+      expect(shown).toMatchObject({
         act: "workspace.shell", door: "hooks.json", agent: "main",
         conversation: run.conversation_id,
         request: JSON.stringify({ hook: "pre_tool[0]", match: { kinds: ["shell"] },

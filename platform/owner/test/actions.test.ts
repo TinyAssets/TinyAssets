@@ -8,6 +8,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Binding } from "../../contract/src/binding";
+import { waitingPage } from "../../contract/src/identity";
 import { QUEUE_ROWS } from "../../contract/src/limits";
 import { DEFAULT_POLICY_JSON, POLICY_LIMITS } from "../../contract/src/policy-document";
 import { ACTION_LIMITS, type ActionCard } from "../src/actions";
@@ -44,9 +45,15 @@ function mkdir(stub: Stub, binding: Binding, path: string) {
 async function heldCard(call: () => Promise<unknown>): Promise<string> {
   const held = await failure(call) as Error & { code?: string; facts?: { card_id?: string } };
   expect([held.code, held.message]).toEqual(["held_for_owner",
-    `held for your owner's answer: card ${held.facts?.card_id}. The owner answers it in the ` +
-      "TinyAssets app; once they say yes, make this same call again"]);
+    `held for your owner's answer: card ${held.facts?.card_id}. Your owner answers it at ` +
+      `${waitingPage(held.facts!.card_id!)}: give them that link. Once they say yes, make ` +
+      "this same call again"]);
   return held.facts!.card_id!;
+}
+
+/** The pending card under `card` as the owner's list shows it, or undefined once none waits. */
+async function listed(o: Pick<Owner, "stub" | "owner">, card: string) {
+  return (await o.stub.actionRequests(o.owner)).cards.find((each) => each.card_id === card);
 }
 
 async function ledgerOwner() {
@@ -82,9 +89,10 @@ describe("an agent's call of an act", () => {
     // Asked again, the same card: nothing new is filed.
     expect(await heldCard(() => mkdir(r.stub, r.bind(MUSE), "/workspace/held"))).toBe(card);
     expect((await r.stub.noticeList(o.owner)).notices.map((notice) => notice.detail))
-      .toContain(`an outside agent asks to workspace.files at fileMkdir: card ${card}`);
-    const shown = await r.stub.actionRequest(o.owner, { card_id: card });
-    expect(shown.card).toMatchObject({
+      .toContain("an outside agent asks to workspace.files at fileMkdir: allow or deny it at " +
+                 waitingPage(card));
+    const shown = (await listed(o, card))!;
+    expect(shown).toMatchObject({
       card_id: card, act: "workspace.files", says: "Changing the owner's files.",
       door: "fileMkdir", agent: null, client: MUSE.client,
       request: '{"expected_etag":null,"path":"/workspace/held"}', cut: false,
@@ -92,8 +100,7 @@ describe("an agent's call of an act", () => {
     // A client's own call resumes no run of the owner's: its client retries it.
     expect(await r.stub.actionApprove(o.session, { card_id: card, digest: shown.digest }))
       .toEqual({ card_id: card, approved: true, run: null });
-    expect((await failure(() => r.stub.actionRequest(o.owner, { card_id: card }))).message)
-      .toBe("no pending action request for this card");
+    expect(await listed(o, card)).toBeUndefined();
     // The yes is that client's call alone: another client's same call is held for its own.
     expect(await heldCard(() => mkdir(r.stub, r.bind(DOT), "/workspace/held"))).not.toBe(card);
     await mkdir(r.stub, r.bind(MUSE), "/workspace/held");
@@ -103,16 +110,16 @@ describe("an agent's call of an act", () => {
     expect(await outcomes(o)).toEqual(["held", "admitted", "held", "approved", "held"]);
   });
 
-  it("is answered only as the pending card shown, in the owner's session, under the policy " +
-     "it was asked under", async () => {
+  it("is answered only as the pending card shown, a yes in the owner's session, under the " +
+     "policy it was asked under", async () => {
     const { r, o } = await ledgerOwner();
     await ruled(o, [{ act: "workspace.files", do: "ask" }]);
     const ask = () => heldCard(() => mkdir(r.stub, r.bind(MUSE), "/workspace/asked"));
     const card = await ask();
-    const { digest } = await r.stub.actionRequest(o.owner, { card_id: card });
+    const { digest } = (await listed(o, card))!;
+    const wrong = { card_id: card, digest: "sha256:" + "0".repeat(64) };
     for (const [binding, answer, reason] of [
-      [o.session, { card_id: card, digest: "sha256:" + "0".repeat(64) },
-        "action request is not the pending card shown"],
+      [o.session, wrong, "action request is not the pending card shown"],
       [o.session, { card_id: "act_" + "0".repeat(32), digest },
         "action request is not the pending card shown"],
       [o.owner, { card_id: card, digest }, "interactive owner session required"],
@@ -121,17 +128,26 @@ describe("an agent's call of an act", () => {
     ] as const) {
       expect((await failure(() => r.stub.actionApprove(binding, answer))).message).toBe(reason);
     }
-    // The owner's no: the card goes, and the call asked again is held anew.
-    expect(await r.stub.actionRefuse(o.session, { card_id: card, digest }))
+    for (const [binding, answer, reason] of [
+      [o.owner, wrong, "action request is not the pending card shown"],
+      [r.bind(MUSE), { card_id: card, digest },
+        "only the owner may answer its agents' held calls"],
+    ] as const) {
+      expect((await failure(() => r.stub.actionRefuse(binding, answer))).message).toBe(reason);
+    }
+    expect((await failure(() => r.stub.actionRequests(r.bind(MUSE)))).message)
+      .toBe("only the owner may read its agents' held calls");
+    // The owner's no, a narrowing, needs no session: the card goes, and the call asked again
+    // is held anew.
+    expect(await r.stub.actionRefuse(o.owner, { card_id: card, digest }))
       .toEqual({ card_id: card, approved: false });
     const again = await ask();
     expect(again).not.toBe(card);
     // The rules written again: the card asked under the old ones is neither shown nor
     // answered, and the call is decided afresh.
-    const shown = await r.stub.actionRequest(o.owner, { card_id: again });
+    const shown = (await listed(o, again))!;
     await ruled(o, [{ act: "workspace.files", do: "ask" }]);
-    expect((await failure(() => r.stub.actionRequest(o.owner, { card_id: again }))).message)
-      .toBe("no pending action request for this card");
+    expect(await listed(o, again)).toBeUndefined();
     expect((await failure(() => r.stub.actionApprove(o.session, { card_id: again,
                                                                   digest: shown.digest })))
       .message).toBe("action request is not the pending card shown");
@@ -146,7 +162,7 @@ describe("an agent's call of an act", () => {
       collection: "board", row_id, body: "{}", expected_etag: "", private: isPrivate });
     await row("mine", true);
     const card = await heldCard(() => row("public", false));
-    expect((await r.stub.actionRequest(o.owner, { card_id: card })).card)
+    expect((await listed(o, card))!)
       .toMatchObject({ act: "share", door: "collectionWrite" });
   });
 });
@@ -163,10 +179,8 @@ describe("the held calls", () => {
     }
     // Past MUSE's share, its own oldest goes, never another's older one.
     const more = await heldCard(() => mkdir(r.stub, r.bind(MUSE), "/workspace/one-more"));
-    const pending = async (card: string) => (await failure(
-      () => r.stub.actionRequest(o.owner, { card_id: card }))).message;
-    expect(await pending(muses[0]!)).toBe("no pending action request for this card");
-    expect((await r.stub.actionRequest(o.owner, { card_id: dots })).card.card_id).toBe(dots);
+    expect(await listed(o, muses[0]!)).toBeUndefined();
+    expect((await listed(o, dots))!.card_id).toBe(dots);
     // The rest of the set, by the owner's agents' runs, to its bound and one past it, which
     // lets their own oldest go, never an outside client's.
     const runs = ACTION_LIMITS.held - ACTION_LIMITS.perClient - 1;
@@ -183,10 +197,10 @@ describe("the held calls", () => {
       return Array.from({ length: runs + 1 }, (_, n) => asked(n));
     })).toEqual(Array(runs + 1).fill("held for your owner's answer"));
     expect(await r.table("action_requests")).toHaveLength(ACTION_LIMITS.held);
-    expect((await r.stub.actionRequest(o.owner, { card_id: dots })).card.card_id).toBe(dots);
+    expect((await listed(o, dots))!.card_id).toBe(dots);
     // An outside client's call at the full set lets the oldest outside one go: DOT's.
     await heldCard(() => mkdir(r.stub, r.bind(DOT), "/workspace/dot-2"));
-    expect(await pending(dots)).toBe("no pending action request for this card");
+    expect(await listed(o, dots)).toBeUndefined();
     // Each eviction is told, once an asker, naming the asker and never the call.
     const told = (await r.table("owner_notices"))
       .filter((row) => row["type"] === "held_request_evicted").map((row) => row["detail"]);
@@ -197,8 +211,8 @@ describe("the held calls", () => {
     const later = clock() + 10 * 365 * 86_400;
     await atClock(later, async () => {
       expect(await heldCard(() => mkdir(r.stub, r.bind(DOT), "/workspace/dot"))).not.toBe(dots);
-      const shown = await r.stub.actionRequest(o.owner, { card_id: more });
-      expect("expires_at" in shown.card).toBe(false);
+      const shown = (await listed(o, more))!;
+      expect("expires_at" in shown).toBe(false);
       await r.stub.actionApprove({ ...o.session, session: (await r.stub.sessionOpen({
         ...o.owner, authenticated_at: Math.floor(later) })).session },
                                  { card_id: more, digest: shown.digest });
@@ -275,7 +289,7 @@ describe("a run's call", () => {
       room_id: room, client_message_id: cmid, body: "hello", parent_id: null });
     await post(dm(main), "to-owner");
     const card = await heldCard(() => post(dm(main, muse), "to-muse"));
-    expect((await r.stub.actionRequest(o.owner, { card_id: card })).card)
+    expect((await listed(o, card))!)
       .toMatchObject({ act: "people.message", door: "roomPost", agent: "main", client: null });
   });
 });
@@ -315,7 +329,7 @@ describe("a run's CLI's own tool call, at its hook's decide door (R5 P-hooks)", 
     await ruled(o, [{ act: "workspace.shell", do: "ask" },
                     { act: "people.message", do: "never", tools: ["mcp:gmail:send_*"] }]);
     const card = await heldCard(() => call("run_shell_command", { command: "curl x.test" }));
-    expect((await r.stub.actionRequest(o.owner, { card_id: card })).card).toMatchObject({
+    expect((await listed(o, card))!).toMatchObject({
       act: "workspace.shell", door: "run_shell_command", agent: "main",
       request: JSON.stringify({ command: "curl x.test" }) });
     expect((await failure(() => call("mcp_gmail_send_mail", { to: "a@b.c" }))).code)
@@ -336,7 +350,7 @@ describe("a run's CLI's own tool call, at its hook's decide door (R5 P-hooks)", 
                     { act: "people.message", do: "ask", tools: ["mcp:board:post"] }]);
     const card = await heldCard(call);
     expect(await heldCard(call)).toBe(card);
-    const { digest } = await r.stub.actionRequest(o.owner, { card_id: card });
+    const { digest } = (await listed(o, card))!;
     await r.stub.actionApprove(o.session, { card_id: card, digest });
     expect(await call()).toEqual({ allow: true });
     expect(await outcomes(o)).toEqual(["admitted", "approved", "held"]);
@@ -412,14 +426,14 @@ describe("a run's held call (R5 P-resume)", () => {
     // The run goes on and ends; its engine's session is the conversation's.
     await r.stub.runEvents(runnerBinding(r, start), { frames: [{ seq: 1, at: 1, event: {
       type: "system", subtype: "init", session_id: "sess-held" } }], end: { exit_code: 0 } });
-    const { digest } = await r.stub.actionRequest(o.owner, { card_id: card });
+    const { digest } = (await listed(o, card))!;
     return { r, o, run, card, digest };
   }
 
   it("is bound to its conversation, which the owner's yes resumes, the call then admitted once",
      async () => {
     const { r, o, run, card, digest } = await asking();
-    expect((await r.stub.actionRequest(o.owner, { card_id: card })).card.conversation)
+    expect((await listed(o, card))!.conversation)
       .toBe(run.conversation_id);
     const approved = await r.stub.actionApprove(o.session, { card_id: card, digest });
     expect(approved).toEqual({ card_id: card, approved: true, run: expect.any(String) });
@@ -449,7 +463,7 @@ describe("a run's held call (R5 P-resume)", () => {
     expect((await failure(() => r.stub.actionApprove(o.session, { card_id: card, digest })))
       .message).toBe(QUEUE_FULL);
     // The card is still pending, and its call still held, not admitted.
-    expect((await r.stub.actionRequest(o.owner, { card_id: card })).digest).toBe(digest);
+    expect(((await listed(o, card))!).digest).toBe(digest);
     expect(await outcomes(o)).toEqual(["held"]);
   });
 
@@ -488,7 +502,7 @@ describe("a run's held call (R5 P-resume)", () => {
     await ruled(o, [{ act: "workspace.files", do: "ask" }]);
     const card = await heldCard(() => mkdir(r.stub, runBinding(r, start), "/workspace/c"));
     await r.stub.runEvents(runnerBinding(r, start), { frames: [], end: { exit_code: 0 } });
-    const { digest } = await r.stub.actionRequest(o.owner, { card_id: card });
+    const { digest } = (await listed(o, card))!;
     const { run } = await r.stub.actionApprove(o.session, { card_id: card, digest });
     await drainDue(r.stub);
     const resumed = await startOf(r.stub, run!);
