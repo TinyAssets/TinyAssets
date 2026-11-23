@@ -12,10 +12,10 @@
  *
  * 1. **The identity.** E2B's transform sets the sandbox's egress token (`x-ta-sandbox`)
  *    and the egress generation its network was made under (`x-ta-network-generation`)
- *    outside the VM. The token names its owner and carries a MAC under the routing key
- *    (`routing-mac.ts`), verified here before any stub call: a missing, malformed, forged
- *    or altered one is refused before any object is reached, and the placeholder key is
- *    never read. No directory is read: the owner's object checks the secret's hash, its
+ *    outside the VM. The token names its owner and carries a MAC under a kid of the routing
+ *    keyring (`routing-mac.ts`), verified here before any stub call: a missing, malformed,
+ *    forged or altered one is refused before any object is reached, and the placeholder key
+ *    is never read. No directory is read: the owner's object checks the secret's hash, its
  *    lease and the lease's expiry, strongly consistent. Then the maintenance gate.
  * 2. **Admission**, at the owner's object (`egressOpen`): the lease, the generations, the
  *    connection, its sealed endpoints, the metered call, its declared length and the rate;
@@ -134,7 +134,7 @@ async function sandboxToken(request: Request, env: DoorsEnv): Promise<Sandbox> {
   if (token === null || token === "") {
     throw refused("egress_token_missing");
   }
-  const parsed = verifyToken(env.ROUTING_MAC_KEY, "egress", token);
+  const parsed = verifyToken(env.ROUTING_KEYRING, "egress", token);
   if (parsed === null) {
     throw refused("egress_token_unknown");
   }
@@ -317,7 +317,7 @@ async function syncBound(request: Request, env: DoorsEnv): Promise<Bound> {
   if (token === null || token === "") {
     throw refused("sync_token_missing");
   }
-  const parsed = verifyToken(env.ROUTING_MAC_KEY, "sync", token);
+  const parsed = verifyToken(env.ROUTING_KEYRING, "sync", token);
   if (parsed === null) {
     throw refused("sync_token_unknown");
   }

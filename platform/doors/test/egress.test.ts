@@ -23,7 +23,7 @@ import {
 import type { DoorsEnv } from "../src/env";
 import { serveEgress } from "../src/egress";
 import { mintToken, verifyToken } from "../../contract/src/routing-mac";
-import { HELD_WAIT_MS } from "../../ci/fixtures";
+import { HELD_WAIT_MS, keyring } from "../../ci/fixtures";
 import { secretOf, until } from "../../ci/workerd";
 import { Refusal } from "../../contract/src/refusal";
 import doors from "../src/index";
@@ -557,9 +557,9 @@ describe("the egress door", () => {
   it("hands the sandbox two tokens, its network and its clients' environment once",
      async () => {
     const box = await sandbox();
-    expect(verifyToken(env.ROUTING_MAC_KEY, "egress", box.opened.egress_token))
+    expect(verifyToken(env.ROUTING_KEYRING, "egress", box.opened.egress_token))
       .toMatchObject({ owner: box.owner });
-    expect(verifyToken(env.ROUTING_MAC_KEY, "sync", box.opened.sync_token))
+    expect(verifyToken(env.ROUTING_KEYRING, "sync", box.opened.sync_token))
       .toMatchObject({ owner: box.owner });
     const { network } = box.opened;
     expect([egressTokenOf(network.network), generationOf(network.network)])
@@ -581,7 +581,7 @@ describe("the egress door", () => {
     const [opened] = await crossed(box.owner, "egressOpen");
     expect(JSON.stringify(opened)).not.toContain(box.token.split(".")[2]);
     expect(JSON.stringify(opened))
-      .toContain(verifyToken(env.ROUTING_MAC_KEY, "egress", box.token)!.hash);
+      .toContain(verifyToken(env.ROUTING_KEYRING, "egress", box.token)!.hash);
   });
 });
 
@@ -614,10 +614,9 @@ describe("a refused call", () => {
   it("with a forged or altered token, or the sync token, never reaches the object", async () => {
     const box = await sandbox();
     const victim = `user_${crypto.randomUUID().replace(/-/g, "")}`;
-    const otherKey = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))))
-      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-    const [routing, expires, secret, mac] = box.token.split(".") as
-      [string, string, string, string];
+    const otherKey = keyring("k2", ["k1", "k2"]);
+    const [routing, expires, secret, kid, mac] = box.token.split(".") as
+      [string, string, string, string, string];
     const flip = (part: string) => `${part.slice(0, 5)}${part[5] === "A" ? "B" : "A"}${
       part.slice(6)}`;
     const victimRouting = btoa(victim).replace(/=+$/, "");
@@ -625,12 +624,14 @@ describe("a refused call", () => {
     const spy = vi.spyOn(doorsEnv.OWNER, "getByName");
     for (const token of [
       mintToken(otherKey, "egress", victim, Number(expires)).token,  // another key's MAC
-      `${victimRouting}.${expires}.${secret}.${mac}`,     // a real MAC moved to another owner
-      `${routing}.${later}.${secret}.${mac}`,             // the expiry pushed out
-      `${routing}.${expires}.${flip(secret)}.${mac}`,     // the secret altered
-      `${routing}.${expires}.${secret}.${flip(mac)}`,     // the MAC altered
+      mintToken(keyring("k3"), "egress", victim, Number(expires)).token,  // a kid not held
+      `${victimRouting}.${expires}.${secret}.${kid}.${mac}`,  // a MAC moved to another owner
+      `${routing}.${later}.${secret}.${kid}.${mac}`,          // the expiry pushed out
+      `${routing}.${expires}.${flip(secret)}.${kid}.${mac}`,  // the secret altered
+      `${routing}.${expires}.${secret}.${kid}.${flip(mac)}`,  // the MAC altered
+      `${routing}.${expires}.${secret}.${kid === "k1" ? "k2" : "k1"}.${mac}`,  // the kid moved
       box.opened.sync_token,                              // the other kind's MAC
-      mintToken(env.ROUTING_MAC_KEY, "sync", victim, Number(expires)).token]) {
+      mintToken(env.ROUTING_KEYRING, "sync", victim, Number(expires)).token]) {
       const response = await send(egressRequest({ ...box, token }));
       expect([response.status, await codeOf(response)]).toEqual([401, "egress_token_unknown"]);
     }
@@ -643,7 +644,7 @@ describe("a refused call", () => {
      async () => {
     const box = await sandbox();
     const spy = vi.spyOn(doorsEnv.OWNER, "getByName");
-    const dead = mintToken(env.ROUTING_MAC_KEY, "egress", box.owner,
+    const dead = mintToken(env.ROUTING_KEYRING, "egress", box.owner,
                            Math.floor(Date.now() / 1000) - 1).token;
     const response = await send(egressRequest({ ...box, token: dead }));
     expect([response.status, await codeOf(response)]).toEqual([401, "egress_token_expired"]);
@@ -657,12 +658,12 @@ describe("a refused call", () => {
      "owner's object, and by a never-seen owner's", async () => {
     const box = await sandbox();
     const deadline = Math.floor(Date.now() / 1000) + 3600;
-    const unknown = mintToken(env.ROUTING_MAC_KEY, "egress", box.owner, deadline).token;
+    const unknown = mintToken(env.ROUTING_KEYRING, "egress", box.owner, deadline).token;
     const response = await send(egressRequest({ ...box, token: unknown }));
     expect([response.status, await codeOf(response)]).toEqual([401, "egress_lease_closed"]);
     const stranger = `user_${crypto.randomUUID().replace(/-/g, "")}`;
     const theirs = await send(egressRequest({ ...box,
-      token: mintToken(env.ROUTING_MAC_KEY, "egress", stranger, deadline).token }));
+      token: mintToken(env.ROUTING_KEYRING, "egress", stranger, deadline).token }));
     expect(theirs.status).toBe(403);
     // Its object asked once (that it keeps no row of the call is the owner's test).
     expect(await crossed(stranger, "egressOpen")).toHaveLength(1);

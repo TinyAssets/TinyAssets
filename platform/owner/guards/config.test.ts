@@ -277,7 +277,7 @@ const config = configTests(CONFIG, {
     ["a second queue producer", { queues: { producers: [
       { binding: "ERASURES", queue: "e" }, { binding: "RING", queue: "r" }] } }],
     ["a queue consumer", { queues: { producers: [], consumers: [{ queue: "q" }] } }],
-    ["a second secret", { secrets: { required: ["ROUTING_MAC_KEY", "OTHER"] } }],
+    ["a second secret", { secrets: { required: ["ROUTING_KEYRING", "OTHER"] } }],
     ["a services binding", { services: [{ binding: "SELF", service: named("owner") }] }],
     ["a services binding inside an environment", { env: { prod: {
       services: [{ binding: "EDGE", service: "tinyassets-edge" }] } } }],

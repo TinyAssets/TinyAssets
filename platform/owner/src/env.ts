@@ -16,7 +16,7 @@ import type {
 export interface OwnerEnv {
   readonly CONTROL: KVNamespace;
   readonly ERASURES: Queue<OwnerMessage>;
-  readonly ROUTING_MAC_KEY: string;
+  readonly ROUTING_KEYRING: string;
   readonly FILES: ChunkStore;
   readonly GATEWAY: GatewayService;
   readonly CODEMODE_VM: CodemodeWorker<CodemodeRemoteRequest, CodemodeRemoteExchange>;

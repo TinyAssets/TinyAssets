@@ -196,10 +196,12 @@ fetched 2026-11-22), wrangler's source at its pinned tag (`cloudflare/workers-sd
 
 ## Owed
 
-- [ ] `untangle/routing-keyring`: `ROUTING_MAC_KEY` a keyring (fact 9): tokens minted and
+- [x] `untangle/routing-keyring`: `ROUTING_MAC_KEY` a keyring (fact 9): tokens minted and
   routes sealed under the active kid, verified and opened under any kid the ring holds, made
   as a keyring (`platform.json` `made`), rotated by `keyring-add`, and its old kid retired only
-  once no lease or sandbox minted under it lives; before any split.
+  once no lease or sandbox minted under it lives; before any split. Built as `ROUTING_KEYRING`
+  (`routing-keyring.md`): rotated by `keyring-stage`, then `keyring-activate`, since the owner
+  deploys before the doors; retired once every route E2B holds opens under the ring left.
 - [x] `untangle/deploy-stages`: A2b, the stages, soak, health check and the doors' 0% smoke, as
   "The series" item 3 lists them; and, researched first and before any split (which mixes
   the two versions' data and callers both ways), the rule and the mark that make a version

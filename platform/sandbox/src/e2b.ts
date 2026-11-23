@@ -5,8 +5,8 @@
  * sandbox's own envd token, probed live), info (`GET /sandboxes/{id}`), pause
  * (`POST /sandboxes/{id}/pause`, `503` while a previous snapshot finishes: the sandbox keeps
  * running), connect, which resumes a paused sandbox and only extends its timeout
- * (`POST /v2/sandboxes/{id}/connect`), the team's running count and the list
- * (`GET /v2/sandboxes`). The tools' calls (a template's build and tags, a throwaway sandbox,
+ * (`POST /v2/sandboxes/{id}/connect`), the team's running count, and the list of an
+ * owner's sandboxes by their metadata (the transport's). The tools' calls (a template's build and tags, a throwaway sandbox,
  * the team's webhooks) are `../e2b/admin.ts`'s, which the Worker never imports.
  */
 import type { NetworkDocument } from "../../contract/src/sandbox";
@@ -132,32 +132,10 @@ export class E2b extends E2bTransport {
     return total !== null && /^[0-9]{1,9}$/.test(total) ? Number(total) : null;
   }
 
-  /**
-   * Every sandbox of the team, running or paused, whose metadata holds `key`=`value`: the
-   * ids, page by page (`x-next-token`) to the end.
-   */
+  /** Every sandbox of the team, running or paused, whose metadata holds `key`=`value`: the ids. */
   async list(key: string, value: string): Promise<string[]> {
-    const ids: string[] = [];
-    let next: string | null = null;
-    do {
-      const query = new URLSearchParams({ metadata: `${encodeURIComponent(key)}=${
-        encodeURIComponent(value)}`, state: "running,paused" });
-      if (next !== null) {
-        query.set("nextToken", next);
-      }
-      const { json: page, headers } = await this.api("GET", `/v2/sandboxes?${query}`);
-      if (!Array.isArray(page) || !page.every((each) => object(each)
-                                              && typeof each["sandboxID"] === "string")) {
-        throw new E2bError(502, null, "E2B's list is out of shape");
-      }
-      for (const each of page as { sandboxID: string; metadata?: unknown }[]) {
-        const metadata = object(each.metadata) ? each.metadata : {};
-        if (metadata[key] === value) {  // E2B's own filter, checked
-          ids.push(sandboxId(each.sandboxID));
-        }
-      }
-      next = headers.get("x-next-token");
-    } while (next !== null && next !== "");
-    return ids;
+    const listed = await this.sandboxes(`${encodeURIComponent(key)}=${encodeURIComponent(value)}`);
+    // E2B's own filter, checked.
+    return listed.filter((each) => each.metadata[key] === value).map((each) => each.sandboxID);
   }
 }

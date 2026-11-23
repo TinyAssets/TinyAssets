@@ -924,7 +924,7 @@ describe("cases no other test holds", () => {
     const minted = await r.stub.socketTicket(
       r.bind({ grant: "grant-1", expires_at: Math.floor(Date.now() / 1000) + 600 }),
       { conversation_id: run.conversation_id });
-    const hash = verifyToken(env.ROUTING_MAC_KEY, "socket", minted.ticket)!.hash;
+    const hash = verifyToken(env.ROUTING_KEYRING, "socket", minted.ticket)!.hash;
     // An admitted client's own binding, in the upgrade the binder sends the object
     // (`socket-shape.ts`): refused, the ticket left unspent.
     const client = await fullClient(r);

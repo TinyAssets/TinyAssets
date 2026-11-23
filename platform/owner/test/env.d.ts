@@ -3,13 +3,13 @@
 // once that kid is retired, and the Worker's own bindings: FILES, GATEWAY and CODEMODE_VM,
 // each to its Worker run beside it (FILES and GATEWAY through a gate each), SANDBOX to the
 // gate in front of the fake sandbox Worker, CONTROL, ERASURES (consumed by the fake erasure
-// Worker), and its one secret, ROUTING_MAC_KEY; and the test's handles on the fakes and the
+// Worker), and its one secret, ROUTING_KEYRING; and the test's handles on the fakes and the
 // gates.
 declare namespace Cloudflare {
   /** The owner Worker's own bindings, as its generated env types them (`src/env.ts`). */
   type OwnerBound = Pick<import("../src/env").OwnerEnv, "SANDBOX" | "FILES" | "GATEWAY"
                                                        | "CODEMODE_VM" | "CONTROL" | "ERASURES"
-                                                       | "ROUTING_MAC_KEY">;
+                                                       | "ROUTING_KEYRING">;
 
   interface Env extends OwnerBound {
     /** The owner's objects, of the Worker's own class (`src/index.ts`). */

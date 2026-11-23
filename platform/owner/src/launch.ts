@@ -168,7 +168,7 @@ interface DecidedRun {
 export interface LauncherNeeds extends Pick<DoorUnits, "door" | "sync">,
                                        Pick<ObjectReads, "owner" | "sandbox" | "storage"
                                          | "control"> {
-  readonly env: Pick<OwnerEnv, "ROUTING_MAC_KEY">;
+  readonly env: Pick<OwnerEnv, "ROUTING_KEYRING">;
   /** The owner's rules on a run's own definition's commands (`actions.ts` `decideCommand`). */
   readonly actions: {
     decideCommand(run: DecidedRun, origin: Origin | null,
@@ -553,8 +553,8 @@ export class Launcher implements RunHost {
       authority: admitted.authority, lease: admitted.lease, tokens: admitted.tokens,
       network: admitted.network, config: admitted.config,
       hosts: vendorHosts(admitted.engine, admitted.credential),
-      route: sealRoute(this.#o.env.ROUTING_MAC_KEY, { owner: this.#o.owner(),
-                                                      authority: admitted.authority }),
+      route: await sealRoute(this.#o.env.ROUTING_KEYRING, { owner: this.#o.owner(),
+                                                            authority: admitted.authority }),
       urls: runUrls(admitted.run, admitted.secret), mcp_servers: servers, hooks };
   }
 
@@ -1009,8 +1009,8 @@ export class Launcher implements RunHost {
    */
   openLease(now: number, authority: string):
       { lease: Lease; tokens: OpenedTokens; network: NetworkPlan } {
-    const egress = mintToken(this.#o.env.ROUTING_MAC_KEY, "egress", this.#o.owner(), LEASE_LIVED);
-    const sync = mintToken(this.#o.env.ROUTING_MAC_KEY, "sync", this.#o.owner(), LEASE_LIVED);
+    const egress = mintToken(this.#o.env.ROUTING_KEYRING, "egress", this.#o.owner(), LEASE_LIVED);
+    const sync = mintToken(this.#o.env.ROUTING_KEYRING, "sync", this.#o.owner(), LEASE_LIVED);
     const runner = randomHex(32);
     const generation = this.#o.policy.egressGeneration();
     const lease = this.#o.files.leaseAcquire(authority, "sandbox", {

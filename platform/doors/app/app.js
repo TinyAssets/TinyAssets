@@ -36,10 +36,36 @@ const SIGNIN_CREDENTIAL = "vendor_login_in_sandbox";
 
 const SESSION_NEEDED = "interactive owner session required";
 
+/**
+ * Why a sandbox start (a run's or a sign-in's) did not start, in plain words, by its code
+ * (`START_CODES`, `contract/src/sandbox.ts`). Any other code is shown as it came.
+ */
+const NOT_STARTED = Object.freeze({
+  sandbox_waiting: "every sandbox TinyAssets may run is in use just now; one frees soon",
+  signin_required: "nothing is signed in to its engine inside the sandbox: sign in under " +
+    "Model sources",
+  sandbox_unconfigured: "TinyAssets cannot start sandboxes yet: its operator has not set " +
+    "them up, and nothing you change here fixes it",
+  sandbox_lost: "the sandbox it was to join had already gone: start it again",
+});
+
+/** A code in plain words: a start code's, else the code as it came. */
+function inWords(code) {
+  return NOT_STARTED[code] ?? code;
+}
+
+/** Why a run stopped short, in plain words: the run's own error, else its code's. */
+function runWhy(run) {
+  return run.error ?? (run.code ? inWords(run.code) : null);
+}
+
 // -- Messages -------------------------------------------------------------------------
 
+/** An answer in the notice, held in view until the next screen or the owner puts it away. */
 function say(text, kind = "good", ...extra) {
-  fill(notice, h("div", { class: `message ${kind}` }, h("span", {}, text), ...extra));
+  fill(notice, h("div", { class: `message ${kind}` }, h("span", {}, text), ...extra,
+                 h("button", { type: "button", class: "quiet", onclick: () => fill(notice) },
+                   "Dismiss")));
 }
 
 /**
@@ -308,7 +334,7 @@ async function agent(name) {
     const run = talk.run;
     fill(state, run === null ? "" : `Run ${run.state}` +
       `${run.engine ? ` on ${run.engine}` : ""}${run.model ? ` (${run.model})` : ""}` +
-      `${run.error ? `: ${run.error}` : ""}`);
+      `${runWhy(run) ? `: ${runWhy(run)}` : ""}`);
     const live = run !== null && ["waiting", "queued", "running"].includes(run.state);
     fill(cancel, live ? action("Stop this run", async () => {
       talk.run = await call("agent/cancel", { run_id: run.run_id });
@@ -324,7 +350,7 @@ async function agent(name) {
     talk.run = run;
     if (["succeeded", "failed", "unknown"].includes(run.state)
         && !["succeeded", "failed", "unknown"].includes(was)) {
-      talk.said.push(["agent", run.result ?? (run.error ? `(${run.error})` : `(the run ${run.state})`)]);
+      talk.said.push(["agent", run.result ?? `(${runWhy(run) ?? `the run ${run.state}`})`]);
       showSaid();
     }
     showRun();
@@ -650,8 +676,7 @@ function signinPanel(record, present, live) {
     const view = await call("signin/start", {
       engine: record.id, ...(mode === "out" ? { mode } : {}) });
     if (view.started === false) {
-      say(view.code === "sandbox_waiting" ? "Your sandbox is waiting for room. Try again in a " +
-          "moment." : `The sign-in could not start (${view.code}).`, "bad");
+      say(`The sign-in could not start: ${inWords(view.code)}.`, "bad");
       return;
     }
     await watch(view);

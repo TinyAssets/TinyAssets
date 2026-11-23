@@ -6,8 +6,9 @@
  * `https://e2e.internal/starts/<owner>`,
  * the starts that owner's object asked of the fake, so the harness can play the runner and
  * post a run's events; and
- * `/signins/<owner>`, the sign-ins it asked and the codes the owner pasted back; and
- * `/starter/<owner>`, its starter seed as the owner reads it: the version reconciled, its
+ * `/signins/<owner>`, the sign-ins it asked and the codes the owner pasted back;
+ * `/script/<owner>`, a POST of the fake's answers for that owner from then on (its `Script`);
+ * and `/starter/<owner>`, its starter seed as the owner reads it: the version reconciled, its
  * agents, whether the starter's own files are there, and each failure it was told.
  */
 import { serve } from "../src/doors";
@@ -30,6 +31,10 @@ export default {
     if (url.origin === HARNESS && url.pathname.startsWith("/signins/")) {
       const { signins, codes } = await log.recorded(url.pathname.slice("/signins/".length));
       return Response.json({ signins, codes });
+    }
+    if (url.origin === HARNESS && url.pathname.startsWith("/script/")) {
+      await log.script(url.pathname.slice("/script/".length), await request.json());
+      return new Response(null, { status: 204 });
     }
     if (url.origin === HARNESS && url.pathname.startsWith("/starter/")) {
       const name = url.pathname.slice("/starter/".length);
