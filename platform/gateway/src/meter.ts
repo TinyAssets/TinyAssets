@@ -326,7 +326,8 @@ type AssistantUsage = Extract<AssistantMessageEvent, { type: "done" }>["message"
  * router; else null. A router's call (`routed`) is priced at the served model alone, and is
  * null unless the answer names another model the catalog prices above nothing. An answer
  * that carries the vendor's own bill (pi-ai's `usage.cost.totalFromProvider`: OpenRouter's
- * reported cost) is settled at that bill alone.
+ * reported cost) is settled at that bill alone. The cost is as read: the outcome built from it
+ * (`gateway.ts` `succeeded`) is `unknown` for one no call settles at.
  */
 export async function meteredUsage(catalog: Catalog, upstream: Upstream, apiKey: string,
                                    model: Model<Api>,
@@ -381,9 +382,6 @@ export async function meteredUsage(catalog: Catalog, upstream: Upstream, apiKey:
     // A fallback list, or an id that is not the named one's dated or versioned snapshot,
     // served something the catalog does not price. Else the named model's own snapshot: the
     // named model's price.
-    return null;
-  }
-  if (!Number.isFinite(cost) || cost < 0) {
     return null;
   }
   return Object.freeze({ tokens: usage.totalTokens, cost, ...(other ? { served } : {}) });

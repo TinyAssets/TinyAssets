@@ -8,6 +8,7 @@ import type { Api, Model, Usage } from "@earendil-works/pi-ai";
 import { calculateCost } from "@earendil-works/pi-ai/models";
 
 import { EGRESS_BEAT_S } from "../../contract/src/egress";
+import { meteredCost } from "../../contract/src/gateway";
 import { EGRESS_DEADLINE_S } from "../../contract/src/limits";
 
 /** The UTC day and month of `now` (seconds). */
@@ -33,9 +34,12 @@ export function keptFrom(now: number): { day: string; month: string } {
   return periods(now - SETTLED_WITHIN_S);
 }
 
-/** µ$ of a cost pi-ai reports in dollars. */
+/** µ$ of a cost pi-ai reports in dollars, one a call settles at (`meteredCost`), else a throw. */
 export function costMicros(dollars: number): number {
-  return Number.isFinite(dollars) && dollars > 0 ? Math.ceil(dollars * 1_000_000) : 0;
+  if (!meteredCost(dollars)) {
+    throw new RangeError(`${dollars} dollars is no cost a call settles at`);
+  }
+  return Math.ceil(dollars * 1_000_000);
 }
 
 /**
