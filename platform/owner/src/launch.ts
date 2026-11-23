@@ -1177,11 +1177,6 @@ export class Launcher implements RunHost {
   }
 
   /**
-   * One run's whole environment, from its record,
-   * its credential and an API-key run's connection, with the owner's egress policy and its
-   * generation: refused (`invalid`) when the record does not run on that credential.
-   */
-  /**
    * The API of the model an API-key run is given (`EngineRun.api`), whose base it is handed;
    * null for a run that names none, or a model its connection does not list (its calls are
    * refused at the door), which are given the connection's first API.
@@ -1199,6 +1194,11 @@ export class Launcher implements RunHost {
       : modelApi(egress, model)?.api ?? null;
   }
 
+  /**
+   * One run's whole environment, from its record,
+   * its credential and an API-key run's connection, with the owner's egress policy and its
+   * generation: refused (`invalid`) when the record does not run on that credential.
+   */
   #runConfig(run: SandboxRun): RunConfig {
     let engine;
     try {
