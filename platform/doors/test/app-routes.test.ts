@@ -338,7 +338,7 @@ describe("an app's agent registration, answered in the owner app", () => {
 
   /** Whether the client's mailbox answers: its digest and its read, each refused or not. */
   async function mailbox(tokens: Tokens): Promise<(string | null)[]> {
-    return Promise.all([["inbox_digest", { limit: 5, after: 0 }], ["mailbox_read", { limit: 5 }]]
+    return Promise.all([["inbox_digest", { limit: 5 }], ["mailbox_read", { limit: 5 }]]
       .map(async ([name, args]) => {
         const result = await legacyTool(tokens.access_token, name as string, args);
         return result.isError === true ? result.content[0]!.text.split("\n")[0]! : null;

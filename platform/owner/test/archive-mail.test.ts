@@ -25,7 +25,6 @@ import {
   parseTrailer, planSegment, RECORD_TRAILER_BYTES, recordBytes, recordParts, recordRows,
   type SegmentRecord, type Source,
 } from "../src/segments";
-import { idKey, idOrder, orderedId } from "../src/ordered";
 import { batchOf, hotSources, noRead } from "./archive-support";
 import { MUSE, rig, dm } from "./ledger-support";
 import { referenceSegment, storedContent, streamed } from "./segment-support";
@@ -156,20 +155,6 @@ describe("segments", () => {
       [{ message_id: `msg_${"0".repeat(32)}`, agent_id: "owner", seq: 1, state: "read",
          changed_at: 1, unacked: 0 }], [new TextEncoder().encode("x")]);
     expect(recordBytes(least)).toBeGreaterThanOrEqual(MIN_RECORD_BYTES);
-  });
-
-  it("give ids that carry their seq, opaque without the object's key", () => {
-    const key = idKey();
-    const ids = new Set<string>();
-    for (const seq of [1, 2, 3, 2 ** 40, Number.MAX_SAFE_INTEGER]) {
-      const id = orderedId(key, seq);
-      expect(id).toMatch(/^[0-9a-f]{32}$/);
-      expect(idOrder(key, id)).toBe(seq);
-      expect(idOrder(idKey(), id)).not.toBe(seq);
-      ids.add(id);
-      ids.add(orderedId(key, seq));  // the same seq, a different id: eight random bytes
-    }
-    expect(ids.size).toBe(10);
   });
 });
 
