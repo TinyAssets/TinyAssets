@@ -6,12 +6,20 @@
  * id, its name, its mint time and its last use, and when it was revoked.
  *
  * - **Mint** (`OwnerDO.keyMint`): the key's grant (`Grants.set`, source `api_key`, revision
- *   0; full, as an MCP client's first call records one, unless the mint names scopes) and
- *   this row in one unit, the live keys counted in that unit, so two concurrent mints
- *   cannot pass the count by one. The count is the owner's set clients' own bound
+ *   0; full, as an MCP client's first call records one, unless the mint names scopes), a
+ *   scoped key's agent (below) and this row in one unit, the live keys counted in that unit,
+ *   so two concurrent mints cannot pass the count by one. The count is the owner's set clients' own bound
  *   (`GRANT_LIMITS.maxOwnerClients`, the 10 GB's share: each key's grant is an owner-set
  *   client), held equal by a test. An agent's held key request (a policy card,
  *   `api_key_request`) is applied with the grant, once, its scopes the card's.
+ * - **A scoped key's agent**: a narrowed grant acts where its one enabled agent is registered
+ *   (`OwnerDO.#universe`), so a key minted naming scopes is registered there in the mint's
+ *   unit, by the one rule every agent registers by (`Ledger.register`): the key's own origin
+ *   and source, the space its scopes name (`centerOf`), the key's name as its display name,
+ *   `pull` delivery and no recipe. The owner minting it in session is the owner's approval,
+ *   as applying a client's card is. A refused registration refuses the mint. A full key's
+ *   grant holds everywhere, so it registers none: a mailbox is its own ask (`outside-agents`),
+ *   as for an MCP client's full grant. The agent goes with its key's revoke (`grants.ts`).
  * - **Use**: every call an API key makes marks its row's `last_used_at`, at most once a
  *   `USE_INTERVAL_S`, so a key's use is a read most calls (as a grant's `last_seen`).
  * - **Revoke** follows the grant: a revoke, or a set to `revoked`, marks the row in the
@@ -29,6 +37,7 @@ import type { Scope } from "./authority";
 import { type Call, type LiveSession, type ObjectReads, proven } from "./door";
 import { apiKeyOrigin } from "../../contract/src/binding";
 import { clock } from "./clock";
+import { centerOf } from "./registrations";
 
 /** How stale a key's `last_used_at` may be before a call marks it again. */
 const USE_INTERVAL_S = 60;
@@ -137,7 +146,10 @@ export interface KeyMintRequest {
 
 // -- THE DOORS: the `keys` rows' handlers (`owner/doors.json`) ------------------------------------
 
-/** What the `keys` doors reach: the keys, and the grant and held request a mint sets. */
+/**
+ * What the `keys` doors reach: the keys, and the grant, a scoped key's agent and the held
+ * request a mint sets.
+ */
 export interface KeysDoorNeeds extends Pick<ObjectReads, "storage"> {
   readonly keys: Keys;
   readonly grants: {
@@ -145,7 +157,13 @@ export interface KeysDoorNeeds extends Pick<ObjectReads, "storage"> {
                                         readonly mode: "full" | "scoped";
                                         readonly scopes: unknown;
                                         readonly expected_revision: 0; readonly name: string },
-        now: number): { readonly scopes: Scope[]; readonly revision: number };
+        now: number): { readonly mode: string; readonly scopes: Scope[];
+                        readonly revision: number };
+  };
+  readonly ledger: {
+    register(origin: { client: string; family: string }, source: unknown,
+             request: { command_center_id: unknown; display_name: unknown;
+                        delivery_method: unknown; recipe_id: unknown }, now: number): unknown;
   };
   readonly policy: {
     applyKeyRequest(session: LiveSession, proposal: unknown, scopes: unknown, now: number): void;
@@ -156,8 +174,9 @@ export const keysDoors = Object.freeze({
   /**
    * Mint an API key's record and its grant, in the owner's session, in one unit: the live
    * keys counted there (`MAX_KEYS`, strict), the grant set (source `api_key`, revision 0;
-   * scoped when it names scopes, else full), an agent's held key request applied with it
-   * when one is named (`proposal`), and the key's row. The binder then writes the key's
+   * scoped when it names scopes, else full), a scoped key's agent registered where its
+   * scopes act, an agent's held key request applied with it when one is named (`proposal`),
+   * and the key's row. The binder then writes the key's
    * directory entry and shows its secret once (`doors/src/api-keys.ts`); the object never
    * sees the secret.
    */
@@ -169,11 +188,17 @@ export const keysDoors = Object.freeze({
     // A grant names scopes exactly when it is scoped (`Grants.set`); with none it is full.
     const mode = Array.isArray(r["scopes"]) && r["scopes"].length > 0 ? "scoped" : "full";
     return o.storage.transactionSync(() => {
-      const row = o.keys.add(session, key, apiKeyOrigin(key).client, name, now);
+      const origin = apiKeyOrigin(key);
+      const row = o.keys.add(session, key, origin.client, name, now);
       const set = o.grants.set(session, {
-        client: apiKeyOrigin(key).client, source: "api_key", mode, scopes: r["scopes"],
+        client: origin.client, source: "api_key", mode, scopes: r["scopes"],
         expected_revision: 0, name,
       }, now);
+      if (set.mode === "scoped") {
+        o.ledger.register(origin, { kind: "api_key", ref: key }, {
+          command_center_id: centerOf(set, undefined), display_name: name,
+          delivery_method: "pull", recipe_id: null }, now);
+      }
       if (r["proposal"] !== undefined) {
         o.policy.applyKeyRequest(session, r["proposal"], set.scopes, now);
       }

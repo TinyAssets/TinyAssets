@@ -673,8 +673,8 @@ const START = "{\"p\":0,\"n\":0}";
 
 /**
  * In the last unit: the fence, each by its own module. Every outside client is revoked with its
- * API key, as the owner's own revoke does, and every MCP grant before now is fenced
- * (`Grants.revokeAll`, `Keys.revoked`); every inbound binding is disabled at a new revision, so
+ * API key and its agent, as the owner's own revoke does, and every MCP grant before now is
+ * fenced (`Grants.revokeAll`, `Keys.revoked`, `Ledger.removeKeyAgents`); every inbound binding is disabled at a new revision, so
  * no route the directory still holds for it reaches it (`Inbound.disableAll`); every connection
  * is marked failed, for its owner to connect again (`Connections.secretsLost`). Runs live at E
  * have no lease here, so the runs lane settles them `unknown` once the owner is admitted
@@ -683,6 +683,7 @@ const START = "{\"p\":0,\"n\":0}";
 function fence(o: RestoreDoorNeeds, now: number): void {
   for (const client of o.grants.revokeAll(now)) {
     o.keys.revoked(client, now);
+    o.ledger.removeKeyAgents(client, now);
   }
   o.inbound.disableAll(now);
   o.connections.secretsLost();
@@ -1023,7 +1024,7 @@ export interface RestoreDoorNeeds extends Pick<DoorUnits, "door" | "quiet" | "sy
   readonly inbound: Pick<Inbound, "disableAll">;
   readonly keys: Pick<Keys, "ids" | "revoked">;
   readonly launcher: Pick<Launcher, "endAll">;
-  readonly ledger: { restored(): void };
+  readonly ledger: { restored(): void; removeKeyAgents(client: string, now: number): unknown };
   readonly relay: Pick<Relay, "closeAll">;
 }
 

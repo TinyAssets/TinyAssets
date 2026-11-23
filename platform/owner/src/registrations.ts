@@ -12,9 +12,10 @@
  * answer names the owner app's page of the card (`waitingPage`), which the client hands its
  * user, and the owner is told of it there too (`agent_registration`). The owner reads the
  * cards (`list`) and applies one in session by its id and the digest it was shown (`take`,
- * then `Ledger.register`, in one transaction), or declines it (`decline`). An API key's
- * agent still registers from the owner's browser with the key, whose origin the object
- * re-derives from the key id.
+ * then `Ledger.register`, in one transaction), or declines it (`decline`). An API key files
+ * no card: the owner makes its key, so a scoped key's agent registers at its mint
+ * (`keys.ts`), and a full key's from the owner's browser with the key, whose origin the
+ * object re-derives from the key id.
  *
  * - One pending card per outside identity: filing again replaces it. A card waits until
  *   the owner applies or declines it, its client's grant changes, or the room needs its

@@ -1363,6 +1363,23 @@ export class Ledger {
   }
 
   /**
+   * In a revoke's unit: the agents an API key registered (`source` `api_key`) under
+   * `client`, removed as the owner removes one (`remove`). A revoked key never acts again
+   * (its directory entry goes with it), so its agent would only hold a reserved mailbox, a
+   * registry row and its revoked grant from being forgotten. An MCP client's agent is kept:
+   * its client may come back from a sign-in. The agents removed.
+   */
+  removeKeyAgents(client: string, now: number = clock()): string[] {
+    const ids = this.#sql.exec<{ agent_id: string }>(
+      "SELECT agent_id FROM outside_agents WHERE outside_client = ? AND source = 'api_key'",
+      client).toArray().map((row) => row.agent_id);
+    for (const id of ids) {
+      this.remove(id, now);
+    }
+    return ids;
+  }
+
+  /**
    * A disabled agent can neither read nor ack, so its unacked mail is released: it no
    * longer holds the ledger and is evicted in turn (a re-enabled agent may still read
    * what is left). Its open wakes are suppressed and its subscriptions erased. The owner
