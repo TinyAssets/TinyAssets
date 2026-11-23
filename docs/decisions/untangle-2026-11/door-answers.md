@@ -9,61 +9,79 @@ doors version that reads an answer field with an owner that no longer answers it
 
 ## Research (Fact 14), from the code and git
 
-### Who reads an owner answer, and how it is typed
+### Which readers a deploy pairs with the owner
 
 - **Only the doors bind the owner** (`doors/wrangler.jsonc` `OWNER`; `owner/wrangler.jsonc`
   binds files, gateway, codemode and sandbox, none of which binds `OwnerDO`). Codemode's
   scripts reach the doors through the owner itself; the gateway reads the owner's `metering`
   (held already, the shape `metering` of `handed.json`), which the doors relay from
-  `egressReserve`'s answer. So every answer pairing across Workers is the doors' (and what
-  they relay on).
-- **The doors' own code reads 29 doors' answers field by field**, each typed by `DoorTypes`
-  `answer`, which `OwnerDO implements OwnerDoors` holds the owner's handlers to at one commit:
-  `admissionSet` and `ownerState` `state` (`authorize.ts`), `sessionOpen` `session`,
-  `tierRead` `tier` and `fileRead` `entry`, `inline` (`app.ts`), `erasureOutside` `keys`,
-  `routes` or null (`erase.ts`), `toolProfile` `profile`, `tools`, `withheld` (`mcp.ts`),
-  `definitionRead` (`definition.ts`), `wakeEvents` `events` (`events.ts`), `keyMint` `name`,
-  `created_at`, `scopes`, `grantRevoke`, `grantForget` `forgotten` (`api-keys.ts`),
-  `keyList` `keys` (`revoke.ts`), `inboundAccept`, `inboundCreate`, `inboundSet`,
-  `inboundRevoke` (`inbound.ts`), `connectionPrepare` and `flowFinish` (`connect.ts`),
-  `fileUploadTarget` (`file-bytes.ts`), `ownerExport` (`app.ts`), `importFileBegin`,
-  `importCheck` `more`, `importDiscard` `namespace` (`import/index.ts`), `egressOpen`,
-  `egressReserve`, `runDecide` `hook`, `fileReadChunks` `chunks`, and `fileRead` `inline` for
-  the runner (`egress.ts`), `restoreStep` `done`, `keys` (`operator.ts`).
-- **The other 26 `DoorTypes` answers are passed on whole** and read field by field only by the
-  doors' tests: the operator's (`tierSet`, `dataKeyRewrap`, `gatewayReseal`, the restore
-  doors but `restoreStep`, `erasureBegin`), the app routes' (`policyRead`,
-  `policyProposals`, `grantList`, `registerProposals`, `noticeList`, `signinList`,
-  `registerAgent`, `ownerErase`, `sessionClose`), and `sandboxBilled`, `outsideAgents`,
-  `collectionGet`, `fileStat`, `sandboxDays`, `starterReceipts`, `egressReceipts`.
-- **Read past the doors by no type at the doors' commit**: the owner app (`doors/app/app.js`,
-  served with the doors, untyped JavaScript) reads most passed-on answers; the sandbox runner
-  (`sandbox/runner/sync.ts`) reads `fileChanges`, `fileList`, `fileRead`, `fileReadChunks`,
-  `fileSyncUploadBegin` and `fileSyncCommit` by casts, and `decide.ts` `runDecide` by
-  `DoorAnswer`'s keys; the deploy kit reads the operator's answers by casts (`deploy.ts`
-  `as RestoreSource`, ...); outside callers read the tools' answers (the tool contract).
-- **The vocabulary.** The answers are objects (one may be null: `erasureOutside`), some a
-  union of arms (`RestoreAnswer`, `EgressOpened | EgressRefusal`, `importFileBegin`,
-  `runDecide`, `InboundAnswer`), with literal values (`TierName`, `ok: true`) and nested
-  shapes (`entry`, `cards[]`, `ServedDefinition`). Two field values are no JSON type:
-  `fileRead` `inline` (bytes, as a request's `bytes`) and `egressOpen` `ended`, a
-  `ReadableStream`, which only RPC carries.
-
-### What changes, from git
-
-- 31 commits touched `owner.ts` this month; nine changed a `DoorTypes` answer. Every one but
-  two added a field or a door (`toolProfile` `withheld`, `policyRead` `notes`, `hooks`,
-  `codemode`, `runDecide`, `definitionRead`, `restoreHold`). The two that took one away
-  replaced the door (`policyProposal` by `policyProposals`, #5832; `registerProposal` by
-  `registerProposals`, #5821), each kept a deploy as a `dropped` row: the step a request
-  field has, which no answer field had.
-
-### Which deploy pairs which answers
-
+  `egressReserve`'s answer.
 - The owner deploys before the doors (`facts.ts` `WORKERS`), and a rollback takes the doors
   back first, so the one pairing is the doors' version before reading this tree's owner's
-  answers: the same pairing the requests' hold holds. New doors never read an owner before
-  them, so a field newly answered, or newly read, is never a pairing to hold.
+  answers. The readers of that version are its code (`doors/src`) and what it serves with it:
+  the owner's app (`doors/app/*.js`, the doors' static assets). New doors never read an owner
+  before them, so a field newly answered, or newly read, is never a pairing to hold.
+- **Not that pairing:**
+  - **The sandbox runner** reads the answers the doors relay to it whole (`fileChanges`,
+    `fileList`, `fileRead`, `fileReadChunks`, `fileSyncUploadBegin`, `fileSyncCommit`,
+    `runDecide`). Its bytes are the sandbox Worker's (`sandbox/src/runner-bytes.ts`),
+    installed at a sandbox's create and kept by digest across deploys
+    (`sandbox/src/control.ts`), so a live runner may be older than any serving Worker: a
+    pairing of its own, by its protocol (`sandbox/runner/protocol.ts`), recorded below.
+  - **The deploy kit** reads the operator doors' answers, which the doors pass on whole
+    (`doors/src/operator.ts`), by casts at the kit's own tree (`deploy.ts` `as RestoreSource`).
+  - **The doors' tests** read the owner at their own commit; no deploy pairs them.
+  - **Outside callers** read the tools' answers: the tool contract.
+
+### What the paired readers read, derived from the code
+
+- **The doors' code**, by `tsc`: with every row's `answer` taken out, every place `doors/src`
+  reads an answer's field fails to compile, so the errors are the reads. Rerun from
+  `platform/` on a clean tree:
+  `node -e 'const f="contract/doors.json",fs=require("fs"),t=JSON.parse(fs.readFileSync(f));for(const r of t.doors)delete r.answer;fs.writeFileSync(f,JSON.stringify(t))' && node contract/requests.ts && npx tsc --noEmit -p . | grep '^doors/src'; git checkout -- .`
+  At this branch it names 71 lines in 14 files, 30 doors: `admissionSet` and `ownerState`
+  `state`, `sessionOpen` `session` (`authorize.ts`); `tierRead` `tier`, `fileRead` `entry`
+  and `inline`, `ownerExport` (`app.ts`); `ownerErase` `erasing`, `erasureOutside` `keys`,
+  `routes` or null (`erase.ts`); `toolProfile` (`mcp.ts`); `definitionRead`
+  (`definition.ts`); `wakeEvents` `events` (`events.ts`); `keyMint`, `grantRevoke`,
+  `grantForget` (`api-keys.ts`); `keyList` and `grantRevoke` (`revoke.ts`); `inboundAccept`
+  `state`, `error`, `inboundCreate`, `inboundSet`, `inboundRevoke` (`inbound.ts`);
+  `connectionPrepare`, `flowFinish` (`connect.ts`); `fileUploadTarget` (`file-bytes.ts`);
+  `importFileBegin`, `importCheck` `more`, `importDiscard` `namespace` (`import/index.ts`);
+  `egressOpen`, `egressReserve`, `fileReadChunks` `chunks`, `runDecide` `hook` (`egress.ts`);
+  `restoreStep` `done`, `keys` (`operator.ts`).
+- **The app**, by reading it (untyped JavaScript, so no compiler finds its reads): each
+  `call("<route>")` in `doors/app/app.js` and `api.js` (`grep -n 'call("' doors/app/*.js`),
+  each route's door from `doors/src/app.ts`'s routes (`door:`, the `tools/<name>` route, and
+  the routes whose doors code hands an answer on whole), and each field the app reads of
+  that answer. 24 doors more: `fileUsage` (through `account`) `entries`, `chunk_bytes`,
+  `inline_bytes`; `noticeList`, `registerProposals`, `actionRequests`, `policyProposals`
+  (Home's lists); `registerAgent` `display_name`, `actionApprove` `run` (a card's yes);
+  `grantList`, `outsideAgents` `agents`, `owner_agents`, `apps`; `policyRead` `generation`,
+  `policy`, `codemode`; `fileStat` `entry`, `fileWrite` `entry`, `fileList` `entries`;
+  `agentSubmit`, `agentStatus`, `agentCancel` (the run's fields the Talk view shows);
+  `inboxDigest` `mail`, `rooms`, `boardDigest` `rows`; `signinStart`, `signinList`;
+  `runList` `runs`, `next`; `socketTicket` `ticket`; `connectionList` `connections`,
+  `connectionCommit` `display_name`.
+- **Read before by tests alone**, and no longer declared: `sandboxBilled`, `tierSet`,
+  `dataKeyRewrap`, `gatewayReseal`, the restore doors but `restoreStep`, `erasureBegin`,
+  `sessionClose`, `collectionGet`, `sandboxDays`, `starterReceipts`, `egressReceipts`, and the
+  fields of declared answers no paired reader reads (`ownerState` but `state`, `policyRead`
+  `notes`, `hooks`, `fileRead` `chunks`, `egressOpen` `connection`, `generation`, `runDecide`
+  but `hook`, `registerAgent` `agent_id`).
+
+### The vocabulary, and what changes, from git
+
+- The answers are objects (one may be null: `erasureOutside`), some a union of arms
+  (`EgressOpened | EgressRefusal`, `importFileBegin`, `restoreStep`, `inboundAccept`,
+  `signinStart`, `agentStatus`), with literal values and nested shapes. Two field values are
+  no JSON type: `fileRead` `inline` (bytes) and `egressOpen` `ended`, a `ReadableStream`.
+- A list of `unknown` makes a stub's whole answer `never` (Cloudflare's `Rpc` types), which
+  reads as anything: an answer's list is typed as values RPC carries.
+- 31 commits touched `owner.ts` this month; nine changed a `DoorTypes` answer. Every one but
+  two added a field or a door. The two that took one away replaced the door (#5821, #5832),
+  each kept a deploy as a `dropped` row: the step a request field has, which no answer field
+  had.
 
 ## What "compatible" means, per answer field
 
@@ -88,33 +106,57 @@ doors version that reads an answer field with an owner that no longer answers it
 
 ## Design, from the research (decided before building)
 
-1. **The door table declares each answer the doors read** (`doors.json` row `answer`):
-   `required` and `optional` fields, each schema its JSON type alone (`fieldTypes`, the
-   requests' vocabulary, now with `stream`, which no tool's field names, as `bytes`),
-   `nullable` where the owner may answer null, and `unread`. One place: the 55 `DoorTypes`
-   answers move in, each at its top level. Not `handed.json`, as the owed line had it: a
-   door's answer is its row's, beside its request, and a shape there would be a second file
-   naming the same door.
+1. **The door table declares each answer the doors' version reads** (`doors.json` row
+   `answer`): `required` and `optional` fields, each schema its JSON type alone
+   (`fieldTypes`, the requests' vocabulary, now with `stream`, which no tool's field names,
+   as `bytes`), `nullable` where the owner may answer null, and `unread`. Not `handed.json`,
+   as the owed line had it: a door's answer is its row's, beside its request, and a shape
+   there would be a second file naming the same door.
 2. **`tsc` holds both sides at one commit from it.** `npm run generate` writes `DoorAnswers`
    (what the doors read: the fields, but `unread`) and `UnreadAnswers` (what the owner still
-   answers); `DoorAnswer` is the row's, narrowed by `DoorTypes` `answer` only where a JSON
-   type is wider (a literal, a union's arms, a nested shape), and `tsc` refuses a narrowing
-   of a field the row does not read; `OwnerDO implements OwnerDoors` holds each handler to
-   it, and `owner-do.ts` `UnreadHeld` to its `unread` fields too.
+   answers); `DoorAnswer` is the row's, narrowed by `DoorTypes` `answer` only where the doors'
+   code reads narrower than a JSON type (a literal, a union's arms, a list's items, an
+   object's fields), and `tsc` refuses a narrowing of a field the row does not read, or one
+   wider than its row's; `OwnerDO implements OwnerDoors` holds each handler to it, and
+   `owner-do.ts` `UnreadAnswered` to its `unread` fields too.
 3. **The hold reads it** (`deploy/handed.ts` `answerHold`): the rules above, and the doors
    whose version before declares no answer (`Hold.undeclared`), which the plan line names.
-4. **Left as they were**: answers passed on whole (no row declares them); the nested and
-   literal parts (`DoorTypes`, below).
+4. **Readers that are not that pairing read the owner's own types**: the owner's whole
+   answers stay in the contract where a reader past the doors needs them (`EgressOpened`,
+   `EgressReserved`, `EgressRefusal`, `OwnerStateAnswer`, the rotations' and the restore's,
+   and `DecideAnswer`, the runner's), and the doors' tests read theirs by `TestAnswers`
+   (`doors/test/answers.ts`), since no doors test may import `owner/src`.
+
+## Review (2026-11-23), and what was decided
+
+- **(a) The declared set was the old `DoorTypes` sets, which tests read too** (#5843's
+  reviewer, BLOCK): the hold would have refused an owner that stopped answering a field only
+  a test reads (`sandboxDays`, `starterReceipts`, `egressReceipts`, `sandboxBilled`
+  `counted`, the operator doors), and said "which the doors' version before reads",
+  falsely. Decided (the coordinator, option one): the hold models deploy pairings, and
+  tests are not callers. The table declares only what the doors' code and their app read
+  (derived above, rerunnable), the runner's and the kit's reads are their own pairings, and
+  the tests read the owner's answer by their own types. The hold's words are then true.
+- **`DoorTypes` restated JSON-typed fields beside their narrower parts** (`OwnerStateAnswer`,
+  `RestoreSource`, `RestoreAnswer`, `EgressOpened`, `EgressReserved`, `EgressRefusal`):
+  `DoorTypes` now holds only what the doors' code needs narrower, each derived the same way
+  (the `tsc` errors with no narrowing); those interfaces are the owner's whole answers, for
+  the readers past the doors, and none is in `DoorTypes`. `egressOpen`'s and
+  `egressReserve`'s arms still name `reservation`, `metering` and the like: each is required
+  in its arm, which the table's optional field is not.
 
 ## Problems found (untangle step 2), with the fix above each
 
-- **Each answer the doors read is data the hold reads (`answer`), one declaration for both
-  Workers.**
+- **Each answer the doors' version reads is data the hold reads (`answer`), one declaration
+  for both Workers.**
   - `DoorTypes` `answer` typed the doors' reads for `tsc` alone; no serving commit's answer
     could be read, so a field the owner stopped answering passed the plan.
   - A doors version before with no declaration would have passed silently.
 - **An answer field goes in steps (`unread`).**
   - No data could say that the doors read a field no more while the owner still answers it.
+- **Each reader reads by the types of its own pairing.**
+  - The doors' tests and the runner read the owner through the doors' types, so what only a
+    test or the runner read would have been held as the doors' read.
 - **Comments.** `owner.ts`'s header and `DoorTypes`, `doors.ts`'s header, `handed.ts`'s header
   and `requests.ts`'s named answers as types alone.
 
@@ -124,27 +166,30 @@ doors version that reads an answer field with an owner that no longer answers it
   list's items) stay `DoorTypes`'s, held by `tsc` at a commit and by no plan: the requests'
   hold has the same depth (a field's JSON type), and a deeper vocabulary is a design of its
   own. Owed below, research first.
-- **The readers past the doors** (the app, the runner, the kit) read by no type tied to the
-  table: a declaration of their reads would be a copy nothing holds. The runner lives across
-  deploys by its own protocol (`sandbox/runner/protocol.ts`), and the kit reads the owner it
-  runs against at the tree it is. Owed below, research first.
-- **Outside callers' reads** are the tools' contract, not a pairing across the deploy.
+- **The app's reads are declared from reading it**: nothing at a commit holds `app.js` to the
+  table, so a read added to the app without its row's field passes `tsc`. Owed below.
+- **The runner's reads** are a pairing of their own, by its protocol across deploys. Owed below.
+- **The kit's reads** are of the owner it runs against, at the tree it is.
 
 ## As built
 
-- `contract/doors.json`: 55 rows' `answer`, every field the `DoorTypes` answers named, at its
-  top level, typed as each handler answers it.
+- `contract/doors.json`: 54 rows' `answer` (30 for the doors' code, 24 for the app), each
+  field at its top level, typed as each handler answers it.
 - `contract/src/doors.ts`: `Answer`; the table refuses an answer that is not its fields (each
   typed, listed once, at least one), a `nullable` but `true`, and `unread` fields it answers
   not; `stream` joins the vocabulary, and no tool's field names it or `bytes` (`RPC_TYPES`).
-- `contract/requests.ts`, `contract/src/requests.ts`: `DoorAnswers` and `UnreadAnswers`;
+- `contract/requests.ts`, `contract/src/requests.ts`: `DoorAnswers` and `UnreadAnswers` (a
+  list of values RPC carries; an answer of optional fields alone also an `object`);
   `contract/src/owner-doors.ts`: `Parts` takes `answer` only where the row declares one, and
   `Stray` refuses a narrowing of a field the row does not read, or one wider than its row's.
 - `contract/src/owner.ts`: `DoorAnswer` is the row's, each narrowed field `DoorTypes`'s
-  (`Narrowed`); `OwnerAnswer` adds the `unread` fields; `DoorTypes` keeps the narrower parts
-  alone; the wholly JSON-typed `RewrapAnswer`, `ResealAnswer`, `RestoreHold`, `RestoreHeld`
-  and `InboundRoute` are the table's. `cutover.json`: the `owner.ts` edit names
-  `importDiscard` no more (its entry went; the `doors.json` edit still names it).
+  (`Narrowed`); `OwnerAnswer` adds the `unread` fields; `DoorTypes` keeps only what the doors'
+  code reads narrower; `InboundRoute` is the table's; `DecideAnswer`, the runner's
+  (`owner/src/actions.ts` answers it, `sandbox/runner/decide.ts` reads its keys).
+  `cutover.json`: the `owner.ts` edit names `importDiscard` no more.
+- `doors/src/inbound.ts` `delivered` reads the doors' answer type; `gateway/memory`'s owner
+  stand-in answers `EgressOpened`; `doors/test/answers.ts` `TestAnswers`, which `ownDoor`
+  answers by.
 - `owner/src/owner-do.ts`: `UnreadAnswered`, each handler answering its `unread` fields.
 - `deploy/handed.ts` `answerHold` and `Hold.undeclared`; `deploy.ts` `servedHold`'s line names
   the undeclared doors.
@@ -155,10 +200,10 @@ doors version that reads an answer field with an owner that no longer answers it
 
 ## Owed
 
-- [ ] untangle/answer-readers: the runner's sync and decide reads, the app's reads and the
-  kit's operator reads typed by `DoorAnswer` (or its successor), so the table declares them
-  and the hold holds them; research first (Fact 14): the runner's protocol across deploys,
-  and how `app.js` is held to a type.
+- [ ] untangle/answer-readers: the app's reads held to its rows at a commit (typed `app.js`,
+  or a guard that reads its calls), and the runner's reads of the answers the doors relay held
+  across its own pairing (its protocol, `sandbox/runner/protocol.ts`); research first (Fact
+  14).
 - [ ] untangle/answer-depth: an answer field's nested fields and literal values held as data,
   or named as left for good; research first (Fact 14), with the shapes' types
   (untangle/handed-shape-types).

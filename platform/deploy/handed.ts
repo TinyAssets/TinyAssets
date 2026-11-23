@@ -25,11 +25,12 @@
  * requires no field it did not always hand. A field the version before types not, and the owner
  * does, is held by its name alone, and the plan names it. A door's request its own module reads
  * (`loose`) is held by that module's shapes here. The shapes declare no types: their parsers
- * check them in code. The table's answers (`answer`, which the doors read of the owner's) are
- * held the other way: the owner answers every field the doors' version before reads (a field
- * they read no more is first marked `unread`: answered, not read), always where it read it so,
- * as JSON types it reads, and null only where it read null; a door whose version before
- * declares no answer is held by nothing, and the plan names it.
+ * check them in code. The table's answers (`answer`: what the doors' code and the app they
+ * serve read of the owner's) are held the other way: the owner answers every field the doors'
+ * version before reads (a field they read no more is first marked `unread`: answered, not
+ * read), always where it read it so, as JSON types it reads, and null only where it read
+ * null; a door whose version before declares no answer is held by nothing, and the plan names
+ * it. The runner's, the kit's and the tests' reads are not this pairing, and no row holds them.
  *
  * The one exception is the cutover's: the doors and shapes the version before's manifest
  * (`cutover.json`) names in its `cutover` phase's edits of the two files may go at once, since

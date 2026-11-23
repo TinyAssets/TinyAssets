@@ -15,12 +15,13 @@
  *   owner's fields step every call (`requestFields`); a type the doors' version before may
  *   still hand, which the schema names no more, is listed beside it (`droppedTypes`).
  *
- * - its answer as the doors read it (`answer`), where they read one field by field: the fields
- *   the owner answers always and those it answers when it has them, each its JSON type
- *   (`fieldTypes`), whether it may answer null instead, and the fields it still answers that
- *   the doors read no more (`unread`), for the doors' version before (`deploy/handed.ts`).
- *   `tsc` holds the doors' reads and the owner's handlers to it (`contract/requests.ts`
- *   writes its types); a row with none is an answer the doors pass on whole.
+ * - its answer as the doors read it (`answer`), where their code or the app they serve reads
+ *   one field by field: the fields the owner answers always and those it answers when it has
+ *   them, each its JSON type (`fieldTypes`), whether it may answer null instead, and the
+ *   fields it still answers that the doors read no more (`unread`), for the doors' version
+ *   before (`deploy/handed.ts`). `tsc` holds the doors' code and the owner's handlers to it
+ *   (`contract/requests.ts` writes its types); a row with none is an answer the doors pass
+ *   on whole, which only readers outside that pairing read (the runner, the kit, tests).
  *
  * A door the doors call no more is marked `dropped`: the object still takes it, for the
  * doors' version before, and `OwnerDoors` lacks it (`deploy/handed.ts`).
