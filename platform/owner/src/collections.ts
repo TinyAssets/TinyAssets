@@ -408,15 +408,15 @@ export class Collections {
     name(collection, "collection");
     name(rowId, "row_id");
     checkBody(body);
-    if (typeof expectedEtag !== "string" || typeof isPrivate !== "boolean") {
+    if (typeof expectedEtag !== "string") {
       throw new Refusal("invalid", "invalid collection write");
     }
+    const space = spaceOf(caller, isPrivate);
     if (typeof historyOp !== "string" || codePoints(historyOp) > 32
         || !IDENTIFIER.test(historyOp)) {
       throw new Refusal("invalid", "history_op is a name of at most 32 characters");
     }
     const sql = this.#sql;
-    const space = spaceOf(caller, isPrivate);
     const key = "WHERE collection = ? AND space = ? AND row_id = ?";
     return this.#storage.transactionSync(() => {
       const row = sql.exec<StoredRow>(`SELECT * FROM collection_rows ${key}`, collection, space,
