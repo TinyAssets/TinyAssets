@@ -479,3 +479,12 @@ export function faultOf(error: unknown): FaultCode | null {
 
 /** What every door and lane answers while the owner is erased (`owner/src/erasure.ts`). */
 export const ERASING = "this owner is being erased";
+
+/**
+ * What the owner's doors answer an outside client that is no enabled agent: never registered,
+ * or disabled. An agent is the card its client files and the owner applies
+ * (`owner/src/registrations.ts`).
+ */
+export const NOT_AN_AGENT = "this connection has no registered agent, which a mailbox, its " +
+  "rooms and a narrowed grant's work need: file one with agent_register, for the owner to " +
+  "approve";

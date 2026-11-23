@@ -19,7 +19,8 @@ registration names, and nothing in the spec makes one.
 
 **What landed.** The refusal's words name the way out. They were "this outside identity is
 not one enabled agent", spelled twice (`Ledger.#self`, `OwnerDO.#universe`). Now they are one
-constant, `ledger.ts` `NOT_AN_AGENT`: "this connection has no registered agent, which a
+constant, `contract/src/refusal.ts` `NOT_AN_AGENT` (the contract's, since the doors' tests
+read it too, as #5817's key test does): "this connection has no registered agent, which a
 mailbox, its rooms and a narrowed grant's work need: file one with agent_register, for the
 owner to approve". `inbox_digest` and `mailbox_read` say a connection has mail once it is a
 registered agent. `agent_register` says what approval gives. `agents_list` says a `room_id`

@@ -13,9 +13,10 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import {
-  archiveDue, hotFull, LEDGER_LIMITS, type Ledger, moveTake, NOT_AN_AGENT, postRoom,
+  archiveDue, hotFull, LEDGER_LIMITS, type Ledger, moveTake, postRoom,
   sealable,
 } from "../src/ledger";
+import { NOT_AN_AGENT } from "../../contract/src/refusal";
 import { OWNER } from "../src/authority";
 import { sqlIn } from "../../ci/workerd";
 import { clock } from "../src/clock";

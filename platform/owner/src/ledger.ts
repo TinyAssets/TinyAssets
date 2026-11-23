@@ -106,7 +106,7 @@ import {
 import { ROOM_PREFIX } from "./collections";
 import { jsonBytes } from "../../contract/src/encoded";
 import { exported } from "./export";
-import { Refusal, type RefusalCode } from "../../contract/src/refusal";
+import { NOT_AN_AGENT, Refusal, type RefusalCode } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import {
   agentsPage, asIs, bodied, contentsOf, type Cut, fitPage, headChars, heads, headWindow,
@@ -205,13 +205,6 @@ export const AGENT_RETIRED = "agent_retired: this agent's agent.json was removed
   "acts as it and no new mail goes to or from it; its mail is kept, and it is back when the " +
   "file is";
 export const NO_AGENT = "no_agent: no such agent of the owner's";
-/**
- * An outside client that is no enabled agent: never registered, or disabled. An agent is the
- * card its client files and the owner applies (`registrations.ts`).
- */
-export const NOT_AN_AGENT = "this connection has no registered agent, which a mailbox, its " +
-  "rooms and a narrowed grant's work need: file one with agent_register, for the owner to " +
-  "approve";
 const DELIVERY_METHODS: readonly string[] =
   Object.freeze(["mcp_event", "routine_fire", "webhook", "a2a", "pull"]);
 /** A wake's `changes` bits, in `CHANGES` order. */

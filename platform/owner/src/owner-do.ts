@@ -147,7 +147,7 @@ import { Bodies } from "./bodies";
 import { Collections, collectionsDoors } from "./collections";
 import { Connections, connectionsDoors } from "./connections";
 import type { RingAnswer } from "../../contract/src/gateway";
-import { ERASING, Refusal } from "../../contract/src/refusal";
+import { ERASING, NOT_AN_AGENT, Refusal } from "../../contract/src/refusal";
 import {
   type FileReaction, Files, filesDoors, type SandboxLease, type SyncCommitRequest, SYNC_FENCED,
   syncIgnoreReaction,
@@ -157,7 +157,7 @@ import { Grants, grantsDoors } from "./grants";
 import { codemodeDoors } from "./codemode";
 import { definitionDoors } from "./definition";
 import {
-  actorOf, Ledger, ledgerDoors, NOT_AN_AGENT, registrant, RUN_NO_MAILBOX,
+  actorOf, Ledger, ledgerDoors, registrant, RUN_NO_MAILBOX,
 } from "./ledger";
 import { clock, clockMs } from "./clock";
 import type { OwnerEnv } from "./env";
