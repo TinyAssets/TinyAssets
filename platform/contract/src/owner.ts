@@ -474,9 +474,7 @@ export interface DoorTypes {
   readonly wakeUnsubscribe: { readonly values: { readonly subscription_id: string } };
   readonly keyMint: {
     readonly values: {
-      readonly key_id: string; readonly name: string; readonly scopes: unknown;
-      /** As the caller sent it: the object checks it (`request_id`, `digest`). */
-      readonly proposal?: unknown };
+      readonly key_id: string; readonly name: string; readonly scopes: unknown };
     readonly answer: { readonly name: string; readonly created_at: number;
                        readonly scopes: readonly object[] };
   };

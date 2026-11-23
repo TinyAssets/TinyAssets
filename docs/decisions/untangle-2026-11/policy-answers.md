@@ -110,9 +110,10 @@ door, a yes in session and a no with none), with no view or case of its own.
 
 ## Owed
 
-- [ ] `untangle/drop-key-request`: take out the key request half-flow (`keyMint`'s
+- [x] `untangle/drop-key-request`: take out the key request half-flow (`keyMint`'s
   `proposal`, `dropped` first, then `Policy.applyKeyRequest` and its proofs), after
-  `untangle/scoped-key-agent` lands, since both change the mint.
+  `untangle/scoped-key-agent` lands, since both change the mint. Done (`untangle/drop-key-request`,
+  `drop-key-request.md`); the dropped field's removal is a live line there.
 - [ ] `untangle/policy-proposal-shape`: research what an agent's proposal should be so the
   owner's Apply can take it without replacing the document whole (an agent reads no policy,
   so a whole document it files replaces settings it never saw), as the major agents' rule
