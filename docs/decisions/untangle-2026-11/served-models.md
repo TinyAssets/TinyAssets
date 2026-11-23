@@ -98,7 +98,8 @@ serves again comes back at the next read.
 - Failed reads keep the list as it was and are read again an hour later: an answer with no
   list at `rows`, a row with no id, no rows, a named `score` path with not one score (the
   gateway's `upstream_error`), and a listing that lists none of the connection's models (the
-  owner's, logged).
+  owner's, logged, and the owner told once, `connection_listing_unmatched`: a key that lost
+  every model reads the same, and only the owner can check it at the provider).
 - A listed model the catalog lacks is not added: it has no price either Worker can reserve or
   meter by (left, below).
 - OpenRouter's record names its listing (the same read and paths as #5828's strength). No
@@ -128,7 +129,10 @@ lane makes each active connection's row due at once, so none needs a reconnect.
 - Kept, the system needs them:
   - A failed read keeps what was read before. A listing that names none of the connection's
     models is a failed read, never "the vendor serves nothing": an id spelling change would
-    otherwise empty every connection in silence (Fact 8).
+    otherwise empty every connection in silence (Fact 8). A key that genuinely lost every
+    model reads the same, so the owner is told once (`connection_listing_unmatched`; review).
+  - A named model `auto` is given that no key lists is refused `no_source` naming it
+    (`runs.ts` `choose`), not the generic engine text (review).
   - A listing whose record names a score path and that scores not one row is a failed read
     (#5828's rule against a renamed path). On a key whose listing scores none of what it
     serves, its models stay the catalog and the failure is logged hourly; OpenRouter's key

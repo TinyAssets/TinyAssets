@@ -1199,13 +1199,17 @@ describe("the models its vendor serves it", () => {
     await again(r, { models: [{ id: one!, score: 13.6 }] });
     expect(await models(r)).toEqual([one]);
     // An answer of another shape, or one that lists none of its models, keeps what was read,
-    // and is read again later.
+    // and is read again later; the owner is told of the last, once.
+    const unmatched = async () => (await r.stub.noticeList(r.bind())).notices
+      .filter((notice) => notice.type === "connection_listing_unmatched").length;
     for (const answer of [{ models: [{ id: one!, score: "high" }] },
                           { models: [{ id: one! }] },
+                          { models: [{ id: "vendor/not-its-model", score: 60 }] },
                           { models: [{ id: "vendor/not-its-model", score: 60 }] }]) {
       await again(r, answer);
       expect(await models(r), JSON.stringify(answer)).toEqual([one]);
     }
+    expect(await unmatched()).toBe(1);
     await r.stub.connectionRevoke(r.session(), { connection });
     expect(await kept(r)).toEqual([]);
   });

@@ -23,8 +23,8 @@ import { RUN_STARTS_NONE, SANDBOX_ONLY } from "../src/owner-do";
 import { INLINE_BYTES, QUEUE_BYTES, QUEUE_ROWS, SLOT_WAIT_MS } from "../../contract/src/limits";
 import { slotBusy } from "../../contract/src/slots";
 import { clock } from "../src/clock";
-import { NO_CONVERSATION, NO_RUN, QUEUE_FULL, RUN_ENDED, SESSION_REFUSED, SIGNIN_LAPSED,
-         TIER_RUNS, UNATTENDED_REFUSED } from "../src/runs";
+import { NO_CONVERSATION, NO_RUN, NO_SOURCE, QUEUE_FULL, RUN_ENDED, SESSION_REFUSED,
+         SIGNIN_LAPSED, TIER_RUNS, UNATTENDED_REFUSED } from "../src/runs";
 import { PLATFORM_TIER_ONLY } from "../src/admission";
 import { TIER_UNREAD } from "../src/files";
 import { catalog, gated, type Gated, OPENAI } from "./gateway-support";
@@ -1118,6 +1118,10 @@ describe("auto and the owner's sign-ins", () => {
     // A model the agent names is its own choice.
     expect((await ownerRun(free.stub, free.bind(), { ...AUTO_AGENT, model: PAID }, "pinned"))
       .run).toMatchObject({ credential: "api_key", model: PAID });
+    // One its vendor no longer lists is refused, saying so.
+    expect((await failure(() => ownerRun(free.stub, free.bind(), {
+      ...AUTO_AGENT, model: "cohere/north-mini-code:free" }, "dropped"))).message).toBe(
+      `${NO_SOURCE} (no connected key lists cohere/north-mini-code:free)`);
     const paid = await keyed(true);
     expect((await ownerRun(paid.stub, paid.bind(), undefined, "helper")).run)
       .toMatchObject({ credential: "api_key", model: PAID });

@@ -1218,12 +1218,19 @@ export class Connections {
    * its score, read again after `listingRecheckS`; nothing to read on its blob (`none`), none
    * kept (its models are all its setup check listed) and no read due; a failure, or a listing
    * that lists none of its models (a vendor's renamed ids would otherwise drop every one), the
-   * listed models kept as they were, read again after `listingRetryS`.
+   * listed models kept as they were, read again after `listingRetryS`; the owner is told of
+   * the last, once while the notice is kept, since a key that lost every one reads the same.
    */
   #listed(id: string, outcome: ModelListing | "none" | "failed", now: number): void {
     const row = this.#row(id)!;
     const listed = outcome === "none" ? null : outcome === "failed" ? outcome
       : listedJson(JSON.parse(row.models) as ModelRecord[], outcome);
+    if (listed === "failed" && outcome !== "failed") {
+      this.#notices.once("connection_listing_unmatched", `${row.display_name} (${id}): its ` +
+                           "vendor lists it none of its models, so they are kept as they were " +
+                           "and read again hourly; if its key lost access, check it at the " +
+                           "provider", now);
+    }
     if (listed === "failed") {
       this.#sql.exec("UPDATE connection_listing SET due = ? WHERE connection = ?",
                      now + CONNECTION_LIMITS.listingRetryS, id);
