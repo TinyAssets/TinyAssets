@@ -31,8 +31,8 @@ name: Platform deploy (manual, founder-approved)
 # stored here.
 #
 # The modes are the kit's own (deploy.ts says what each does): plan, dark,
-# routes, h2, handback, rollback, control, owner, restore, copyback, recover,
-# erase, rotation and retire here; pair is its own job.
+# routes, h2, handback, rollback, edge, control, owner, restore, copyback,
+# recover, erase, rotation and retire here; pair is its own job.
 # `routes` keeps a record of what it changes (the zone's routes, the egress
 # custom domain, E2B's lifecycle webhook) before any change, or keeps the
 # host's record while one stands, and its plan names the record's id (the
@@ -43,6 +43,9 @@ name: Platform deploy (manual, founder-approved)
 # `record` and takes the run's Workers back to those versions, callers first,
 # stopping at a Worker the run made forward-only (its migrations, its secrets,
 # a whole deploy, its forward mark).
+# `edge` sets the edge kill, two WAF custom rules on the zone that block the
+# doors at Cloudflare's edge (`kill`: outside, all or none on), which `dark`
+# and `routes` keep off and stop on while one is on.
 # The operator path (deploy/operator.ts): `control` edits the control record
 # in KV itself (`set`, from `replace` in place of the live one), never through
 # the doors; `owner` asks the doors `act` for `owner` through the operator
@@ -70,11 +73,11 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'plan | dark | routes | h2 | handback | rollback | control | owner | restore | copyback | recover | erase | rotation | retire'
+        description: 'plan | dark | routes | h2 | handback | rollback | edge | control | owner | restore | copyback | recover | erase | rotation | retire'
         required: true
         default: plan
         type: choice
-        options: [plan, dark, routes, h2, handback, rollback, control, owner, restore, copyback, recover, erase, rotation, retire]
+        options: [plan, dark, routes, h2, handback, rollback, edge, control, owner, restore, copyback, recover, erase, rotation, retire]
       rotate:
         description: 'Secrets to set again, comma-separated (a keyring only as an addition)'
         required: false
@@ -87,6 +90,11 @@ on:
         type: string
       record:
         description: 'handback: the route record to hand back; rollback: the rollout record to roll back (the run id its summary names)'
+        required: false
+        default: ''
+        type: string
+      kill:
+        description: 'edge: the edge kill rule left on, the other off: outside | all | none'
         required: false
         default: ''
         type: string
@@ -153,6 +161,7 @@ jobs:
       ROTATE: ${{ inputs.rotate }}
       MIGRATE: ${{ inputs.migrate }}
       RECORD: ${{ inputs.record }}
+      KILL: ${{ inputs.kill }}
       SET: ${{ inputs.set }}
       REPLACE: ${{ inputs.replace }}
       OWNER: ${{ inputs.owner }}
@@ -182,8 +191,8 @@ jobs:
         run: >-
           node --experimental-strip-types platform/deploy/deploy.ts --mode "${MODE}" --public
           --plan "${RUNNER_TEMP}/deploy-plan.json"
-          --rotate "${ROTATE}" --migrate "${MIGRATE}" --record "${RECORD}" --set "${SET}"
-          --replace "${REPLACE}" --owner "${OWNER}" --act "${ACT}"
+          --rotate "${ROTATE}" --migrate "${MIGRATE}" --record "${RECORD}" --kill "${KILL}"
+          --set "${SET}" --replace "${REPLACE}" --owner "${OWNER}" --act "${ACT}"
           --generation "${GENERATION}" --confirm "${CONFIRM}" --keyring "${KEYRING}"
           --at "${AT}"
 
@@ -268,6 +277,7 @@ jobs:
       ROTATE: ${{ inputs.rotate }}
       MIGRATE: ${{ inputs.migrate }}
       RECORD: ${{ inputs.record }}
+      KILL: ${{ inputs.kill }}
       SET: ${{ inputs.set }}
       REPLACE: ${{ inputs.replace }}
       OWNER: ${{ inputs.owner }}
@@ -306,7 +316,7 @@ jobs:
         run: >-
           node --experimental-strip-types platform/deploy/deploy.ts --mode "${MODE}" --yes
           --plan "${RUNNER_TEMP}/deploy-plan.json"
-          --rotate "${ROTATE}" --migrate "${MIGRATE}" --record "${RECORD}" --set "${SET}"
-          --replace "${REPLACE}" --owner "${OWNER}" --act "${ACT}"
+          --rotate "${ROTATE}" --migrate "${MIGRATE}" --record "${RECORD}" --kill "${KILL}"
+          --set "${SET}" --replace "${REPLACE}" --owner "${OWNER}" --act "${ACT}"
           --generation "${GENERATION}" --confirm "${CONFIRM}" --keyring "${KEYRING}"
           --at "${AT}"

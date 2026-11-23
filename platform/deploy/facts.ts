@@ -256,6 +256,53 @@ export const DOORS = NAMES[IDENTITY]!;
 export const ROUTES: readonly string[] = Object.freeze(
   identity.routes.map((path) => `${HOST}${path}`));
 
+/** One rule of the edge kill (`platform.json` `edge_kill`), as the kit keeps it on the zone. */
+export interface EdgeRule {
+  /** What it blocks, as mode edge's `--kill` names it. */
+  readonly name: "outside" | "all";
+  /** Its reference among the zone's custom rules, by which the kit finds it. */
+  readonly ref: string;
+  /** Its name in the dashboard. */
+  readonly description: string;
+  readonly expression: string;
+}
+
+/**
+ * The edge kill's rules for the identity's `routes` on `host` and the egress host `egress`,
+ * from `given` (`platform.json` `edge_kill`): `outside` the routes it names, `all` every route
+ * and the egress host. Each route is in `outside` or `left`, never both and never neither, and
+ * each ends in its one `*`, so a request whose path starts with the rest is a URL the route
+ * takes (`routeTakes`: Cloudflare matches the URL, whose query follows the path). A host is
+ * held in lower case, as the doors read it (`new URL`); a path as it is, as the doors match
+ * it. No regex: the zone's plan may lack `matches`. Anything else throws.
+ */
+export function edgeRules(routes: readonly string[], host: string, egress: string,
+                          given: { readonly outside: readonly string[];
+                                   readonly left: readonly string[] }): readonly EdgeRule[] {
+  const both = given.outside.filter((path) => given.left.includes(path));
+  const unnamed = routes.filter((path) => !given.outside.includes(path)
+    && !given.left.includes(path));
+  const unknown = [...given.outside, ...given.left].filter((path) => !routes.includes(path));
+  const unsafe = routes.filter((path) => !/^\/[^"\\*]*\*$/.test(path));
+  if (both.length + unnamed.length + unknown.length + unsafe.length > 0) {
+    throw new Error("platform.json's edge_kill names each identity route once, in outside or " +
+                    `left, and only those (in both: ${both.join(" ") || "none"}; in neither: ${
+                      unnamed.join(" ") || "none"}; no route: ${unknown.join(" ") || "none"}), ` +
+                    `each a path ending in its one * (not so: ${unsafe.join(" ") || "none"})`);
+  }
+  const on = (name: string) => `lower(http.host) eq "${name.toLowerCase()}"`;
+  const paths = (list: readonly string[]) => list.map((path) =>
+    `starts_with(http.request.uri.path, "${path.slice(0, -1)}")`).join(" or ");
+  const rule = (name: EdgeRule["name"], expression: string): EdgeRule => Object.freeze({
+    name, ref: `tinyassets-kill-${name}`, description: `TinyAssets kill: ${name}`, expression });
+  return Object.freeze([
+    rule("outside", `${on(host)} and (${paths(given.outside)})`),
+    rule("all", `(${on(host)} and (${paths(routes)})) or ${on(egress)}`)]);
+}
+
+/** The edge kill's rules for this tree's identity (`edgeRules`). */
+export const EDGE_RULES = edgeRules(identity.routes, HOST, EGRESS_HOST, platform.edge_kill);
+
 /** Each Worker's record, by folder: what `platform.json` gives it, and what its config says. */
 export const WORKER_FACTS: Readonly<Record<string, WorkerFacts>> = Object.freeze(
   Object.fromEntries([...CONFIGS].map(([worker, config]) => {

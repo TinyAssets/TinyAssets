@@ -15,13 +15,12 @@
  * installed by `npm ci`) and of this tree at once, by this runner, and prints each recorder's
  * lines that differ. It fails when a recorder differs that the body's one `Recorders-Differ:`
  * line does not name (`Recorders-Differ: rpc, rv -- why`), and when a run fails, after its
- * lines are written; what else a run printed is its workspace's `.log`. A test is in a shard
- * by its name's hash, so it is in the same shard of base and head. A shard's lines are
- * written sorted, every cursor (`"next"`) one placeholder, since a cursor names ids minted at
- * random.
+ * lines are written; what else a run printed is its workspace's `.log`. A shard's tests are
+ * dealt from the names either tree lists, so a test is in the same shard of base and head. A
+ * shard's lines are written sorted, every cursor (`"next"`) one placeholder, since a cursor
+ * names ids minted at random.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import {
   createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync,
 } from "node:fs";
@@ -62,10 +61,13 @@ export function shardOf(text: string): Shard {
   return { index, count };
 }
 
-/** Whether the test of this full name is in `shard`, by its name's hash. */
-export function inShard(name: string, shard: Shard): boolean {
-  const hash = createHash("sha256").update(name).digest().readUInt32BE(0);
-  return hash % shard.count === shard.index - 1;
+/**
+ * The full names of `shard`'s tests, out of `names`, every test either tree lists: every
+ * count-th name in order, from the index-th. So each shard has as many tests as another, give
+ * or take one, and as many of each block's, since a block's names sort together.
+ */
+export function dealt(names: Iterable<string>, shard: Shard): string[] {
+  return [...new Set(names)].sort().filter((_, at) => at % shard.count === shard.index - 1);
 }
 
 /** The recorders a PR body says its change makes differ on purpose. Throws on a bad line. */
@@ -113,60 +115,73 @@ async function ran(command: string[], cwd: string, log: NodeJS.WritableStream,
 
 const escaped = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-/**
- * Shard `shard` of one workspace's recorders, run in one process in the platform at
- * `platform`, each recorder's lines to `<out>/<name>.txt`: whether the run passed.
- */
-async function recordWorkspace(platform: string, workspace: string, out: string,
-                               shard: Shard, label: string): Promise<boolean> {
-  const recorders = TABLE.filter((recorder) => recorder.workspace === workspace);
-  const cwd = join(platform, workspace);
-  // A recorder file the base does not have yet records no line there, so its lines differ.
-  const config = ["--config", `${RECORDS}/record.config.ts`, "--passWithNoTests"];
-  const files = recorders.flatMap((recorder) =>
-    recorder.files.map((file) => `${RECORDS}/${file}.record.ts`));
-  const log = createWriteStream(join(out, `${workspace}.log`));
-  const kept = new Map(recorders.map(({ prefix }) => [`${prefix}\t`, [] as string[]]));
-  let passed = true;
-  let filter: string[] = [];
-  if (shard.count > 1) {
-    const listed = join(out, `${workspace}.tests.json`);
-    passed = await ran(["npx", "vitest", "list", "--staticParse=false", ...config,
-                        `--json=${listed}`, ...files], cwd, log);
-    const names = passed ? (JSON.parse(readFileSync(listed, "utf8")) as { name: string }[])
-      .map(({ name }) => name).filter((name) => inShard(name, shard)) : [];
-    filter = names.length === 0 ? [] : ["-t", `^(?:${names.map(escaped).join("|")})$`];
-  }
-  if (passed && (shard.count === 1 || filter.length > 0)) {
-    passed = await ran(["npx", "vitest", "run", ...config, "--disableConsoleIntercept",
-                        ...filter, ...files], cwd, log, (text) => {
-      const lines = kept.get(text.slice(0, text.indexOf("\t") + 1));
-      if (lines === undefined) {
-        log.write(`${text}\n`);
-      } else {
-        lines.push(text.replace(/"next":"[^"]*"/g, '"next":"<b64>"'));
-      }
-    });
-  }
-  log.end();
-  for (const { name, prefix } of recorders) {
-    const lines = kept.get(`${prefix}\t`)!.sort();
-    writeFileSync(join(out, `${name}.txt`), lines.map((text) => `${text}\n`).join(""));
-    console.log(`${label} ${name}: ${lines.length} lines`);
-  }
-  console.log(`${label} ${workspace}: ${passed ? "passed" : "failed"}`);
-  return passed;
+/** A tree the check records, base or head: its platform, its lines' folder, and its name. */
+interface Side {
+  readonly platform: string;
+  readonly out: string;
+  readonly label: string;
 }
 
-/** Shard `shard` of every recorder, in the platform at `platform`: the runs that failed. */
-async function record(platform: string, out: string, shard: Shard, label: string):
+// A recorder file the base does not have yet records no line there, so its lines differ.
+const CONFIG = ["--config", `${RECORDS}/record.config.ts`, "--passWithNoTests"];
+
+/** The full names of the tests in `files`, `side`'s recorders of `workspace`: null if it failed. */
+async function listed(side: Side, workspace: string, files: readonly string[],
+                      log: NodeJS.WritableStream): Promise<string[] | null> {
+  const json = join(side.out, `${workspace}.tests.json`);
+  return await ran(["npx", "vitest", "list", "--staticParse=false", ...CONFIG, `--json=${json}`,
+                    ...files], join(side.platform, workspace), log)
+    ? (JSON.parse(readFileSync(json, "utf8")) as { name: string }[]).map(({ name }) => name)
+    : null;
+}
+
+/**
+ * Shard `shard` of one workspace's recorders, on every side at once and each side's in one
+ * process, each recorder's lines to `<out>/<name>.txt`: the runs that failed.
+ */
+async function recordWorkspace(sides: readonly Side[], workspace: string, shard: Shard):
     Promise<string[]> {
-  mkdirSync(out, { recursive: true });
+  const recorders = TABLE.filter((recorder) => recorder.workspace === workspace);
+  const files = recorders.flatMap((recorder) =>
+    recorder.files.map((file) => `${RECORDS}/${file}.record.ts`));
+  const logs = sides.map(({ out }) => createWriteStream(join(out, `${workspace}.log`)));
+  const lists = await Promise.all(sides.map((side, at) =>
+    listed(side, workspace, files, logs[at]!)));
+  const names = dealt(lists.flatMap((list) => list ?? []), shard);
+  const filter = ["-t", `^(?:${names.map(escaped).join("|")})$`];
+  const passed = await Promise.all(sides.map(async (side, at) => {
+    const log = logs[at]!;
+    const kept = new Map(recorders.map(({ prefix }) => [`${prefix}\t`, [] as string[]]));
+    const ok = lists[at] !== null &&
+      await ran(["npx", "vitest", "run", ...CONFIG, "--disableConsoleIntercept", ...filter,
+                 ...files], join(side.platform, workspace), log, (text) => {
+        const lines = kept.get(text.slice(0, text.indexOf("\t") + 1));
+        if (lines === undefined) {
+          log.write(`${text}\n`);
+        } else {
+          lines.push(text.replace(/"next":"[^"]*"/g, '"next":"<b64>"'));
+        }
+      });
+    log.end();
+    for (const { name, prefix } of recorders) {
+      const lines = kept.get(`${prefix}\t`)!.sort();
+      writeFileSync(join(side.out, `${name}.txt`), lines.map((text) => `${text}\n`).join(""));
+      console.log(`${side.label} ${name}: ${lines.length} lines`);
+    }
+    console.log(`${side.label} ${workspace}: ${ok ? "passed" : "failed"}`);
+    return ok;
+  }));
+  return sides.filter((_, at) => !passed[at]).map(({ label }) => `${label} ${workspace}`);
+}
+
+/** Shard `shard` of every recorder, on every side: the runs that failed. */
+async function record(sides: readonly Side[], shard: Shard): Promise<string[]> {
+  for (const { out } of sides) {
+    mkdirSync(out, { recursive: true });
+  }
   const failed: string[] = [];
   for (const workspace of new Set(TABLE.map((recorder) => recorder.workspace))) {
-    if (!await recordWorkspace(platform, workspace, out, shard, label)) {
-      failed.push(`${label} ${workspace}`);
-    }
+    failed.push(...await recordWorkspace(sides, workspace, shard));
   }
   return failed;
 }
@@ -215,12 +230,11 @@ async function check(base: string, shard: Shard, body: string): Promise<number> 
   const tree = join(work, "base");
   git("worktree", "add", "--detach", tree, base);
   try {
-    const [from, to] = [join(tree, "platform"), PLATFORM];
-    await Promise.all([installed(from), installed(to)]);
-    const failed = (await Promise.all([record(from, join(work, "base-rec"), shard, "base"),
-                                       record(to, join(work, "head-rec"), shard, "head")])).flat();
-    const found = problems(differences(join(work, "base-rec"), join(work, "head-rec")), failed,
-                           wanted);
+    const from = { platform: join(tree, "platform"), out: join(work, "base-rec"), label: "base" };
+    const to = { platform: PLATFORM, out: join(work, "head-rec"), label: "head" };
+    await Promise.all([installed(from.platform), installed(to.platform)]);
+    const failed = await record([from, to], shard);
+    const found = problems(differences(from.out, to.out), failed, wanted);
     for (const problem of found) {
       console.error(`::error::recorders ${shard.index}/${shard.count}: ${problem}`);
     }

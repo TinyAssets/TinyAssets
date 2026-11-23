@@ -15,9 +15,9 @@
  *   node --experimental-strip-types platform/deploy/deploy.ts keyring-retire <file>
  *
  * - `plan`: `dark`'s checks and plan, never a change.
- * - `dark`: storage, secrets and every Worker with no public route, the control record when
- *   absent, the WorkOS redirect URI and E2B's lifecycle webhook (disabled), then the handles
- *   canary.
+ * - `dark`: the edge kill's rules (off), storage, secrets and every Worker with no public route,
+ *   the control record when absent, the WorkOS redirect URI and E2B's lifecycle webhook
+ *   (disabled), then the handles canary.
  * - `routes`: on a host under the zone, its DNS record; then `dark`, then the doors' routes
  *   handed over one at a time, on whatever host the identity names, the egress custom domain
  *   (waited on until the egress door answers on it),
@@ -38,6 +38,10 @@
  *   forward-only (`forwardOnly`); the record held whole to Cloudflare before any change, and
  *   refused there for a version no later plan could read (`servedHold`). Its
  *   routes are `handback`'s.
+ * - `edge`: the edge kill (`platform.json` `edge_kill`), two WAF custom rules on the zone that
+ *   block the doors at Cloudflare's edge, before any Worker or KV read: `--kill`'s rule on and
+ *   the other off, or both off, each made when absent and set to the tree's expression, then
+ *   read back. A rule turns on only while the doors hold every route of theirs.
  * - `h2`: H2's probes alone, once a probe owner exists.
  * - `pair`: the pinned template with the runner this checkout ships and the probes beside
  *   it, checked together on throwaway sandboxes unless E2B already holds their pair's tag
@@ -108,6 +112,9 @@
  *   so the kit cannot check that a rotated keyring keeps the deployed key, nor that a staged
  *   kid reached both Workers before it is made active;
  * - the control record is written only when the API answered that it is absent;
+ * - the edge kill's rules are read before any change, and a deploy stops while either is on;
+ *   each is made, off, only when the zone's custom rules answered and lack it, set to the
+ *   tree's expression when it holds another, and read back;
  * - the WorkOS redirect URI is registered only when WorkOS's listing lacks it (GET, then
  *   POST; never a delete), after the other live checks and before any Cloudflare change, and
  *   only then is the early sign-in check run, which needs it listed;
@@ -193,12 +200,13 @@ import {
 } from "../sandbox/template/pair.ts";
 import { type JobRun, maskLine, runOf, set, summarize, TOKEN } from "./actions.ts";
 import {
-  BATCH, Cloudflare, describeBack, describeStep, type DnsRecord, drift, handback, handover, type Kept,
-  type LockRule, type Moved, narrower, type Route, type RouteChange, type Serving, unlike,
+  BATCH, Cloudflare, type CustomRule, type CustomRules, describeBack, describeStep, type DnsRecord,
+  drift, handback, handover, type HeldRule, type Kept, type LockRule, type Moved, narrower,
+  type Route, type RouteChange, type Serving, unlike,
 } from "./cloudflare.ts";
 import {
-  AUTHORIZE, BUCKET_LOCKS, BUCKETS, CONFIGS, DOORS, E2B_HOOK_URL, FILES_BUCKET, FORWARD,
-  IDENTITY, KEYRINGS, MIGRATES, NAMES, NAMESPACES, OPTIONAL, QUEUES,
+  AUTHORIZE, BUCKET_LOCKS, BUCKETS, CONFIGS, DOORS, E2B_HOOK_URL, EDGE_RULES, type EdgeRule,
+  FILES_BUCKET, FORWARD, IDENTITY, KEYRINGS, MIGRATES, NAMES, NAMESPACES, OPTIONAL, QUEUES,
   RETIRED, RETIRES, ROTATED, ROUTES, SANDBOXED, SECRET_INPUTS, SECRETS, SHARED, STAGES,
   WORKER_FACTS, WORKERS,
 } from "./facts.ts";
@@ -299,7 +307,8 @@ export const IO: Io = Object.freeze({
 });
 
 export type Mode = "plan" | "dark" | "routes" | "h2" | "pair" | "handback" | "rollback"
-  | "control" | "owner" | "restore" | "copyback" | "recover" | "erase" | "rotation" | "retire";
+  | "edge" | "control" | "owner" | "restore" | "copyback" | "recover" | "erase" | "rotation"
+  | "retire";
 
 /** One run, as `parse` reads it: its mode, how far it reaches, and its inputs. */
 export interface Run {
@@ -322,6 +331,8 @@ export interface Run {
    * `rollback` rolls back.
    */
   readonly record: string | null;
+  /** `--kill`: the edge kill rule `edge` leaves on, or none. */
+  readonly kill: Kill | null;
   /** `--set`: `control`'s edits of the control record, in order. */
   readonly edits: readonly Edit[];
   /** `--replace`: the whole record `control`'s edits start from in place of the live one. */
@@ -2201,6 +2212,134 @@ const control = step<"cloudflare" | "account" | "ids">(async ({ run, say }, got)
   }
 });
 
+// --- The edge kill (`platform.json` `edge_kill`) -------------------------------------------
+
+/** What `--kill` asks: the edge kill rule left on, the other off, or none on. */
+export type Kill = EdgeRule["name"] | "none";
+
+/** An edge kill rule as the zone holds it (absent: undefined), and as the run leaves it. */
+interface EdgeChange {
+  readonly held: HeldRule | undefined;
+  readonly want: CustomRule;
+}
+
+/**
+ * Each edge kill rule (`EDGE_RULES`) of `held` that is not as the tree renders it and `kill`
+ * leaves it: absent, its action, name or expression another, or on or off otherwise. The ones
+ * to turn on come first, so a change of the rule on never leaves none on between them.
+ */
+function edgeChanges(held: CustomRules, kill: Kill): EdgeChange[] {
+  return EDGE_RULES.flatMap((rule): EdgeChange[] => {
+    const now = held.rules.find((each) => each.ref === rule.ref);
+    const want = { ref: rule.ref, description: rule.description, expression: rule.expression,
+                   enabled: rule.name === kill };
+    return now !== undefined && now.action === "block" && now.description === want.description
+      && now.expression === want.expression && now.enabled === want.enabled
+      ? [] : [{ held: now, want }];
+  }).sort((a, b) => Number(b.want.enabled) - Number(a.want.enabled));
+}
+
+/** An edge kill change, as the plan says it. */
+function edgeLine({ held, want }: EdgeChange): string {
+  const state = (on: boolean) => on ? "on" : "off";
+  if (held === undefined) {
+    return `make the edge kill rule "${want.description}", ${state(want.enabled)}: a Block on ${
+      want.expression}`;
+  }
+  if (held.action === "block" && held.description === want.description
+      && held.expression === want.expression) {
+    return `turn the edge kill rule "${want.description}" ${state(want.enabled)}`;
+  }
+  return `set the edge kill rule ${want.ref} to the tree's, ${state(want.enabled)}, "${
+    want.description}", a Block on ${want.expression}: it is ${state(held.enabled)}, "${
+    held.description}", a ${held.action} on ${held.expression}`;
+}
+
+/**
+ * The edge kill's rules set as the tree renders them and `kill` leaves them, from the zone's
+ * custom rules as read (`held`): each change said before it is made, then the rules read back
+ * and held to it, a difference a loud stop. Every other rule of the zone is left as it is.
+ * Whether it changes any.
+ */
+async function setEdge({ run, say, did }: Context, { cloudflare, zone: id }:
+                         Pick<Values, "cloudflare" | "zone">, held: CustomRules,
+                       kill: Kill): Promise<boolean> {
+  const changes = edgeChanges(held, kill);
+  say(...changes.map(edgeLine));
+  if (!run.apply || changes.length === 0) {
+    return changes.length > 0;
+  }
+  const { ruleset } = held;
+  if (ruleset === null) {
+    await cloudflare.makeCustomRules(id, changes.map((change) => change.want));
+  } else {
+    for (const { held: now, want } of changes) {
+      await (now === undefined ? cloudflare.addCustomRule(id, ruleset, want)
+        : cloudflare.editCustomRule(id, ruleset, now.id, want));
+    }
+  }
+  const left = edgeChanges(await cloudflare.customRules(id), kill);
+  if (left.length > 0) {
+    throw new Error(`the edge kill's rules read back otherwise: ${left.map(edgeLine).join("; ")}`);
+  }
+  did(`read the edge kill's rules back: ${kill === "none" ? "both off" : `${kill} on`}, as ` +
+      "the tree renders them");
+  return true;
+}
+
+/**
+ * The zone's custom rules as they stand, or a deploy's loud stop while an edge kill rule is
+ * on: its smoke and canary would be refused at the edge, and a deploy never turns one off.
+ */
+async function edgeOff({ cloudflare, zone: id }: Pick<Values, "cloudflare" | "zone">):
+    Promise<CustomRules> {
+  const held = await cloudflare.customRules(id);
+  const on = EDGE_RULES.filter((rule) =>
+    held.rules.some((each) => each.ref === rule.ref && each.enabled));
+  if (on.length > 0) {
+    throw new Error(`the edge kill rule ${on.map((rule) => `"${rule.description}"`)
+      .join(" and ")} is on: a deploy's smoke and canary cannot reach the doors through it: ` +
+                    "turn it off first (mode edge with --kill none, or its toggle in the " +
+                    "dashboard), after closing the control record (control --set outside=off) " +
+                    "if the doors must stay shut; nothing is changed");
+  }
+  return held;
+}
+
+/** A deploy's check, before any change, that no edge kill rule is on (`edgeOff`). */
+const edgeRead = step<"cloudflare" | "zone">(async (_ctx, got) => {
+  await edgeOff(got);
+});
+
+/**
+ * A deploy's edge kill: both rules off, as the tree renders them (`setEdge`), from the zone's
+ * custom rules read again here (`edgeOff`), so a rule turned on since the run began is never
+ * turned off. Its run's first Cloudflare change, so a zone at its plan's count of custom rules
+ * refuses it before any storage, secret or Worker changes.
+ */
+const edgeKept = step<"cloudflare" | "zone">(async (ctx, got) => {
+  await setEdge(ctx, got, await edgeOff(got), "none");
+});
+
+/**
+ * Mode `edge`: the edge kill's rules set as `--kill` asks, each as the tree renders it, made
+ * when absent, read back. A rule is turned on only while the doors hold every route of theirs
+ * (`routed`): before the cutover's `routes`, the paths it blocks on the zone are the old
+ * stack's.
+ */
+const edgeAsk = step<"cloudflare" | "zone" | "routed">(async (ctx, got) => {
+  const kill = ctx.run.kill!;
+  if (kill !== "none" && !got.routed) {
+    throw new Error(`the doors do not hold every route of theirs on ${HOST}, so the edge kill ` +
+                    `rule ${kill} would block what serves those paths instead: it turns on only ` +
+                    "once routes has run; nothing is changed");
+  }
+  if (!await setEdge(ctx, got, await got.cloudflare.customRules(got.zone), kill)) {
+    ctx.say(`the edge kill stands as asked: ${kill === "none" ? "both rules off"
+      : `${kill} on, the other off`}`);
+  }
+});
+
 // --- The operator path (`operator.ts`) -----------------------------------------------------
 
 /** Where a `control` run keeps the record it replaced, in the control namespace, by run id. */
@@ -3586,20 +3725,23 @@ export interface Row {
   readonly report: { readonly unchanged: string; readonly after: readonly Held[] } | null;
 }
 
-/** The checks every deploy makes before any change: the plan job's, then the apply job's. */
+/**
+ * The checks every deploy makes before any change: the plan job's, then the apply job's. The
+ * edge kill's rules are read last, so a deploy stops while one is on.
+ */
 const READS_LATER = Steps.none.then(locks).then(zone).then(upstream).then(templateLater)
-  .then(pairLater);
+  .then(pairLater).then(edgeRead);
 const READS = Steps.none.then(locks).then(zone).then(upstream).then(e2b).then(templateReady)
-  .then(pairReady).then(hookListed);
+  .then(pairReady).then(hookListed).then(edgeRead);
 
 /**
- * A dark run: the checks and WorkOS's, then storage, secrets, the rollout record, Workers and
- * the control record.
+ * A dark run: the checks and WorkOS's, then the edge kill's rules (off), storage, secrets, the
+ * rollout record, Workers and the control record.
  */
-const DARK_LATER = READS_LATER.then(redirectLater).then(authorize).then(namespaces).then(buckets)
-  .then(bucketLocks).then(queues).then(staged).then(secretsLater).then(rollout).then(routedNow)
-  .then(workers).then(retired).then(control).then(hookLater(""));
-const DARK = READS.then(redirect).then(authorize).then(namespaces).then(buckets)
+const DARK_LATER = READS_LATER.then(redirectLater).then(authorize).then(edgeKept)
+  .then(namespaces).then(buckets).then(bucketLocks).then(queues).then(staged).then(secretsLater)
+  .then(rollout).then(routedNow).then(workers).then(retired).then(control).then(hookLater(""));
+const DARK = READS.then(redirect).then(authorize).then(edgeKept).then(namespaces).then(buckets)
   .then(bucketLocks).then(queues).then(staged).then(secrets).then(rollout).then(routedNow)
   .then(workers).then(retired).then(control).then(hook(false, ""));
 
@@ -3610,13 +3752,13 @@ const DARK = READS.then(redirect).then(authorize).then(namespaces).then(buckets)
  */
 const ROUTED_HOOK = ", after the routes";
 const ROUTES_LATER = READS_LATER.then(routePlan).then(recordedLater).then(hostRecord)
-  .then(redirectLater).then(authorize).then(namespaces).then(buckets).then(bucketLocks)
-  .then(queues).then(staged).then(secretsLater).then(rollout).then(workers).then(retired)
-  .then(control).then(handOver).then(customDomain).then(hookLater(ROUTED_HOOK));
+  .then(redirectLater).then(authorize).then(edgeKept).then(namespaces).then(buckets)
+  .then(bucketLocks).then(queues).then(staged).then(secretsLater).then(rollout).then(workers)
+  .then(retired).then(control).then(handOver).then(customDomain).then(hookLater(ROUTED_HOOK));
 const ROUTED = READS.then(routePlan).then(recorded).then(hostRecord).then(redirect)
-  .then(authorize).then(namespaces).then(buckets).then(bucketLocks).then(queues).then(staged)
-  .then(secrets).then(rollout).then(workers).then(retired).then(control).then(handOver)
-  .then(customDomain).then(hook(true, ROUTED_HOOK));
+  .then(authorize).then(edgeKept).then(namespaces).then(buckets).then(bucketLocks).then(queues)
+  .then(staged).then(secrets).then(rollout).then(workers).then(retired).then(control)
+  .then(handOver).then(customDomain).then(hook(true, ROUTED_HOOK));
 
 /**
  * A handback: a routes run's record read, held to the zone, handed back and read back, then
@@ -3628,6 +3770,7 @@ const HANDBACK = Steps.none.then(zone).then(recordRead).then(e2b).then(hookListe
   .then(hookBack).then(handBack).then(handedBack).then(recordsEnded);
 
 /** The operator path's modes: the same steps for the plan job, which applies nothing. */
+const EDGE = Steps.none.then(zone).then(routedNow).then(edgeAsk).list;
 const CONTROL = Steps.none.then(zone).then(controlEdit).list;
 const OWNER = Steps.none.then(zone).then(ownerAsk).list;
 const RESTORE = Steps.none.then(zone).then(restoreAsk).list;
@@ -3687,6 +3830,13 @@ export const MODES: Readonly<Record<Mode, Row>> = Object.freeze({
     deploys: false, applies: true, own: ["--record"],
     steps: { public: ROLLBACK, secrets: ROLLBACK },
     report: { unchanged: NOTHING, after: canary() },
+  },
+  // The edge kill's rules, read and written with the Cloudflare token alone (its Zone WAF
+  // scope): the plan job reads them too.
+  edge: {
+    inputs: { public: ["CLOUDFLARE_API_TOKEN"], secret: [], optional: [] },
+    deploys: false, applies: true, own: ["--kill"],
+    steps: { public: EDGE, secrets: EDGE }, report: { unchanged: NOTHING, after: [] },
   },
   // The control record, read and written with the Cloudflare token alone: the plan job reads
   // it too.
@@ -3748,6 +3898,7 @@ interface Asked {
   readonly rotate: readonly string[];
   readonly migrate: readonly string[];
   readonly record: string | null;
+  readonly kill: Kill | null;
   readonly edits: readonly Edit[];
   readonly replace: unknown;
   readonly owner: string | null;
@@ -3778,8 +3929,8 @@ const PLAN_KIND = "tinyassets-plan";
 
 function askedOf(run: Run): Asked {
   return { mode: run.mode, rotate: [...run.rotate].sort(), migrate: [...run.migrate].sort(),
-           record: run.record, edits: run.edits, replace: run.replace, owner: run.owner,
-           act: run.act };
+           record: run.record, kill: run.kill, edits: run.edits, replace: run.replace,
+           owner: run.owner, act: run.act };
 }
 
 /** Each difference of `live` from the `approved` plan, named: none when they are one plan. */
@@ -3941,6 +4092,7 @@ const OWN = Object.freeze({
   "--record": { names: "the record to hand back (a routes run's) or roll back (a dark or " +
                        "routes run's), by the run id its job summary names (letters, digits " +
                        "and -)", needed: true },
+  "--kill": { names: "the edge kill rule left on: outside, all or none", needed: true },
   "--set": { names: "the control record's edits", needed: false },
   "--replace": { names: "the whole control record, as JSON, that the edits start from in " +
                         "place of the live one", needed: false },
@@ -3966,6 +4118,11 @@ function ownValue(name: Own, text: string): unknown {
   switch (name) {
     case "--record":
       if (!RECORD_ID.test(text)) {
+        throw refused();
+      }
+      return text;
+    case "--kill":
+      if (!["none", ...EDGE_RULES.map((rule) => rule.name)].includes(text)) {
         throw refused();
       }
       return text;
@@ -4044,6 +4201,7 @@ export function parse(argv: readonly string[], env: Readonly<Record<string, stri
     apply: argv.includes("--yes"), plan: option(argv, "--plan") || null,
     job: runOf(env, io.now()), rotate: names(argv, "--rotate"),
     migrate: names(argv, "--migrate"), record: (own["--record"] as string | undefined) ?? null,
+    kill: (own["--kill"] as Kill | undefined) ?? null,
     edits: (own["--set"] as Edit[] | undefined) ?? [], replace: own["--replace"],
     owner: (own["--owner"] as string | undefined) ?? null,
     act: (own["--act"] as Act | undefined) ?? null,

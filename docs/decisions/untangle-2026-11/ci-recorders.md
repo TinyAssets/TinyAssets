@@ -94,5 +94,8 @@ reviewers stop running whole workspace suites and the recorders before a PR open
      Done (`small-shape.md` §2).
 9. **Left:** the watchdog, 45 minutes, is about six times the estimate in item 4 until CI
    measures the shards.
-   - [ ] The shards' time read from this PR's own run (`live:` its `platform-recorders` legs);
-     past 7 minutes a shard, the count rises before the watchdog moves.
+   - [x] The shards' time read from this PR's own run (`live:` its `platform-recorders` legs);
+     past 7 minutes a shard, the count rises before the watchdog moves. Read from 300 Tests
+     runs (`dry-run-timeout.md`): p50 361 s on pull requests, max 513 s, 76 of 808 shards
+     past 7 minutes. The watchdog moved down, to the queue's ceiling, 30; the count's rise is
+     owed there.
