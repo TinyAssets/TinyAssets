@@ -129,6 +129,10 @@ lane makes each active connection's row due at once, so none needs a reconnect.
   - A failed read keeps what was read before. A listing that names none of the connection's
     models is a failed read, never "the vendor serves nothing": an id spelling change would
     otherwise empty every connection in silence (Fact 8).
+  - A listing whose record names a score path and that scores not one row is a failed read
+    (#5828's rule against a renamed path). On a key whose listing scores none of what it
+    serves, its models stay the catalog and the failure is logged hourly; OpenRouter's key
+    listing lists the scored paid models too, so no such key is known.
   - `endpoint_refused` as "nothing to read on this blob" (`none`): its models are the catalog.
   - The gateway's `strength` and `strength_read`, for one release (owed below).
 - Left, with reasons:
