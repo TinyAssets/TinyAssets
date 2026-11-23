@@ -167,4 +167,5 @@ pi is no longer the engine the platform runs, but pi-ai is more than a catalog t
   the pin without a reconnect.
 - [ ] untangle/pi-ai-watch: a scheduled draft PR when pi-ai publishes (as `okf-watch` does
   for the starter's spec), so the catalog lags by a review, not by a month.
-- [ ] untangle/store-probe: delete the store probe or rebuild it on what the owner runs.
+- [x] untangle/store-probe: delete the store probe or rebuild it on what the owner runs.
+  Deleted: its subject, `ThreadStore`, went with slice D (`store-probe.md`).
