@@ -13,7 +13,7 @@ import { object, valueAtPath, whole } from "../../contract/src/checks";
 import { RUN_HEADER } from "../../contract/src/egress";
 import {
   allows, type CreditRead, creditRead, ID as PROVIDER, keyExchangeSource, type Source,
-  source as gatewaySource, type StrengthRead, strengthRead,
+  type ListingRead, listingRead, source as gatewaySource,
 } from "../../contract/src/egress-scope";
 import { HEX64 } from "../../contract/src/ids";
 import { MODEL_ID as MODEL_PATTERN } from "../../contract/src/model-record";
@@ -28,7 +28,7 @@ import {
   type DefinitionHooks, type DefinitionNative, type DefinitionSkills,
   type Engine, type HostedUse,
   type Install, type Instructions, type LoginSpec, type Mcp, type OAuthSpec, type PerCredential,
-  type Router, type SourceRecord, SourceRecordError, type Strength, type ToolFilter,
+  type Listing, type Router, type SourceRecord, SourceRecordError, type ToolFilter,
   type Unattended,
 } from "./schema";
 import type { CredentialKind } from "../../contract/src/sandbox";
@@ -1498,21 +1498,21 @@ function creditSpec(check: ReturnType<typeof checker>, value: unknown, sealed: S
 }
 
 /**
- * A gateway source's `strength` (`schema.ts` `Strength`): its read by the gateway's own rule
- * (`strengthRead`), a `GET` its endpoints allow, and the vendor's page.
+ * A gateway source's `listing` (`schema.ts` `Listing`): its read by the gateway's own rule
+ * (`listingRead`), a `GET` its endpoints allow, and the vendor's page.
  */
-function strengthSpec(check: ReturnType<typeof checker>, value: unknown, sealed: Source):
-    Strength {
-  const fields = check.keys(value, "strength", ["url", "rows", "id", "score", "cite"]);
-  let read: StrengthRead;
+function listingSpec(check: ReturnType<typeof checker>, value: unknown, sealed: Source):
+    Listing {
+  const fields = check.keys(value, "listing", ["url", "rows", "id", "cite"], ["score"]);
+  let read: ListingRead;
   try {
-    read = strengthRead({ url: fields["url"], rows: fields["rows"], id: fields["id"],
-                          score: fields["score"] });
+    read = listingRead({ url: fields["url"], rows: fields["rows"], id: fields["id"],
+                         score: fields["score"] });
   } catch {
-    return check.fail("strength's url and paths are refused by the gateway's own check");
+    return check.fail("listing's url and paths are refused by the gateway's own check");
   }
-  sealedGet(check, sealed, read.url, "strength.url");
-  return Object.freeze({ ...read, cite: check.https(fields["cite"], "strength.cite") });
+  sealedGet(check, sealed, read.url, "listing.url");
+  return Object.freeze({ ...read, cite: check.https(fields["cite"], "listing.cite") });
 }
 
 /** A read's `url`, as `what` names it, is a `GET` the source's endpoints allow. */
@@ -1564,7 +1564,7 @@ export function sourceRecord(value: unknown): SourceRecord {
     : check.keys(copy, "the record",
                  [...base, ...GATEWAY_KEYS.filter((key) => key !== "models"), "engines",
                   ...(connect.includes("oauth") ? ["oauth"] : [])],
-                 [...optional, "models", "not_interactive", "credit", "strength",
+                 [...optional, "models", "not_interactive", "credit", "listing",
                   "routers"]);
   const record: Record<string, unknown> = {
     id,
@@ -1615,8 +1615,8 @@ export function sourceRecord(value: unknown): SourceRecord {
   if (fields["credit"] !== undefined) {
     record["credit"] = creditSpec(check, fields["credit"], checked);
   }
-  if (fields["strength"] !== undefined) {
-    record["strength"] = strengthSpec(check, fields["strength"], checked);
+  if (fields["listing"] !== undefined) {
+    record["listing"] = listingSpec(check, fields["listing"], checked);
   }
   if (fields["routers"] !== undefined) {
     record["routers"] = routersSpec(check, fields["routers"]);

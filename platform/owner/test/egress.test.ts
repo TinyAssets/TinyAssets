@@ -842,6 +842,23 @@ describe("a call's reservation", () => {
       .toMatchObject({ routed: false });
   });
 
+  it("refuses a model its vendor's listing no longer serves the key", async () => {
+    const r = await gated();
+    const probe = await r.connect("sk-good", OPENROUTER as never);
+    const [served, dropped] = (await pricedModels(r, probe)).map(({ model }) => model.id);
+    await r.stub.connectionRevoke(r.session(), { connection: probe });
+    await r.gateway.arm("listing", { answer: { models: [{ id: served!, score: null }] } });
+    const connection = await r.connect("sk-good", OPENROUTER as never, "Key", undefined,
+                                       "openrouter_user_models_v1");
+    await drainDue(r.stub);
+    const lease = await leased(r);
+    const path = "/api/v1/chat/completions";
+    expect((await admitted(r, lease, connection, { path, model: served! })).metering)
+      .toMatchObject({ model: served });
+    expect(await refusedWith(r, lease.as(), connection, { path, model: dropped! }))
+      .toBe("egress_unknown_model");
+  });
+
   it("refuses a model the connection does not list, or a tier pi-ai cannot price", async () => {
     const r = await gated();
     const connection = await r.connect("sk-good", OPENAI);

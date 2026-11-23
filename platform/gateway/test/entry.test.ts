@@ -519,8 +519,8 @@ describe("the gateway Worker", () => {
       .toEqual(["constructor", "forward"]);
     // The owner's object: its connections' upkeep and its wakes, and no seal or forward.
     expect(Object.getOwnPropertyNames(Gateway.prototype).sort())
-      .toEqual(["constructor", "credit", "fetch", "refresh", "reseal", "resealDoorbell",
-                "revokeAtProvider", "ringDoorbell", "strength"]);
+      .toEqual(["constructor", "credit", "fetch", "listing", "refresh", "reseal",
+                "resealDoorbell", "revokeAtProvider", "ringDoorbell", "strength"]);
   });
 
   it("serves no model call over fetch: /v1/messages is gone with the in-object loop",

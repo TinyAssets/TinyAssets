@@ -8,7 +8,7 @@
  * - The order: by tier; within a tier, a plan before a key (the owner pays for the plan
  *   already, so a plan in the top tier wins over every metered key); then by entry, newer ids
  *   first within an entry. A model no entry matches is unknown and comes after every tier,
- *   ordered the same way, its keys by the score its source's vendor lists it at (`strength`,
+ *   ordered the same way, its keys by the score its source's vendor lists it at (`listing`,
  *   `connections.ts`), highest first, a scored one before an unscored one, then by their
  *   catalog output price, highest first: the order an unranked model has, and `auto` tells
  *   the owner when it runs one (`runs.ts`). So on a key that pays only for free models, all

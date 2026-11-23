@@ -1,7 +1,7 @@
 /**
  * The gateway's one bounded reader: the only answer bodies it reads whole, an OAuth
  * endpoint's (`oauth.ts`), a doorbell's verification echo (`doorbell.ts`), a key's limits
- * and a vendor's strength listing (`forward.ts` `credit`, `strength`), each read to a bound
+ * and a vendor's model listing (`forward.ts` `credit`, `listing`), each read to a bound
  * of its own. A provider's model answer is
  * never read whole: it streams through (`forward.ts`).
  */

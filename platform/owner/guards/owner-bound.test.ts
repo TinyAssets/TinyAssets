@@ -550,10 +550,10 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     connection_credit: { rows: CN.maxConnections, bytes: ROW + 25 + 2 * NUMBER,
                          by: "one row an active connection, its revoke deleting it",
                          indexes: { connection_credit_due: key(NUMBER, 25) } },
-    connection_strength: { rows: CN.maxConnections, bytes: ROW + 25 + MODELS_BYTES + NUMBER,
-                           by: "one row an active connection, its scores within the models' " +
-                             "ceiling, its revoke deleting it",
-                           indexes: { connection_strength_due: key(NUMBER, 25) } },
+    connection_listing: { rows: CN.maxConnections, bytes: ROW + 25 + MODELS_BYTES + NUMBER,
+                          by: "one row an active connection, its listed models within the " +
+                            "models' ceiling, its revoke deleting it",
+                          indexes: { connection_listing_due: key(NUMBER, 25) } },
     connection_flows: { rows: CN.maxFlowRows, bytes: ROW + 4 * KIB,
                         by: "maxFlowRows",
                         indexes: { connection_flows_by_expiry: key(NUMBER, 64) } },
