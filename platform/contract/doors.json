@@ -152,6 +152,7 @@
           "row_id": { "type": "string", "description": "The row's id" }
         },
         "optional": {
+          "private": { "type": "boolean", "description": "Your own private row of that id (false when omitted)" },
           "body_offset": { "type": "integer", "description": "The body from this byte: a body_next_offset an answer gave" },
           "etag": { "type": "string", "description": "The etag the earlier part came with" }
         }
@@ -189,6 +190,7 @@
           "row_id": { "type": "string", "description": "The row's id" }
         },
         "optional": {
+          "private": { "type": "boolean", "description": "Your own private row of that id (false when omitted)" },
           "before": { "type": "string", "description": "Entries before this cursor: the before an answer gave" },
           "body_offset": { "type": "integer", "description": "The first item's body from this byte: a body_next_offset an answer gave (0 when omitted)" }
         }
@@ -209,7 +211,7 @@
           "row_id": { "type": "string", "description": "The row's id" },
           "body": { "type": "string", "description": "The row's new body" },
           "expected_etag": { "type": "string", "description": "The row's current etag, or \"\" to create it" },
-          "private": { "type": "boolean", "description": "Whether only the owner may read the row" }
+          "private": { "type": "boolean", "description": "Whether the row is your own: only you read or write it, under an id apart from the public rows' and every other writer's" }
         },
         "optional": {
           "history_op": { "type": "string", "description": "The history entry's operation name" }
@@ -218,7 +220,7 @@
       "tool": {
         "name": "collection_write", "title": "Write collection row", "readOnlyHint": false,
         "destructiveHint": true, "idempotentHint": false, "openWorldHint": false,
-        "description": "Write one collection row against its current etag. A new row (expected_etag \"\") is refused when the row exists, so creating one claims an act: on the board, the first agent to create the row named for an act holds it, and a conflict means another agent has it."
+        "description": "Write one collection row against its current etag. A new public row (expected_etag \"\", private false) is refused when the row exists, so creating one claims an act: on the board, the first agent to create the row named for an act holds it, and a conflict means another agent has it."
       }
     },
     {
@@ -230,7 +232,9 @@
           "row_id": { "type": "string", "description": "The row's id" },
           "expected_etag": { "type": "string", "description": "The row's current etag" }
         },
-        "optional": {}
+        "optional": {
+          "private": { "type": "boolean", "description": "Your own private row of that id (false when omitted)" }
+        }
       },
       "tool": {
         "name": "collection_delete", "title": "Delete collection row", "readOnlyHint": false,

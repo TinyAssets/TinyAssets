@@ -157,8 +157,8 @@ describe("schema migration on wake", () => {
       const insert = (body: string, bytes: number, content: string | null) =>
         state.storage.sql.exec(
           "INSERT INTO collection_rows (collection, row_id, revision, seq, etag, writer, " +
-            "private, body, updated_at, creator, body_bytes, content_id, filer, change) " +
-            "VALUES ('c', 'r', 1, 1, 'e', 'w', 0, ?, 0, 'w', ?, ?, 'owner', 1)", body, bytes, content);
+            "space, body, updated_at, creator, body_bytes, content_id, filer, change) " +
+            "VALUES ('c', 'r', 1, 1, 'e', 'w', '', ?, 0, 'w', ?, ?, 'owner', 1)", body, bytes, content);
       expect(() => insert("x".repeat(ceiling + 1), ceiling + 1, null)).toThrow(/CHECK/);
       // A placed body's row names its content and keeps no text; a small one is never placed.
       expect(() => insert("x", ceiling + 1, "c".repeat(64))).toThrow(/CHECK/);

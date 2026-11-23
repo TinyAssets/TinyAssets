@@ -19,12 +19,13 @@ export interface DoorRequests {
   readonly registerPropose:
     DoorFields<"display_name" | "delivery_method" | "recipe_id", "command_center_id">;
   readonly policyPropose: DoorFields<"change", "request_id">;
-  readonly collectionGet: DoorFields<"collection" | "row_id", "body_offset" | "etag">;
+  readonly collectionGet: DoorFields<"collection" | "row_id", "private" | "body_offset" | "etag">;
   readonly collectionPull: DoorFields<"collection" | "limit", "after">;
-  readonly collectionHistory: DoorFields<"collection" | "row_id", "before" | "body_offset">;
+  readonly collectionHistory:
+    DoorFields<"collection" | "row_id", "private" | "before" | "body_offset">;
   readonly collectionWrite:
     DoorFields<"collection" | "row_id" | "body" | "expected_etag" | "private", "history_op">;
-  readonly collectionDelete: DoorFields<"collection" | "row_id" | "expected_etag">;
+  readonly collectionDelete: DoorFields<"collection" | "row_id" | "expected_etag", "private">;
   readonly collectionClear: DoorFields<"collection" | "writer">;
   readonly fileStat: DoorFields<"path">;
   readonly fileList: DoorFields<"dir" | "limit", "after" | "head_chars">;
