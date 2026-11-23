@@ -98,33 +98,98 @@ describe("the inbox digest", () => {
 });
 
 describe("a digest past a pruned deletion", () => {
-  it("tells a reader behind a pruned tombstone to read again, never hides the delete",
-     { tags: ["large"] }, async () => {
+  it("tells a reader behind a pruned tombstone to read again from the floor, never hides the " +
+     "delete, and resets a reader behind one it could not see too", { tags: ["large"] },
+     async () => {
     const { stub, name } = await ownerObject();
     await inFilled(stub, (store, state) => {
       const made = store.write(name, name, "board", "gone", "x", "", false);
       const cursor = store.changed(name, { collection: "board" }, 0, 100).cursor;
       store.delete(name, "board", "gone", made.etag);
+      // Bob's private row, cleared: a deletion only bob may see.
+      store.write(name, "bob", "board", "mine", "x", "", true);
+      store.clear(name, "board", "bob");
       const tombstones = () => state.storage.sql.exec<{ n: number }>(
-        "SELECT COUNT(*) AS n FROM collection_erasures WHERE collection = 'board' AND " +
-          "key = 'gone'").one().n;
-      expect(tombstones()).toBe(1);
-      // A reader past the delete is told it while it is kept.
-      expect(store.changed(name, { collection: "board" }, cursor, 100).rows
-        .map((row) => [row.row_id, row.deleted])).toEqual([["gone", true]]);
-      // Entries past the history's charge: the tombstone, the oldest, goes first.
+        "SELECT COUNT(*) AS n FROM collection_erasures WHERE collection = 'board'").one().n;
+      expect(tombstones()).toBe(2);
+      // A reader past the delete is told it while it is kept, and goes on from it alone.
+      const told = store.changed("cara", { collection: "board" }, cursor, 100);
+      expect(told.rows.map((row) => [row.row_id, row.deleted])).toEqual([["gone", true]]);
+      expect(told.cursor).toBe(told.rows[0]!.change);
+      const cleared = store.changed("bob", { collection: "board" }, told.cursor, 100).rows;
+      expect(cleared.map((row) => [row.row_id, row.deleted])).toEqual([["mine", true]]);
+      // Entries past the history's charge: the tombstones, the oldest, go first.
       fillHistory(store, name, () => tombstones() === 0);
-      expect(tombstones()).toBe(0);
-      const seen = store.changed(name, { collection: "board" }, cursor, 100);
-      expect(seen).toMatchObject({ rows: [], reset: true });
-      const top = state.storage.sql.exec<{ change: number }>(
-        "SELECT change FROM collection_clock").one().change;
-      expect(seen.cursor).toBe(top);
+      const floor = cleared[0]!.change;
+      expect(state.storage.sql.exec("SELECT erasure_floor FROM collection_space").one())
+        .toEqual({ erasure_floor: floor });
+      // Behind the delete it saw, or only behind bob's, which it never could: told to read
+      // again, and to go on from the floor, the newest deletion let go.
+      for (const after of [cursor, told.cursor]) {
+        expect(store.changed("cara", { collection: "board" }, after, 100))
+          .toEqual({ cursor: floor, rows: [], reset: true });
+      }
       // From the cursor it was given, the feed goes on as before; a fresh reader is never
       // reset: it holds no row to forget.
-      expect(store.changed(name, { collection: "board" }, seen.cursor, 100))
-        .toEqual({ cursor: top, rows: [] });
+      expect(store.changed("cara", { collection: "board" }, floor, 100))
+        .toEqual({ cursor: floor, rows: [] });
       expect(store.changed(name, { collection: "board" }, 0, 100)).not.toHaveProperty("reset");
+    });
+  });
+});
+
+describe("a cursor counts only what its reader can see", () => {
+  it("stays put for a visiting owner while the host writes private rows", async () => {
+    const r = await rig();
+    const visitor: Binding = { owner: r.owner, caller: "bob", origin: null };
+    await write(r, "room:app:lobby", "hello", "everyone's");
+    const room = await r.stub.collectionPull(visitor, { collection: "room:app:lobby", after: 0,
+                                                        limit: 10 });
+    expect(room.rows.map((row) => row.row_id)).toEqual(["hello"]);
+    expect(await r.stub.boardDigest(visitor, { limit: 10, after: 0 }))
+      .toEqual({ cursor: 0, rows: [] });
+    await write(r, "board", "plan", "the host's own", r.bind(null), true);
+    await write(r, "room:app:lobby", "aside", "the host's own", r.bind(null), true);
+    expect(await r.stub.boardDigest(visitor, { limit: 10, after: 0 }))
+      .toEqual({ cursor: 0, rows: [] });
+    expect(await r.stub.collectionPull(visitor, { collection: "room:app:lobby",
+                                                  after: room.cursor, limit: 10 }))
+      .toEqual({ cursor: room.cursor, rows: [] });
+    // A row it can see moves it to that row, and no further.
+    await write(r, "board", "open", "everyone's");
+    await write(r, "board", "plan2", "the host's own", r.bind(null), true);
+    const seen = await r.stub.boardDigest(visitor, { limit: 10, after: 0 });
+    expect(live(seen.rows).map((row) => row.row_id)).toEqual(["open"]);
+    expect(seen.cursor).toBe(live(seen.rows)[0]!.change);
+  });
+
+  it("an empty board's stays put across writes elsewhere and rows it cannot see", async () => {
+    const r = await rig();
+    const visitor: Binding = { owner: r.owner, caller: "bob", origin: null };
+    await write(r, "room:app:lobby", "m1", "a room's");
+    await write(r, "board", "mine", "bob's own", visitor, true);
+    await write(r, "room:app:lobby", "m2", "bob's own", visitor, true);
+    expect(await r.stub.boardDigest(r.bind(null), { limit: 10, after: 0 }))
+      .toEqual({ cursor: 0, rows: [] });
+    // The rooms' cursor is the last room row the owner can see, not bob's after it.
+    const inbox = await r.stub.inboxDigest(r.bind(null), { limit: 10, after: 0 });
+    expect(live(inbox.rooms.rows).map((row) => row.row_id)).toEqual(["m1"]);
+    expect(inbox.rooms.cursor).toBe(live(inbox.rooms.rows)[0]!.change);
+  });
+
+  it("a wake's is the newest change its reader may see, never under the floor", async () => {
+    const r = await rig();
+    await inObject(r.stub, (store) => {
+      store.write(r.owner, r.owner, "board", "t", "open", "", false);
+      const open = store.seen(r.owner);
+      store.write(r.owner, "bob", "board", "b", "bob's own", "", true);
+      store.clear(r.owner, "board", "bob");
+      expect([store.seen(r.owner), store.seen("bob")]).toEqual([open, open + 2]);
+      // A restore puts the floor at the clock: a wake after it is never reset.
+      store.restored();
+      expect(store.seen(r.owner)).toBe(open + 2);
+      expect(store.changed(r.owner, { collection: "board" }, open + 2, 10))
+        .toEqual({ cursor: open + 2, rows: [] });
     });
   });
 });

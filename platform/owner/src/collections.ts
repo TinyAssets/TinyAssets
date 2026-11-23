@@ -169,7 +169,7 @@ export type Changed =
 /**
  * Rows changed after an owner-wide cursor, and the next cursor; `reset` when a deletion past
  * the cursor was pruned from the history (`erasure_floor`): the reader reads its rows again
- * whole (a pull) and goes on from the cursor given.
+ * whole (a pull) and goes on from the cursor given, the floor.
  */
 export interface Changes {
   readonly cursor: number;
@@ -456,12 +456,11 @@ export class Collections {
   }
 
   /**
-   * Rows past `after` this caller may see, in `seq` order, and the next cursor.
-   *
-   * The cursor is the collection's top when the page holds everything, so a reader
-   * never rescans; otherwise it is the page's last `seq`. A page holds at most `limit`
-   * rows and, past its first, no more than `PAGE_BYTES` of bodies (a placed body is read by
-   * the door into its row, and the door fits the page to one answer, `pages.ts`).
+   * Rows past `after` this caller may see, in `seq` order, and the next cursor: the page's
+   * last `seq`, or `after` when it has none, so a cursor counts no row its reader can't see.
+   * A page holds at most `limit` rows and, past its first, no more than `PAGE_BYTES` of
+   * bodies (a placed body is read by the door into its row, and the door fits the page to
+   * one answer, `pages.ts`).
    */
   pull(caller: string, collection: string, after: unknown, limit: unknown): Page {
     name(collection, "collection");
@@ -472,26 +471,19 @@ export class Collections {
         || limit > LIMITS.maxPull) {
       throw new Refusal("invalid", `limit is 1 to ${LIMITS.maxPull}`);
     }
-    const top = this.#top(collection);
-    const found = this.#sql.exec<StoredRow>(
-      "SELECT * FROM collection_rows WHERE collection = ? AND seq > ? AND seq <= ? " +
+    const rows = paged(this.#sql.exec<StoredRow>(
+      "SELECT * FROM collection_rows WHERE collection = ? AND seq > ? " +
         "AND (private = 0 OR writer = ?) ORDER BY seq LIMIT ?",
-      collection, after, top, caller, limit,
-    ).toArray();
-    const rows = paged(found, PAGE_BYTES);
-    const last = rows.at(-1);
-    return {
-      cursor: (rows.length === limit || rows.length < found.length) && last !== undefined
-        ? last.seq : top,
-      rows: rows.map(shown),
-    };
+      collection, after, caller, limit,
+    ).toArray(), PAGE_BYTES);
+    return { cursor: rows.at(-1)?.seq ?? after, rows: rows.map(shown) };
   }
 
   /**
    * Rows this caller may see, in `collection` or in every collection whose name starts
    * with `prefix`, whose latest write is past the owner-wide change `after`, oldest change
-   * first; and the next cursor: the page's last change when it is full, else the owner's
-   * latest, so a reader never rescans and its cursor never goes back. A page holds at most
+   * first; and the next cursor: the page's last change, or `after` when it has none, so a
+   * cursor counts no change its reader can't see and never goes back. A page holds at most
    * `READ_PAGE_BYTES` of bodies past its first row, as a pull's (`paged`), and a placed body
    * (ADR-035) comes as its content id, for the door to read from R2 (`filled`).
    */
@@ -507,11 +499,10 @@ export class Collections {
     const space = this.#sql.exec<{ erasure_floor: number }>(
       "SELECT erasure_floor FROM collection_space").one();
     if (after > 0 && after < space.erasure_floor) {
-      // A deletion this reader has not seen is gone from the history: it cannot be told,
-      // so it is told to read again, loudly, never left holding a deleted row.
-      const top = this.#sql.exec<{ change: number }>(
-        "SELECT change FROM collection_clock").one().change;
-      return { cursor: top, rows: [], reset: true };
+      // A deletion past this reader is gone from the history: whether it could have seen
+      // it cannot be told, so it is told to read again, loudly, never left holding a deleted
+      // row, and goes on from the floor, the least cursor not told so again.
+      return { cursor: space.erasure_floor, rows: [], reset: true };
     }
     // A prefix is the range from itself to the name just past every name it starts.
     const keys = "collection" in where ? [name(where.collection, "collection")]
@@ -522,12 +513,8 @@ export class Collections {
       after, ...keys, caller, after, ...keys, caller, limit,
     ).toArray();
     const rows = paged(found, READ_PAGE_BYTES);
-    const top = this.#sql.exec<{ change: number }>(
-      "SELECT change FROM collection_clock").one().change;
-    const last = rows.at(-1);
-    const full = found.length === limit || rows.length < found.length;
     return {
-      cursor: full && last !== undefined ? last.change : Math.max(after, top),
+      cursor: rows.at(-1)?.change ?? after,
       rows: rows.map((row): Changed => row.deleted === 1
         ? { collection: row.collection, row_id: row.row_id, change: row.change, deleted: true,
             op: row.op, writer: row.writer }
@@ -552,9 +539,19 @@ export class Collections {
     ).toArray().length > 0;
   }
 
-  /** The owner-wide change cursor: the latest change any write took. A read of one row. */
-  clock(): number {
-    return this.#sql.exec<{ change: number }>("SELECT change FROM collection_clock").one().change;
+  /**
+   * The newest change `caller` may see, a row's or a deletion's, and never under the floor a
+   * reset hands out (`erasure_floor`): the cursor a wake is after, so it counts no change
+   * hidden from its reader. Each part read from its newest change down to the first visible.
+   */
+  seen(caller: string): number {
+    return this.#sql.exec<{ change: number }>(
+      "SELECT max((SELECT erasure_floor FROM collection_space), " +
+        "coalesce((SELECT change FROM collection_rows INDEXED BY collection_changes " +
+        "WHERE private = 0 OR writer = ? ORDER BY change DESC LIMIT 1), 0), " +
+        "coalesce((SELECT change FROM collection_erasures WHERE private_writer IS NULL " +
+        "OR private_writer = ? ORDER BY change DESC LIMIT 1), 0)) AS change",
+      caller, caller).one().change;
   }
 
   #visible(caller: string, collection: string, rowId: string): StoredRow | undefined {
@@ -828,8 +825,8 @@ export interface CollectionsDoorNeeds extends Pick<DoorUnits, "sync"> {
  * own act (an outside client's write, or a run's, rings no agent, so no two agents wake each
  * other without end, as mail rings only the agent it addresses), only for the board or a room, only
  * for a change anyone may see, and only agents with a live subscription following it whose grant
- * reads their command center. Each wake says what changed and the cursor before it, so its digest
- * is just the change.
+ * reads their command center. Each wake says what changed and the cursor before it, the newest
+ * change those agents could see (`seen`), so its digest is just the change.
  */
 function ring(o: CollectionsDoorNeeds, account: Account, collection: string, after: number):
     void {
@@ -882,8 +879,8 @@ export const collectionsDoors = Object.freeze({
       : fittedRow(windowed(got.row, windows, offset), jsonBytes({ row: null }) - 4) as Row }));
   },
   /**
-   * A collection's rows past `after`, fitted to one answer (`pages.ts`): when rows are left
-   * the cursor is the last one's seq, and a first row cut to fit is read on with
+   * A collection's rows past `after`, fitted to one answer (`pages.ts`): the cursor is the
+   * last kept row's seq, or `after` when none is, and a first row cut to fit is read on with
    * `collection_get`'s `body_offset`.
    */
   async collectionPull(o: CollectionsDoorNeeds, door: Door<PullRequest>): Promise<Page> {
@@ -896,8 +893,7 @@ export const collectionsDoors = Object.freeze({
       const rows = page.rows.length === 0 ? [] : fitPage(
         jsonBytes({ cursor: page.cursor, rows: [] }), windowedAll(page.rows, windows),
         ({ item, window }, room, first) => bodied(item, window, room, first));
-      return { cursor: rows.length === page.rows.length ? page.cursor : rows.at(-1)!.seq,
-               rows: rows as Row[] };
+      return { cursor: rows.at(-1)?.seq ?? page.cursor, rows: rows as Row[] };
     });
   },
   /**
@@ -938,7 +934,7 @@ export const collectionsDoors = Object.freeze({
       }, (placed) => {
         const { account, r } = door.check();
         const collection = r["collection"] as string;
-        const before = o.collections.clock();
+        const before = o.collections.seen(account.owner);
         const written = conflicted(() => ({
           row: writtenRow(o.collections.write(account.owner, account.caller, collection,
                                               r["row_id"] as string, r["body"],
@@ -958,7 +954,7 @@ export const collectionsDoors = Object.freeze({
     try {
       return await o.bodies.reading(() => {
         const { account, r } = door.check();
-        const before = o.collections.clock();
+        const before = o.collections.seen(account.owner);
         const value = conflicted(() => o.collections.delete(
           account.caller, r["collection"] as string, r["row_id"] as string, r["expected_etag"],
         ));
@@ -970,7 +966,7 @@ export const collectionsDoors = Object.freeze({
     }
   },
   collectionClear(o: CollectionsDoorNeeds, { account, r }: Call<ClearRequest>): { deleted: number } {
-    const before = o.collections.clock();
+    const before = o.collections.seen(account.owner);
     const cleared = o.collections.clear(account.caller, r["collection"] as string,
                                             r["writer"]);
     ring(o, account, r["collection"] as string, before);

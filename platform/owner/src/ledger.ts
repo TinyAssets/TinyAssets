@@ -32,8 +32,9 @@
  * - What rings is data (`wake-kinds.ts`): an agent rings when its delivery
  *   method's record has a push (MCP Events, `/fire`, a webhook routine); a `pull` agent
  *   never does, and catches up through the digests on its own schedule. A wake says what
- *   changed (`changes`: mail to the agent, a room's rows, the board's) and the owner-wide
- *   change cursor it is after, so the agent's digest returns just the change. Mail to an
+ *   changed (`changes`: mail to the agent, a room's rows, the board's) and the change
+ *   cursor it is after, the newest change the agent could see before it (`Collections.seen`),
+ *   so the agent's digest returns just the change. Mail to an
  *   agent opens its wake (`post`); a board or room row another writer changes opens one for
  *   every ringing agent (`changed`), folded into any wake already open.
  * - The doorbell's subscriptions (`wake_callbacks`): an enabled ringing agent's
@@ -551,7 +552,7 @@ export type Wake = {
 
 /**
  * What a doorbell may carry: identifiers, the mailbox cursor, what kind of change it is
- * and the owner-wide change cursor it is after; never a body.
+ * and the change cursor it is after; never a body.
  */
 export interface WakeTarget {
   readonly wake_id: string;
@@ -1056,7 +1057,10 @@ export class Ledger {
   /** Whether the owner is admitted (`admission.ts`'s `require_work`), read in each claim. */
   readonly #admitted: () => boolean;
 
-  /** The owner-wide change cursor (`Collections.clock`): what a mail wake is after. */
+  /**
+   * The newest change the owner's agents may see (`Collections.seen`): what a mail wake is
+   * after.
+   */
   readonly #changes: () => number;
 
   /** How a posting unit adopts a placed body's content (`Bodies.adopt`). */

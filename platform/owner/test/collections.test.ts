@@ -99,7 +99,7 @@ describe("the revision primitive", () => {
     const mine = await write(o, "bob", { collection: ROOM, row_id: "p", body: "secret",
                                          private: true });
     expect(await stub.collectionPull(as("cara"), { collection: ROOM, after: 0, limit: 10 }))
-      .toEqual({ cursor: 1, rows: [] });
+      .toEqual({ cursor: 0, rows: [] });
     expect((await stub.collectionPull(as("bob"), { collection: ROOM, after: 0, limit: 10 }))
       .rows).toEqual([shownAs(mine, "secret")]);
     const taken = await failure(() => write(o, "cara", {
