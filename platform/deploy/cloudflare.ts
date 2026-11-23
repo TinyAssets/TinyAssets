@@ -3,11 +3,12 @@
  * account's token: the zone and its account, the account's Workers, their secrets' names,
  * their deployments and their versions' tags, KV namespaces, keys and values, R2 buckets with
  * their lock rules and objects, queues with their messages and consumers, and the zone's
- * Worker routes, DNS records and Workers custom domains, and the Workers' logs (Workers
- * Observability's telemetry query). Every call is checked: a failed
- * listing or read throws, never reads as "absent", and a body that is not JSON throws. Every
- * listing is read to its last page. The kit's other Cloudflare tool is wrangler (`deploy.ts`),
- * which uploads and deploys the run's versions; a rollback's deployment is this client's.
+ * Worker routes, DNS records, Workers custom domains and WAF custom rules, and the Workers'
+ * logs (Workers Observability's telemetry query). Every call is checked: a failed listing
+ * or read throws, never reads as "absent", and a body that is not JSON throws. Every
+ * listing is read to its last page. The kit's other Cloudflare tool is wrangler
+ * (`deploy.ts`), which uploads and deploys the run's versions; a rollback's deployment is
+ * this client's.
  *
  * Node runs this file as it is (type stripping), as the kit does.
  */
@@ -203,6 +204,38 @@ export interface DnsRecord {
  * of, and what a name under the zone holds for a Worker route on it to take anything.
  */
 export const ADDRESS: readonly string[] = Object.freeze(["A", "AAAA", "CNAME"]);
+
+/**
+ * The phase whose zone entry point ruleset holds the zone's WAF custom rules (Cloudflare's
+ * "Create a custom rule via API").
+ */
+const CUSTOM_PHASE = "http_request_firewall_custom";
+
+/** A zone custom rule as the kit writes it: a Block on its expression, on or off. */
+export interface CustomRule {
+  readonly ref: string;
+  readonly description: string;
+  readonly expression: string;
+  readonly enabled: boolean;
+}
+
+/** A zone custom rule as the zone holds it: its id and action beside what the kit writes. */
+export interface HeldRule extends CustomRule {
+  readonly id: string;
+  readonly action: string;
+}
+
+/** The zone's custom rules, in order, and their ruleset's id: null while it has none. */
+export interface CustomRules {
+  readonly ruleset: string | null;
+  readonly rules: readonly HeldRule[];
+}
+
+/** A rule as the Rulesets API takes it, whole: an update replaces every field. */
+function blocking(rule: CustomRule): Record<string, unknown> {
+  return { ref: rule.ref, description: rule.description, action: "block",
+           expression: rule.expression, enabled: rule.enabled };
+}
 
 /** A route as a record keeps it: its pattern, and the Worker it points to (null: none). */
 export interface Kept {
@@ -825,6 +858,66 @@ export class Cloudflare {
       throw new Error(`deleting the DNS record ${record.type} ${name} (${record.content}) failed (${
         answer.status}, ${codes(answer)}): run the handback again`);
     }
+  }
+
+  /**
+   * The zone's custom rules: the zone's rulesets listed, the one entry point of the custom
+   * rules' phase among them read whole. A listing with none is a zone that has none yet. A
+   * rule that names no `enabled` is on, as Cloudflare runs it. A failed read, or a ruleset or
+   * rule out of shape, throws.
+   */
+  async customRules(zone: string): Promise<CustomRules> {
+    const what = "reading the zone's custom rules";
+    const entry = (await this.#rows(what, `/zones/${zone}/rulesets`))
+      .filter((row) => row["phase"] === CUSTOM_PHASE && row["kind"] === "zone");
+    if (entry.length === 0) {
+      return { ruleset: null, rules: [] };
+    }
+    const id = entry[0]!["id"];
+    if (entry.length > 1 || typeof id !== "string") {
+      throw new Error(`${what} found ${entry.length} entry points of ${CUSTOM_PHASE}, not one`);
+    }
+    const { result } = await this.#ok(what, `/zones/${zone}/rulesets/${id}`);
+    if (typeof result !== "object" || result === null) {
+      throw new Error(`${what} failed (its answer holds no ruleset)`);
+    }
+    const rules = rows((result as { rules?: unknown }).rules ?? [], what).map((rule) => {
+      const text = (name: string) => typeof rule[name] === "string" ? rule[name] as string : "";
+      if (typeof rule["id"] !== "string" || typeof rule["expression"] !== "string") {
+        throw new Error(`${what} holds a rule out of shape`);
+      }
+      return { id: rule["id"], ref: text("ref") || rule["id"], description: text("description"),
+               action: text("action"), expression: rule["expression"],
+               enabled: rule["enabled"] !== false };
+    });
+    return { ruleset: id, rules };
+  }
+
+  /**
+   * The zone's custom rules' ruleset made, holding `rules` in order; a refusal throws. Its name
+   * is any: the zone's entry point is found by its phase (`customRules`).
+   */
+  async makeCustomRules(zone: string, rules: readonly CustomRule[]): Promise<void> {
+    await this.#send("making the zone's custom rules", "POST", `/zones/${zone}/rulesets`,
+                     { name: "default", kind: "zone", phase: CUSTOM_PHASE,
+                       rules: rules.map(blocking) });
+  }
+
+  /**
+   * `rule` added to the zone's custom rules `ruleset`, first, so no rule before it can skip
+   * it; a refusal throws (a zone at its plan's count of custom rules refuses one more).
+   */
+  async addCustomRule(zone: string, ruleset: string, rule: CustomRule): Promise<void> {
+    await this.#send(`adding the custom rule ${rule.description}`, "POST",
+                     `/zones/${zone}/rulesets/${ruleset}/rules`,
+                     { ...blocking(rule), position: { before: "" } });
+  }
+
+  /** The custom rule `id` of `ruleset` made `rule` whole, where it stands; a refusal throws. */
+  async editCustomRule(zone: string, ruleset: string, id: string, rule: CustomRule):
+      Promise<void> {
+    await this.#send(`setting the custom rule ${rule.description}`, "PATCH",
+                     `/zones/${zone}/rulesets/${ruleset}/rules/${id}`, blocking(rule));
   }
 
   /** Detaches the custom domain `id` from its Worker; a refusal throws. */

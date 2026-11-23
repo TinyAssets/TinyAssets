@@ -42,10 +42,15 @@ record holds.**
   and `handback` deletes it. `handback` deletes the DNS record the custom domain made, if
   the detach leaves it. Both need DNS Write. So **DNS Edit covers all of it**. Attaching and detaching the custom domain
   need **Workers Scripts edit** on the account, which the kit's deploys need too.
+- **The edge kill.** `dark`, `routes` and mode `edge` list the zone's rulesets and make or
+  set the edge kill's two WAF custom rules (Cloudflare's Rulesets API), which needs **Zone
+  WAF Edit**. Without it the plan job's listing fails, and every deploy stops there with
+  nothing changed.
 - **What the token holds.** The infra-ops reference (`.claude/skills/infra-ops/references/
   cloudflare.md`) records this secret with Zone DNS Edit and Account Workers Scripts edit,
   and `emergency-dns.yml` writes DNS records with it. The stage's first `routes` (run
-  45059834265, 2026-11-22) read and wrote the zone's DNS records with it.
+  45059834265, 2026-11-22) read and wrote the zone's DNS records with it. You added Zone
+  WAF Edit on `tinyassets.io` on 2026-11-23.
 - **How to check without reading the token.**
   - In the Cloudflare dashboard, My Profile → API Tokens lists each token's permissions and
     never shows its value.
@@ -171,7 +176,17 @@ It never counts as "absent".
    Worker serving two versions (a split: a run stopped between a Worker's stages, a failed
    smoke among them, or the dashboard) stops the run before any deploy: end the split first,
    with `rollback` of the stopped run (below), then dispatch again.
-5. **The control record, written only when the API answered that it is absent.** It starts
+5. **The edge kill's two WAF custom rules, kept off** (`edge_kill` in
+   `platform/deploy/platform.json`; mode `edge`, below): each made, off, only when the zone's
+   custom rules answered and lack it, first among them, and set back to the expression the
+   tree renders when it holds another, then read back. The zone's other rules are left as
+   they are. They are read with the checks too, before any change, and **a deploy stops while
+   either is on**: its smoke and canary would be refused at the edge. They are the run's first
+   Cloudflare change, after WorkOS's (step 6), so a zone at its plan's count of custom rules (5
+   on Free) refuses one there and the run stops before any storage, secret or Worker, at most
+   one of them made, off: free a rule, then dispatch again.
+
+   **Then the control record, written only when the API answered that it is absent.** It starts
    with everything closed: outside access off, maintenance admitting no owner, inbound events
    off. It also holds your tier numbers. It is `platform/deploy/control.json`, as is. If the
    record is there, the kit leaves it alone. If the read fails, the whole run stops.
@@ -197,7 +212,8 @@ It never counts as "absent".
 
 - No DNS record and no route on `tinyassets.io`. The live connector keeps serving everyone.
 - No owner data. No connector re-authorizes.
-- No rate limit and no WAF rule. The platform sets no number on any caller. Cloudflare's
+- No rate limit, and no WAF rule that acts: the edge kill's two rules are made off. The
+  platform sets no number on any caller. Cloudflare's
   own DDoS protection is in front of every Worker.
 
 ## Later steps, each its own approved run
@@ -514,13 +530,33 @@ It never counts as "absent".
   **A kill flipped while KV is down reaches no kept copy.** While KV can't be read, each reader
   serves the copy it last read well formed (the doors' per-location cache, the owner's and the
   sandbox's objects' own row), `outside=on` included, until KV answers again; the mode's own
-  read and write go to KV, so they fail too. The kill that needs no KV is an edge switch at
-  Cloudflare, and **there is none yet**: slice B1, two WAF custom rules on the zone kept
-  disabled (`TinyAssets kill: outside`, blocking the doors' outside paths, and `TinyAssets
-  kill: all`, every doors path and the egress host), each toggled from the dashboard or the
-  app, is owed (`untangle/kill-switch-cloudflare`). Until it lands, the one kill that reads no
-  KV is a custom rule you make by hand (Security, WAF, Custom rules) blocking those paths; mode
-  `handback` reads its route record from KV too.
+  read and write go to KV, so they fail too. The kill that needs no KV is the edge kill,
+  next; mode `handback` reads its route record from KV too.
+- **The edge kill: mode `edge`, or a rule's switch in the dashboard.** Two WAF custom rules on
+  the zone, each a Block, which Cloudflare runs before any Worker, so they stop requests while
+  the doors, KV, the Durable Objects and GitHub are all down. `TinyAssets kill: outside`
+  blocks the doors' outside paths on the doors' host (the ones `edge_kill.outside` names,
+  which `outside=off` and `inbound=false` close) and leaves up your app, its sign-in and
+  E2B's hook. `TinyAssets kill: all` blocks every doors path and the egress host, so running
+  sandboxes lose their way out and E2B's lifecycle hook is refused too. `dark` and `routes` keep both off (step 5).
+  - **From GitHub:** dispatch `edge` with `kill` set to `outside`, `all` or `none` (both off).
+    The plan job names each rule it turns on or off, or makes if the zone lacks it; the apply
+    job turns the asked one on before the other off, then reads both back. It turns one on
+    only while the doors hold every route of theirs on their host: before `routes`, those
+    paths are another Worker's (the old stack's, on the zone).
+  - **From the dashboard, a phone's browser included,** with no GitHub and no host: the zone's
+    Security rules page, the rule's switch. Turn it off the same way, or with `edge` and
+    `kill` `none`.
+  - **What a blocked caller sees:** Cloudflare's own 403 page, not a JSON error: a body of
+    our own is Pro's, a spend. A connection already open is not cut.
+  - **While either is on,** `dark` and `routes` stop before any change: their smoke and canary
+    would be refused at the edge. To deploy a fix behind a kill, close the record (`control`,
+    `outside=off`), turn the edge kill off, then deploy. The scheduled canary fails while
+    one is on, and pages.
+  - **Each rule's expression is the tree's,** rendered from `identity.json`'s routes and host
+    and the egress host, split by `edge_kill` in `platform.json`. A deploy sets a rule back to
+    it when it differs (the cutover's change of host among them) and leaves the zone's other
+    rules alone. On the Free plan the two take 2 of its 5 custom rules.
 - **Mode `owner`** asks the doors one op for one owner through the operator channel (`owner`
   and `act`: `state`, `tier=<tier>`, `suspend=<reason>`, `lift=<reason>`, `admit`, `rewrap`
   or `reseal`) and prints their answer between the owner's state before and after it, or

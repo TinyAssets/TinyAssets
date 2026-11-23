@@ -65,7 +65,8 @@ import {
   type Bundle, type Bundles, BUNDLES, bundles, pairTag, treeImage,
 } from "../../sandbox/template/pair";
 import {
-  boundBy, BUCKET_LOCKS, BUCKETS, CONFIGS, DOORS, FILES_BUCKET, FORWARD, forwardCounts,
+  boundBy, BUCKET_LOCKS, BUCKETS, CONFIGS, DOORS, EDGE_RULES, type EdgeRule, edgeRules,
+  FILES_BUCKET, FORWARD, forwardCounts,
   IMPORT_NAMES,
   KEYRINGS, MADE, MIGRATES, NAMES, NAMESPACES, OPERATOR_NAMES, OPTIONAL, QUEUES, RETIRED,
   retiredWorkers, ROUTES, SECRET_INPUTS, SECRETS, STAGES, stagesOf, WORKERS, workerNames,
@@ -170,7 +171,8 @@ const PUBLIC = Object.fromEntries(PUBLIC_INPUTS.map((name) => [name, ENV[name]!]
 
 /** The options of its own each mode needs, by the dispatch's input that gives each. */
 const NEEDED: Partial<Record<Mode, Readonly<Record<string, string>>>> = {
-  handback: { RECORD: "7001" }, rollback: { RECORD: "7001" }, owner: { OWNER: "user_alice", ACT: "tier=paid" },
+  handback: { RECORD: "7001" }, rollback: { RECORD: "7001" }, edge: { KILL: "none" },
+  owner: { OWNER: "user_alice", ACT: "tier=paid" },
   restore: { OWNER: "user_alice" }, copyback: { OWNER: "user_alice" },
   erase: { OWNER: "user_alice" },
   rotation: { KEYRING: "FILES_KEYRING" }, retire: { KEYRING: "GATEWAY_KEYRING" } };
@@ -266,7 +268,23 @@ interface WorldOptions {
    * tree's; null, a file it lacks.
    */
   readonly before?: Readonly<Record<string, string | null>>;
+  /**
+   * The zone's custom rules, in place of none and no ruleset (fresh) or the edge kill's, off
+   * (held), each as the Rulesets API lists it.
+   */
+  readonly rules?: readonly Json[];
+  /** The zone's rulesets listing the API refuses (500). */
+  readonly refusingRules?: boolean;
 }
+
+/** How many custom rules the fake zone takes, as Cloudflare's Free plan does. */
+const FREE_RULES = 5;
+
+/** The edge kill's rules as a held zone holds them: as the tree renders them, `on` on. */
+const edgeHeld = (on: string | null = null): Json[] => EDGE_RULES.map((rule) => ({
+  id: `rule-${rule.name}`, version: "1", ref: rule.ref, description: rule.description,
+  action: "block", expression: rule.expression, enabled: rule.name === on,
+  last_updated: "2026-11-01T00:00:00Z" }));
 
 /** A version a fake Worker serves: its id, its share and its tag. */
 interface Served {
@@ -366,7 +384,7 @@ function world(options: WorldOptions = {}) {
   const kill = { after: undefined as number | undefined };
   const killed = () => kill.after !== undefined && kill.after-- <= 0;
   /** Writes that answer as done and change nothing: the hook's, the custom domain's, KV's. */
-  const inert = new Set<"hook" | "domain" | "dns" | "kv" | "deploy">();
+  const inert = new Set<"hook" | "domain" | "dns" | "kv" | "deploy" | "rules">();
   /** The zone's DNS records: the egress host's given ones, and others on other names. */
   const dns: { id: string; type: string; name: string; content: string; proxied?: unknown }[] = [
     ...(options.dns ?? []).map((type, at) => ({ id: `x${at}`, type, name: EGRESS_HOST,
@@ -401,6 +419,9 @@ function world(options: WorldOptions = {}) {
       versions.set(version, { script, tag });
     }
   }
+  /** The zone's custom rules: their ruleset's id (null: none yet) and its rules, in order. */
+  const custom = { ruleset: held || options.rules !== undefined ? "rs" : null as string | null,
+                   rules: [...options.rules ?? (held ? edgeHeld() : [])] };
   /** The listing reads left, by script, that answer the deployment before (`lagging`). */
   const lag = new Map<string, number>();
   /** A deployment the run made: listed at once, unless `lagging`. */
@@ -529,6 +550,47 @@ function world(options: WorldOptions = {}) {
     }
     if (path === `/zones?name=${ZONE}`) {
       return json({ success: true, result: [{ id: "z", account: { id: ACCOUNT } }] });
+    }
+    if (path === "/zones/z/rulesets") {
+      if (method === "POST") {
+        const made = JSON.parse(body!) as { kind: string; phase: string; rules: Json[] };
+        expect([made.kind, made.phase]).toEqual(["zone", "http_request_firewall_custom"]);
+        custom.ruleset = "rs";
+        custom.rules = made.rules.map((rule, at) => ({ id: `made-${at}`, ...rule }));
+        return json({ success: true, result: { id: "rs", rules: custom.rules } });
+      }
+      if (options.refusingRules === true) {
+        return json({ success: false, errors: [{ code: 10000 }] }, 500);
+      }
+      // A managed ruleset beside it, as a zone lists every phase's.
+      return json({ success: true, result: [
+        { id: "managed", kind: "managed", phase: "http_request_firewall_managed" },
+        ...custom.ruleset === null ? []
+          : [{ id: custom.ruleset, kind: "zone", phase: "http_request_firewall_custom" }]] });
+    }
+    if (custom.ruleset !== null && path === `/zones/z/rulesets/${custom.ruleset}`) {
+      return json({ success: true, result: { id: custom.ruleset, kind: "zone",
+                                             phase: "http_request_firewall_custom",
+                                             rules: custom.rules } });
+    }
+    const ruled = /^\/zones\/z\/rulesets\/rs\/rules(?:\/([^/]+))?$/.exec(path);
+    if (ruled !== null && method === "POST") {
+      const { position, ...rule } = JSON.parse(body!) as Json;
+      // Added first, as the kit asks: before every other rule.
+      expect(position).toEqual({ before: "" });
+      if (custom.rules.length >= FREE_RULES) {
+        return json({ success: false, errors: [{ code: 20230, message: "rule limit" }] }, 400);
+      }
+      custom.rules.unshift({ id: `added-${custom.rules.length}`, ...rule });
+      return json({ success: true, result: { id: "rs", rules: custom.rules } });
+    }
+    if (ruled !== null && method === "PATCH") {
+      const at = custom.rules.findIndex((rule) => rule["id"] === ruled[1]);
+      expect(at).toBeGreaterThanOrEqual(0);
+      if (!inert.has("rules")) {
+        custom.rules[at] = { id: ruled[1], ...JSON.parse(body!) as Json };
+      }
+      return json({ success: true, result: { id: "rs", rules: custom.rules } });
     }
     if (path === "/zones/z/workers/routes" && method === "GET") {
       return json({ success: true, result: [...routes.values()] });
@@ -843,7 +905,7 @@ function world(options: WorldOptions = {}) {
   const io: Io = { fetch: fetcher, spawn, exec, bundles, treeImage, commit: () => COMMIT, fileAt,
                    log, now: () => new Date(clock), sleep: async (ms) => { clock += ms; } };
   return { io, events, logs, secretsPut, secretFiles, secrets, routes, hooks, accounts, kv, tables,
-           kill, domains, inert, dns, created, sent, deployments, versions };
+           kill, domains, inert, dns, created, sent, deployments, versions, custom };
 }
 
 const H2_INPUTS_LIST = Object.values(H2_INPUTS);
@@ -1090,17 +1152,18 @@ describe("the command line", () => {
   const w = world();
 
   it("takes one mode, by --mode, and refuses a run with none or another", () => {
-    expect(Object.keys(MODES)).toEqual(["plan", "dark", "routes", "h2", "pair",
-                                        "handback", "rollback", "control", "owner", "restore", "copyback",
-                                        "recover", "erase",
-                                        "rotation", "retire", "logs"]);
+    expect(Object.keys(MODES)).toEqual(["plan", "dark", "routes", "h2", "pair", "handback",
+                                        "rollback", "edge", "control", "owner", "restore",
+                                        "copyback", "recover", "erase", "rotation", "retire",
+                                        "logs"]);
     for (const mode of Object.keys(MODES) as Mode[]) {
       expect(parse(["--mode", mode, ...needed(mode)], ENV, w.io).mode).toBe(mode);
     }
     for (const argv of [[], ["--mode"], ["--mode", "apply"], ["--mode", "constructor"],
                         ["--yes", "--routes"], ["--mode", "--yes"]]) {
       expect(() => parse(argv, ENV, w.io), argv.join(" ")).toThrow(
-        "--mode is one of plan, dark, routes, h2, pair, handback, rollback, control, owner");
+        "--mode is one of plan, dark, routes, h2, pair, handback, rollback, edge, control, " +
+        "owner");
     }
     for (const argv of [["--mode", "dark", "--mode", "routes"], ["--mode", "dark", "--mode", "dark"]]) {
       expect(() => parse(argv, ENV, w.io), argv.join(" ")).toThrow(
@@ -1241,7 +1304,8 @@ describe("the plan the apply job runs", () => {
       // What a change showed once made: the custom domain's DNS record, which routes writes
       // into its record, and the egress host's answer; and each deployment read back.
       const did = applied.filter((line) => line.startsWith("record in deploy:routes:")
-        || line.startsWith(`https://${EGRESS_HOST}/ answers`) || READ_BACK.test(line));
+        || line.startsWith(`https://${EGRESS_HOST}/ answers`) || READ_BACK.test(line)
+        || line.startsWith("read the edge kill's rules back"));
       const said = applied.filter((line) => !did.includes(line));
       expect([mode, options, said.length]).toEqual([mode, options, approved.length]);
       said.forEach((line, at) => {
@@ -1816,7 +1880,7 @@ const CONTROL_NS = `ns-${NAMESPACES["CONTROL"]}`;
 const RECORD_AT = `/accounts/${ACCOUNT}/storage/kv/namespaces/${CONTROL_NS}/values/${
   encodeURIComponent(KEY)}`;
 /** What changes the account, WorkOS, E2B or the zone: every write the kit can make. */
-const CHANGE = /^(wrangler (secret put|deploy|versions upload|versions deploy|triggers deploy)|cf (PUT|POST|DELETE) |e2b (POST|PATCH)|workos POST)/;
+const CHANGE = /^(wrangler (secret put|deploy|versions upload|versions deploy|triggers deploy)|cf (PUT|POST|PATCH|DELETE) |e2b (POST|PATCH)|workos POST)/;
 const ROUTE_CHANGE = /^cf (PUT|POST|DELETE) \/zones\/z\/workers\/routes/;
 
 /** A zone's routes as a record keeps them, by pattern: ids aside. */
@@ -5015,6 +5079,198 @@ describe("modes rotation and retire", () => {
   });
 });
 
+describe("the edge kill", () => {
+  const [OUTSIDE, ALL] = EDGE_RULES as [EdgeRule, EdgeRule];
+  const RULES = /^cf (POST|PATCH) \/zones\/z\/rulesets/;
+  /** `w` with the doors holding every route of theirs, as after routes. */
+  const routed = (w: ReturnType<typeof world>) => {
+    w.routes.clear();
+    ROUTES.forEach((pattern, at) => w.routes.set(`d${at}`, { id: `d${at}`, pattern,
+                                                            script: DOORS }));
+    return w;
+  };
+  /** Each kill rule's state as the zone holds it, by name. */
+  const states = (w: ReturnType<typeof world>) => Object.fromEntries(EDGE_RULES.map((rule) => {
+    const held = w.custom.rules.find((each) => each["ref"] === rule.ref);
+    return [rule.name, held === undefined ? "absent" : `${String(held["action"])} ${
+      held["expression"] === rule.expression ? "as rendered" : "drifted"} ${
+      held["enabled"] === true ? "on" : "off"}`];
+  }));
+
+  it("blocks the outside doors, or every doors route and the egress host, by path prefix on " +
+     "the host in lower case", () => {
+    const starts = (path: string) => `starts_with(http.request.uri.path, "${path}")`;
+    expect(EDGE_RULES.map((rule) => [rule.name, rule.ref, rule.description])).toEqual([
+      ["outside", "tinyassets-kill-outside", "TinyAssets kill: outside"],
+      ["all", "tinyassets-kill-all", "TinyAssets kill: all"]]);
+    expect(OUTSIDE.expression).toBe(`lower(http.host) eq "tinyassets.io" and (${
+      ["/mcp", "/api", "/hooks/inbound/"].map(starts).join(" or ")})`);
+    expect(ALL.expression).toBe(`(lower(http.host) eq "tinyassets.io" and (${
+      ["/mcp", "/api", "/app", "/hooks/inbound/", "/hooks/e2b/", "/authorize", "/oauth/",
+       "/.well-known/oauth-"].map(starts).join(" or ")})) or lower(http.host) eq ` +
+      `"egress.tinyassets.io"`);
+    // A stage host's rules are its own, in lower case.
+    expect(edgeRules(["/mcp*"], "Stage.tinyassets.io", "egress.tinyassets.io",
+                     { outside: ["/mcp*"], left: [] })[0]!.expression)
+      .toBe(`lower(http.host) eq "stage.tinyassets.io" and (${starts("/mcp")})`);
+  });
+
+  it("refuses a route the split leaves unnamed, names twice or does not hold, and one that " +
+     "is no prefix", () => {
+    const rules = (routes: string[], outside: string[], left: string[]) => () =>
+      edgeRules(routes, "h.test", "e.test", { outside, left });
+    expect(rules(["/a*", "/b*"], ["/a*"], [])).toThrow("in neither: /b*");
+    expect(rules(["/a*"], ["/a*"], ["/a*"])).toThrow("in both: /a*");
+    expect(rules(["/a*"], ["/a*", "/c*"], [])).toThrow("no route: /c*");
+    for (const route of ["/a", "/a*b*", '/a"*', "a*"]) {
+      expect(rules([route], [route], [])).toThrow(`not so: ${route}`);
+    }
+    expect(rules(["/a*", "/b*"], ["/a*"], ["/b*"])).not.toThrow();
+  });
+
+  it("is made off by a dark run on a zone with no custom rules, before any other Cloudflare " +
+     "change, first and read back, then left as it stands", async () => {
+    const w = world();
+    await runMode(w, "dark", ["--yes"]);
+    const made = w.events.findIndex((event) => event === "cf POST /zones/z/rulesets");
+    // The run's first Cloudflare change: a zone at its plan's count refuses it before any other.
+    expect(made).toBe(w.events.findIndex((event) => /^(cf (PUT|POST|PATCH|DELETE) |wrangler )/
+      .test(event)));
+    expect(states(w)).toEqual({ outside: "block as rendered off", all: "block as rendered off" });
+    expect(w.custom.rules.map((rule) => rule["description"])).toEqual(
+      EDGE_RULES.map((rule) => rule.description));
+    // A held zone's rules stand: read, never written.
+    const held = world({ held: true });
+    await runMode(held, "dark", ["--yes"]);
+    expect(held.events.filter((event) => RULES.test(event))).toEqual([]);
+    expect(held.events).toContain("cf GET /zones/z/rulesets/rs");
+  });
+
+  it("is added first among the zone's own rules, which it never touches, and an unlike rule " +
+     "is set to the tree's where it stands", async () => {
+    const own = { id: "own", ref: "own", description: "the founder's", action: "managed_challenge",
+                  expression: 'ip.src.country eq "XX"', enabled: true };
+    const drifted = { ...edgeHeld()[1]!, expression: 'http.host eq "stage.tinyassets.io"' };
+    const w = world({ held: true, rules: [own, drifted] });
+    const work = await runMode(w, "dark", ["--yes"]);
+    expect(w.events.filter((event) => RULES.test(event))).toEqual([
+      "cf POST /zones/z/rulesets/rs/rules", "cf PATCH /zones/z/rulesets/rs/rules/rule-all"]);
+    expect(w.custom.rules.map((rule) => rule["id"])).toEqual(["added-2", "own", "rule-all"]);
+    expect(w.custom.rules[1]).toEqual(own);
+    expect(states(w)).toEqual({ outside: "block as rendered off", all: "block as rendered off" });
+    expect(work.plan).toContain(`make the edge kill rule "${OUTSIDE.description}", off: a Block ` +
+                                `on ${OUTSIDE.expression}`);
+    expect(work.plan).toContain(`set the edge kill rule ${ALL.ref} to the tree's, off, "${
+      ALL.description}", a Block on ${ALL.expression}: it is off, "${ALL.description}", a ` +
+      'block on http.host eq "stage.tinyassets.io"');
+  });
+
+  it("stops a deploy before any change while a rule is on, one naming no state among them",
+     async () => {
+    const unnamed = edgeHeld().map(({ enabled: _enabled, ...rule }) => rule);
+    for (const [rules, on] of [[edgeHeld("outside"), [OUTSIDE]], [edgeHeld("all"), [ALL]],
+                               [unnamed, [OUTSIDE, ALL]]] as const) {
+      for (const [mode, flags, env] of [["dark", ["--yes"], ENV], ["routes", ["--yes"], ENV],
+                                        ["dark", ["--public"], PUBLIC]] as const) {
+        const w = world({ held: true, rules });
+        await expect(runMode(w, mode, [...flags], env)).rejects.toThrow(
+          `the edge kill rule ${on.map((rule) => `"${rule.description}"`).join(" and ")} is on: ` +
+          "a deploy's smoke and canary cannot reach the doors through it");
+        expect([mode, w.events.filter((event) => CHANGE.test(event))]).toEqual([mode, []]);
+      }
+    }
+  });
+
+  it("stops a deploy loudly on a zone at its plan's count, before any storage, secret or " +
+     "Worker", async () => {
+    const own = Array.from({ length: FREE_RULES - 1 }, (_, at) => ({
+      id: `own-${at}`, ref: `own-${at}`, description: "the founder's", action: "block",
+      expression: `ip.src eq 192.0.2.${at}`, enabled: true }));
+    const w = world({ held: true, rules: own });
+    await expect(runMode(w, "dark", ["--yes"])).rejects.toThrow(
+      `adding the custom rule ${ALL.description} failed (400`);
+    expect(w.events.filter((event) => CHANGE.test(event) && !event.startsWith("workos ")))
+      .toEqual(["cf POST /zones/z/rulesets/rs/rules", "cf POST /zones/z/rulesets/rs/rules"]);
+    expect(w.custom.rules.slice(1)).toEqual(own);
+  });
+
+  it("stops a deploy on a failed rulesets listing, never reading it as none", async () => {
+    const w = world({ refusingRules: true });
+    await expect(runMode(w, "dark", ["--yes"])).rejects.toThrow(
+      "reading the zone's custom rules failed (500");
+    expect(w.events.filter((event) => CHANGE.test(event))).toEqual([]);
+  });
+
+  it("mode edge turns --kill's rule on before the other off, reads them back, and stands " +
+     "as asked", async () => {
+    const w = routed(world({ held: true }));
+    const outside = await runMode(w, "edge", ["--kill", "outside", "--yes"]);
+    expect(outside.plan).toEqual([HELD, `turn the edge kill rule "${OUTSIDE.description}" on`,
+                                  "read the edge kill's rules back: outside on, as the tree " +
+                                  "renders them"]);
+    expect(states(w)).toEqual({ outside: "block as rendered on", all: "block as rendered off" });
+    const at = w.events.length;
+    await runMode(w, "edge", ["--kill", "all", "--yes"]);
+    // Never neither on between them.
+    expect(w.events.slice(at).filter((event) => RULES.test(event))).toEqual([
+      "cf PATCH /zones/z/rulesets/rs/rules/rule-all",
+      "cf PATCH /zones/z/rulesets/rs/rules/rule-outside"]);
+    expect(states(w)).toEqual({ outside: "block as rendered off", all: "block as rendered on" });
+    await runMode(w, "edge", ["--kill", "none", "--yes"]);
+    expect(states(w)).toEqual({ outside: "block as rendered off", all: "block as rendered off" });
+    const after = w.events.length;
+    const none = await runMode(w, "edge", ["--kill", "none", "--yes"]);
+    expect(none.plan).toEqual([HELD, "the edge kill stands as asked: both rules off"]);
+    expect(w.events.slice(after).filter((event) => RULES.test(event))).toEqual([]);
+  });
+
+  it("mode edge makes the rules a zone lacks, the asked one on, and plans with no --yes " +
+     "changing nothing", async () => {
+    const planned = routed(world());
+    const plan = await runMode(planned, "edge", ["--kill", "all"]);
+    expect(plan.plan).toEqual(EDGE_RULES.map((rule) => `make the edge kill rule "${
+      rule.description}", ${rule === ALL ? "on" : "off"}: a Block on ${rule.expression}`)
+      .reverse());
+    expect(planned.events.filter((event) => CHANGE.test(event))).toEqual([]);
+    const w = routed(world());
+    await runMode(w, "edge", ["--kill", "all", "--yes"]);
+    expect(w.events.filter((event) => RULES.test(event))).toEqual(["cf POST /zones/z/rulesets"]);
+    expect(states(w)).toEqual({ outside: "block as rendered off", all: "block as rendered on" });
+  });
+
+  it("mode edge turns a rule on only while the doors hold every route of theirs, and off " +
+     "whenever asked", async () => {
+    const w = world({ held: true, rules: edgeHeld("all") });
+    for (const kill of ["outside", "all"]) {
+      await expect(runMode(w, "edge", ["--kill", kill, "--yes"])).rejects.toThrow(
+        `the doors do not hold every route of theirs on ${HOST}, so the edge kill rule ${kill} ` +
+        "would block what serves those paths instead");
+    }
+    expect(w.events.filter((event) => CHANGE.test(event))).toEqual([]);
+    await runMode(w, "edge", ["--kill", "none", "--yes"]);
+    expect(states(w)).toEqual({ outside: "block as rendered off", all: "block as rendered off" });
+  });
+
+  it("mode edge stops loudly when the rules read back otherwise", async () => {
+    const w = routed(world({ held: true }));
+    w.inert.add("rules");
+    await expect(runMode(w, "edge", ["--kill", "outside", "--yes"])).rejects.toThrow(
+      `the edge kill's rules read back otherwise: turn the edge kill rule "${
+        OUTSIDE.description}" on`);
+  });
+
+  it("takes --kill for mode edge alone, one of its rules or none", () => {
+    const w = world();
+    expect(parse(["--mode", "edge", "--kill", "all"], ENV, w.io).kill).toBe("all");
+    expect(() => parse(["--mode", "edge"], ENV, w.io)).toThrow(
+      "mode edge needs --kill: the edge kill rule left on: outside, all or none");
+    expect(() => parse(["--mode", "edge", "--kill", "on"], ENV, w.io)).toThrow(
+      "--kill is the edge kill rule left on: outside, all or none");
+    expect(() => parse(["--mode", "dark", "--kill", "none"], ENV, w.io)).toThrow(
+      "mode dark takes no --kill: it is mode edge's");
+  });
+});
+
 describe("platform-deploy.yml", () => {
   type Job = { if?: string; needs?: string | string[]; environment?: string;
                "timeout-minutes"?: number; env?: Record<string, string>;
@@ -5157,8 +5413,9 @@ describe("platform-deploy.yml", () => {
   const RUNNER_TEMP = "/runner/temp";
   const PLAN = ["--plan", `${RUNNER_TEMP}/deploy-plan.json`];
   /** The dispatch's inputs, each handed to the kit as its option of the same name. */
-  const DISPATCH = ["MODE", "ROTATE", "MIGRATE", "RECORD", "SET", "REPLACE", "OWNER", "ACT",
-                    "GENERATION", "CONFIRM", "KEYRING", "AT", "MINUTES", "WORKER", "FILTER"];
+  const DISPATCH = ["MODE", "ROTATE", "MIGRATE", "RECORD", "KILL", "SET", "REPLACE", "OWNER",
+                    "ACT", "GENERATION", "CONFIRM", "KEYRING", "AT", "MINUTES", "WORKER",
+                    "FILTER"];
   const dispatched = (inputs: Record<string, string>) =>
     DISPATCH.flatMap((name) => [`--${name.toLowerCase()}`, inputs[name]!]);
   /** `mode` dispatched with what it needs and nothing else. */
@@ -5166,6 +5423,7 @@ describe("platform-deploy.yml", () => {
     ...Object.fromEntries(DISPATCH.map((name) => [name, ""])), MODE: mode, ...NEEDED[mode] });
   /** Dispatches that give the options a mode may go without. */
   const OPTIONS: Record<string, string>[] = [{ ...dispatchOf("dark"), ROTATE: "ROUTING_MAC_KEY", MIGRATE: "owner" },
+                   { ...dispatchOf("edge"), KILL: "outside" },
                    { ...dispatchOf("control"), SET: "outside=on canary+=user_bob",
                      REPLACE: JSON.stringify(DARK) },
                    { ...dispatchOf("restore"), GENERATION: FROM,
@@ -5178,11 +5436,12 @@ describe("platform-deploy.yml", () => {
                      FILTER: "start did not answer" }];
   /** What the kit reads of a run's own options. */
   const ownOf = (run: ReturnType<typeof parse>) =>
-    [run.record, run.edits.length, run.replace, run.owner, run.act?.op ?? null,
+    [run.record, run.kill, run.edits.length, run.replace, run.owner, run.act?.op ?? null,
      run.generation?.gen ?? null, run.confirm, run.keyring, run.at?.toISOString() ?? null,
      run.minutes, run.worker, run.filter];
   const wanted = (inputs: Record<string, string>) =>
-    [inputs["RECORD"] || null, inputs["SET"]!.split(" ").filter(Boolean).length,
+    [inputs["RECORD"] || null, inputs["KILL"] || null,
+     inputs["SET"]!.split(" ").filter(Boolean).length,
      inputs["REPLACE"] ? JSON.parse(inputs["REPLACE"]) : undefined, inputs["OWNER"] || null,
      inputs["ACT"] ? `owner.${inputs["ACT"].split("=")[0]}` : null,
      inputs["GENERATION"] ? inputs["GENERATION"].split("/")[1] : null,
@@ -5424,6 +5683,9 @@ const DARK_FRESH = [
   `WorkOS redirect URI ${UPSTREAM_CALLBACK}: registered`,
   `WorkOS's authorize of the doors' client and ${UPSTREAM_CALLBACK}: it takes them, sending ` +
   "the browser to auth.test's sign-in",
+  ...EDGE_RULES.map((rule) => `make the edge kill rule "${rule.description}", off: a Block on ${
+    rule.expression}`),
+  "read the edge kill's rules back: both off, as the tree renders them",
   ...Object.entries(NAMESPACES).map(([binding, title]) =>
     `create the KV namespace ${title} (${binding})`),
   ...BUCKETS.map((name) => `create the R2 bucket ${name}`),

@@ -21,7 +21,7 @@ function world(answer: (body: Record<string, unknown>) => { status: number; body
   const printed: string[] = [];
   const unused = () => { throw new Error("a logs run reaches only Cloudflare's API"); };
   const io: Io = {
-    fetch: async (url, init) => {
+    fetch: async (url: string, init?: RequestInit) => {
       const path = url.replace("https://api.cloudflare.com", "");
       const body = init?.body === undefined ? null
         : JSON.parse(String(init.body)) as Record<string, unknown>;
@@ -36,7 +36,7 @@ function world(answer: (body: Record<string, unknown>) => { status: number; body
       return Response.json({ success: false, errors: [{ code: 7003 }] }, { status: 404 });
     },
     spawn: unused, exec: unused, bundles: unused, treeImage: unused, commit: unused,
-    fileAt: unused, log: (line) => { printed.push(line); }, now: () => NOW,
+    fileAt: unused, log: (line: string) => { printed.push(line); }, now: () => NOW,
     sleep: async () => {},
   } as unknown as Io;
   return { calls, printed, io };
