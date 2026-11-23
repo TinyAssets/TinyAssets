@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from "vitest";
 
+import { ringText } from "../../contract/src/envelope";
 import { Refusal } from "../../contract/src/refusal";
 import {
   LEASE_LIVED, mintToken, tokenHash, verifyToken,
@@ -20,10 +21,13 @@ import {
   generationOf, SANDBOX_HEADER, sandboxEnv, withEgressToken,
 } from "../../contract/src/egress";
 
-const TOKEN = `${btoa("owner-1").replace(/=+$/, "")}.2000000000.${"T".repeat(43)}.${
+const TOKEN = `${btoa("owner-1").replace(/=+$/, "")}.2000000000.${"T".repeat(43)}.k1.${
   "M".repeat(43)}`;
-/** A routing key, as a deploy generates one: 32 bytes, base64url. */
-const KEY = Buffer.alloc(32, 7).toString("base64url");
+/** A routing keyring of `kids`, each key filled with `fill` and its kid's number. */
+const ring = (active: string, kids: readonly string[], fill = 7) => ringText({ active,
+  keys: new Map(kids.map((kid) => [kid, new Uint8Array(32).fill(fill + Number(kid.slice(1)))])) });
+/** A routing keyring as `keyring-new` makes one: `k1` alone. */
+const KEY = ring("k1", ["k1"]);
 const transform = (generation: number) => ({ [EGRESS_HOST]: [{ transform: { headers: {
   [GENERATION_HEADER]: String(generation) } } }] });
 
@@ -195,13 +199,14 @@ describe("the agent's own MCP servers under the egress policy", () => {
 describe("a sandbox token", () => {
   const EXPIRES = 2_000_000_000;
 
-  it("names its owner and expiry, carries the routing key's MAC, and keeps only its " +
-     "secret's hash", () => {
+  it("names its owner, expiry and kid, carries that kid's MAC, and keeps only its secret's " +
+     "hash", () => {
     const owner = "user_01HZ";
     const minted = mintToken(KEY, "egress", owner, EXPIRES);
-    const [routing, expires, secret, mac] = minted.token.split(".");
+    const [routing, expires, secret, kid, mac] = minted.token.split(".");
     expect(expires).toBe(String(EXPIRES));
     expect(secret).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(kid).toBe("k1");
     expect(mac).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(routing).toBe(Buffer.from(owner).toString("base64url"));
     expect(verifyToken(KEY, "egress", minted.token))
@@ -217,26 +222,30 @@ describe("a sandbox token", () => {
     expect(() => mintToken(KEY, "socket", owner, LEASE_LIVED)).toThrow(/expiry/);
   });
 
-  it("is refused forged, altered (its expiry too), of the other kind or under another key",
-     () => {
+  it("is refused forged, altered (its expiry and kid too), of the other kind or under another " +
+     "key", () => {
     const minted = mintToken(KEY, "egress", "user_01HZ", EXPIRES);
-    const [routing, expires, secret, mac] = minted.token.split(".") as
-      [string, string, string, string];
+    const [routing, expires, secret, kid, mac] = minted.token.split(".") as
+      [string, string, string, string, string];
     const flip = (part: string) => `${part.slice(0, -2)}${part.at(-2) === "A" ? "B" : "A"}${
       part.at(-1)}`;
     const other = Buffer.from("user_02XY").toString("base64url");
-    const otherKey = Buffer.alloc(32, 9).toString("base64url");
+    const otherKey = ring("k1", ["k1"], 9);
     const later = String(EXPIRES + 86_400);
-    for (const bad of ["", secret, `${routing}.${secret}.${mac}`,
-                       `${routing}.${expires}.${secret}.${mac}x`, `.${expires}.${secret}.${mac}`,
-                       `${routing}.${expires}..${mac}`, `${routing}=.${expires}.${secret}.${mac}`,
-                       `${other}.${expires}.${secret}.${mac}`,
-                       `${flip(routing)}.${expires}.${secret}.${mac}`,
-                       `${routing}.${later}.${secret}.${mac}`,
-                       `${routing}.0${expires}.${secret}.${mac}`,
-                       `${routing}.${expires}.${flip(secret)}.${mac}`,
-                       `${routing}.${expires}.${secret}.${flip(mac)}`,
-                       `${routing}.${expires}.${secret}.${"A".repeat(43)}`]) {
+    const tail = `${kid}.${mac}`;
+    for (const bad of ["", secret, `${routing}.${secret}.${tail}`,
+                       `${routing}.${expires}.${secret}.${mac}`,
+                       `${routing}.${expires}.${secret}.${tail}x`, `.${expires}.${secret}.${tail}`,
+                       `${routing}.${expires}..${tail}`, `${routing}=.${expires}.${secret}.${tail}`,
+                       `${other}.${expires}.${secret}.${tail}`,
+                       `${flip(routing)}.${expires}.${secret}.${tail}`,
+                       `${routing}.${later}.${secret}.${tail}`,
+                       `${routing}.0${expires}.${secret}.${tail}`,
+                       `${routing}.${expires}.${flip(secret)}.${tail}`,
+                       `${routing}.${expires}.${secret}.${kid}.${flip(mac)}`,
+                       `${routing}.${expires}.${secret}..${mac}`,
+                       `${routing}.${expires}.${secret}.${"k".repeat(33)}.${mac}`,
+                       `${routing}.${expires}.${secret}.${kid}.${"A".repeat(43)}`]) {
       expect(verifyToken(KEY, "egress", bad)).toBeNull();
     }
     expect(verifyToken(KEY, "sync", minted.token)).toBeNull();
@@ -247,28 +256,45 @@ describe("a sandbox token", () => {
     const respelled = alphabet[alphabet.indexOf(last) ^ 1]!;
     expect(Buffer.from(`${mac.slice(0, -1)}${respelled}`, "base64url"))
       .toEqual(Buffer.from(mac, "base64url"));
-    expect(verifyToken(KEY, "egress", `${routing}.${expires}.${secret}.${mac.slice(0, -1)}${
-      respelled}`)).toBeNull();
+    expect(verifyToken(KEY, "egress", `${routing}.${expires}.${secret}.${kid}.${
+      mac.slice(0, -1)}${respelled}`)).toBeNull();
     // A forger who picks a routing part, an expiry and a secret still needs the key's MAC.
     const forged = mintToken(otherKey, "egress", "user_02XY", EXPIRES).token;
     expect(verifyToken(KEY, "egress", forged)).toBeNull();
   });
 
-  it("takes a routing key of 32 bytes, and none shorter", () => {
-    const thirtyTwo = Buffer.alloc(32, 3).toString("base64url");
-    const minted = mintToken(thirtyTwo, "egress", "user_01HZ", EXPIRES);
-    expect(verifyToken(thirtyTwo, "egress", minted.token)).not.toBeNull();
-    for (const short of [1, 16, 31]) {
-      expect(() => mintToken(Buffer.alloc(short, 3).toString("base64url"), "egress",
-                             "user_01HZ", EXPIRES)).toThrow(/ROUTING_MAC_KEY/);
+  it("is minted under the ring's active kid and verified under any kid the ring holds", () => {
+    // Before a rotation's activation, after it, and once the older kid is retired.
+    const staged = ring("k1", ["k1", "k2"]);
+    const rotated = ring("k2", ["k1", "k2"]);
+    const retired = ring("k2", ["k2"]);
+    const older = mintToken(staged, "egress", "user_01HZ", EXPIRES).token;
+    const newer = mintToken(rotated, "egress", "user_01HZ", EXPIRES).token;
+    expect([older.split(".")[3], newer.split(".")[3]]).toEqual(["k1", "k2"]);
+    for (const held of [KEY, staged, rotated]) {
+      expect(verifyToken(held, "egress", older)).toMatchObject({ owner: "user_01HZ" });
     }
+    for (const held of [staged, rotated, retired]) {
+      expect(verifyToken(held, "egress", newer)).toMatchObject({ owner: "user_01HZ" });
+    }
+    expect(verifyToken(retired, "egress", older)).toBeNull();
+    expect(verifyToken(KEY, "egress", newer)).toBeNull();
+    // The kid is in the MAC: a token's kid named another the ring holds is refused, even one
+    // under the same key bytes.
+    const [routing, at, secret, , mac] = older.split(".");
+    expect(verifyToken(rotated, "egress", `${routing}.${at}.${secret}.k2.${mac}`)).toBeNull();
+    const k1 = (JSON.parse(staged) as { keys: Record<string, string> }).keys["k1"];
+    const twins = JSON.stringify({ active: "k1", keys: { k1, k9: k1 } });
+    expect(verifyToken(twins, "egress", older)).toMatchObject({ owner: "user_01HZ" });
+    expect(verifyToken(twins, "egress", `${routing}.${at}.${secret}.k9.${mac}`)).toBeNull();
   });
 
-  it("fails loudly on a Worker without a usable routing key", () => {
-    for (const key of [undefined, "", "short", Buffer.alloc(31).toString("base64url"),
-                       `${KEY}=`]) {
-      expect(() => mintToken(key, "egress", "user_01HZ", EXPIRES)).toThrow(/ROUTING_MAC_KEY/);
-      expect(() => verifyToken(key, "egress", TOKEN)).toThrow(/ROUTING_MAC_KEY/);
+  it("fails loudly on a Worker without a usable routing keyring", () => {
+    for (const keyring of [undefined, "", "short", Buffer.alloc(32, 7).toString("base64url"),
+                           `${KEY}x`, KEY.replace(/"k1":"[^"]+"/, '"k1":"AAAA"')]) {
+      expect(() => mintToken(keyring, "egress", "user_01HZ", EXPIRES))
+        .toThrow(/ROUTING_KEYRING/);
+      expect(() => verifyToken(keyring, "egress", TOKEN)).toThrow(/ROUTING_KEYRING/);
     }
   });
 });

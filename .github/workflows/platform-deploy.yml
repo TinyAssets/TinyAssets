@@ -26,7 +26,9 @@ name: Platform deploy (manual, founder-approved)
 # (platform/ci/guards/environment.test.ts), and never from a host
 # (Direction 8). The kit never prints a value and never makes one in a
 # deploy; each keyring is made once with `keyring-new` (scripts/platform_setup.py
-# makes the same in memory) and rotated with `keyring-add`, then stored here.
+# makes the same in memory) and rotated with `keyring-add` (the routing keyring,
+# which two Workers hold, with `keyring-stage` and then `keyring-activate`), then
+# stored here.
 #
 # The modes are the kit's own (deploy.ts says what each does): plan, dark,
 # routes, h2, handback, rollback, edge, control, owner, restore, copyback,
@@ -63,7 +65,8 @@ name: Platform deploy (manual, founder-approved)
 # erase-<owner> (a run without it names the words); `rotation` asks every
 # owner the directory lists to bring its blobs under `keyring`'s active kid,
 # its progress kept in the control namespace; `retire` sets `keyring` with its
-# old kids gone, only once `confirm` is the words its apply job names. Each shares
+# old kids gone (for the routing keyring, once every route E2B holds opens
+# under it), only once `confirm` is the words its apply job names. Each shares
 # this file's concurrency group, so no operator run ever interleaves with a deploy.
 
 on:
@@ -121,12 +124,12 @@ on:
         default: ''
         type: string
       confirm:
-        description: 'restore: wipe-<owner>-<gen> as restore.pin answers it, or release-<owner>; erase: erase-<owner>; retire: retire-<keyring>-<kids> as its apply job names it'
+        description: 'restore: wipe-<owner>-<gen> as restore.pin answers it, or release-<owner>; erase: erase-<owner>; retire: retire-<keyring>-<kids>, or retire-ROUTING_KEYRING-but-<kid>, as its apply job names it'
         required: false
         default: ''
         type: string
       keyring:
-        description: 'rotation and retire: FILES_KEYRING or GATEWAY_KEYRING'
+        description: 'rotation: FILES_KEYRING or GATEWAY_KEYRING; retire: those or ROUTING_KEYRING'
         required: false
         default: ''
         type: string
@@ -252,7 +255,7 @@ jobs:
       OWNER_ISSUER: ${{ vars.OWNER_ISSUER }}
       OFFSITE_BUCKET: ${{ vars.OFFSITE_BUCKET }}
       E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
-      ROUTING_MAC_KEY: ${{ secrets.ROUTING_MAC_KEY }}
+      ROUTING_KEYRING: ${{ secrets.ROUTING_KEYRING }}
       GATEWAY_KEYRING: ${{ secrets.GATEWAY_KEYRING }}
       FILES_KEYRING: ${{ secrets.FILES_KEYRING }}
       OPERATOR_KEYRING: ${{ secrets.OPERATOR_KEYRING }}

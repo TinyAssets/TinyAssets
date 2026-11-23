@@ -20,7 +20,7 @@
  *   `FOREIGN_ISSUERS` empty (`[]`) until a provider's issuer is listed, so any other
  *   issuer is refused, never taken for a new owner.
  * - Four secrets, declared by name (`secrets.required`, which binds nothing):
- *   `ROUTING_MAC_KEY`, the routing key sandbox tokens are MAC'd under, the owner Worker's
+ *   `ROUTING_KEYRING`, the routing keyring sandbox tokens are MAC'd under, the owner Worker's
  *   too (`SHARED_SECRETS`); `WORKOS_API_KEY`, the upstream's client secret;
  *   `E2B_WEBHOOK_SECRET`, E2B's lifecycle webhook's signature secret; and
  *   `OPERATOR_KEYRING`, the ring the operator channel's messages are MAC'd under.
@@ -69,9 +69,12 @@ export const IMPORT_WINDOW = Object.freeze({ bucket: "IMPORT_STAGING", producer:
 /** The operator channel's bindings (`src/operator.ts`), each named once here. */
 export const OPERATOR_CHANNEL = Object.freeze({ bucket: "OPERATOR_LOG", producer: "OPERATOR" });
 
-/** The secrets the doors share with another Worker, by its folder: the routing key, the owner's. */
+/**
+ * The secrets the doors share with another Worker, by its folder: the routing keyring, the
+ * owner's.
+ */
 export const SHARED_SECRETS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  owner: Object.freeze(["ROUTING_MAC_KEY"]) });
+  owner: Object.freeze(["ROUTING_KEYRING"]) });
 
 /** The other Workers' namespaces the doors bind, by binding: each Worker's folder and class. */
 export const OBJECTS = Object.freeze({

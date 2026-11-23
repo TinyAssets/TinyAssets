@@ -36,7 +36,7 @@ import { utf8Text } from "../../contract/src/text";
 import { ownerObject } from "./binder";
 import type { DoorsEnv } from "./env";
 import type { BilledEvent } from "../../contract/src/owner";
-import { openRoute } from "../../contract/src/routing-mac";
+import { openRoute, ROUTE_METADATA } from "../../contract/src/routing-mac";
 
 import { answer, boundedBytes } from "./kit";
 import { answered, asJson } from "./refused";
@@ -100,7 +100,7 @@ export function lifecycleEvent(body: string):
   }
   return { id: parsed["id"], execution_id, sandbox_id, at,
            kind: parsed["type"].endsWith("paused") ? "paused" : "killed",
-           route: metadata["ta_route"], started_at: started, execution_ms: ms, vcpu,
+           route: metadata[ROUTE_METADATA], started_at: started, execution_ms: ms, vcpu,
            memory_mb: memory };
 }
 
@@ -137,7 +137,7 @@ export async function e2bLifecycle(request: Request, env: DoorsEnv): Promise<Res
   if (event === "ignored") {
     return answer(200, { ignored: true });
   }
-  const route = openRoute(env.ROUTING_MAC_KEY, event.route);
+  const route = await openRoute(env.ROUTING_KEYRING, event.route);
   if (route === null) {
     console.error("an E2B lifecycle event named no sandbox of ours");  // no ids in the log
     return answer(200, { unrouted: true });

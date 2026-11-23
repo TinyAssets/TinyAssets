@@ -98,7 +98,7 @@ describe("a run", () => {
     const token = egressTokenOf(start.network!.network)!;
     const leases = JSON.stringify(await r.sql("SELECT * FROM sandbox_leases"));
     expect(leases).not.toContain(token.split(".")[2]);
-    expect(leases).toContain(verifyToken(env.ROUTING_MAC_KEY, "egress", token)!.hash);
+    expect(leases).toContain(verifyToken(env.ROUTING_KEYRING, "egress", token)!.hash);
     expect(await r.sql("SELECT lease_id, epoch FROM runs WHERE id = ?", run.run_id))
       .toEqual([{ lease_id: lease!["lease_id"], epoch: lease!["epoch"] }]);
     // Its grant: the run's own secret's hash, never the secret, which only its URLs carry.
@@ -746,7 +746,7 @@ describe("simultaneous runs", () => {
     expect(JSON.stringify(onB.start.config.env)).not.toContain(a);
     const egress = (start: SandboxStart) => r.bind({ sandbox: {
       kind: "egress", generation: 1, secret: hashed(secretOf(start)), token: verifyToken(
-        env.ROUTING_MAC_KEY, "egress", egressTokenOf(onA.start.network!.network)!)!.hash } });
+        env.ROUTING_KEYRING, "egress", egressTokenOf(onA.start.network!.network)!)!.hash } });
     const call = (run: string, connection: string,
                   as = run === onA.run.run_id ? onA.start : onB.start) =>
       r.stub.egressOpen(egress(as), {

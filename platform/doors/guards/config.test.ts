@@ -5,7 +5,7 @@
  * sources, each named by its folder and read from its own config:
  *
  * - `OWNER` (`OBJECTS`): the owner Worker's `OwnerDO` namespace, by the owner Worker's name,
- *   which must be its own SQLite class; the owner Worker declares the same routing key
+ *   which must be its own SQLite class; the owner Worker declares the same routing keyring
  *   (`SHARED_SECRETS`).
  * - `GATEWAY`, `EGRESS`, `FILES` and `FILES_LOCATE` (`SERVICES`): each one entrypoint of its
  *   Worker, whose class in that Worker's entry extends `WorkerEntrypoint` and serves exactly
@@ -317,11 +317,11 @@ describe("doors Worker config", () => {
     expect(doorsConfigProblems(config, without, SOURCES)).not.toEqual([]);
   });
 
-  it("sees the owner Worker without the routing key the doors share with it", () => {
+  it("sees the owner Worker without the routing keyring the doors share with it", () => {
     const owner = platform.get("owner")!;
     expect(doorsConfigProblems(config, new Map(platform).set("owner", patched(owner,
       { secrets: undefined })), SOURCES))
-      .toEqual(["the owner Worker declares ROUTING_MAC_KEY too"]);
+      .toEqual(["the owner Worker declares ROUTING_KEYRING too"]);
   });
 
   it.each([

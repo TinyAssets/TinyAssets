@@ -154,7 +154,8 @@ function start(over: Partial<SandboxStart> = {}): SandboxStart {
   return {
     run: RUN, agent: "main", conversation: `cv_${hex(32, "c")}`, engine: "claude-code",
     credential: "vendor_login_in_sandbox", model: null, session_id: null, prompt: "hello",
-    unattended: false, authority: "owner", lease: LEASE, route: "r".repeat(64),
+    unattended: false, authority: "owner", lease: LEASE,
+    route: `v1.k1.${"r".repeat(16)}.${"r".repeat(43)}`,
     tokens: { sync_token: "sync", runner_token: hex(64, "d") },
     network: NETWORK as never, hosts: CLAUDE_HOSTS,
     config: { generation: 1, egress: { mode: "allowlist", destinations: [] },
@@ -1612,7 +1613,7 @@ describe("the runner, by digest", () => {
 
 describe("a sign-in", () => {
   const SI = `si_${"5".repeat(32)}`;
-  const ROUTE = "s".repeat(64);
+  const ROUTE = `v1.k1.${"s".repeat(16)}.${"s".repeat(43)}`;
   function signin(over: Record<string, unknown> = {}) {
     return { id: SI, engine: "codex", mode: "in" as const, authority: "owner",
              lease: LEASE, tokens: start().tokens, network: NETWORK as never,
@@ -1686,7 +1687,7 @@ describe("a sign-in", () => {
   it("refuses a sign-in that is not one: its id, its hosts, plain HTTP", async () => {
     const who = owner();
     for (const bad of [signin({ id: "run_x" }), signin({ hosts: undefined }),
-                       signin({ route: undefined }), signin({ route: "short" }),
+                       signin({ route: undefined }), signin({ route: "a route" }),
                        signin({ urls: { events: `http://${EGRESS_HOST}/x`,
                                         signin: start().urls.signin } })]) {
       const { got, causes } = await faulted(() => stub(who).signin(bad as never));

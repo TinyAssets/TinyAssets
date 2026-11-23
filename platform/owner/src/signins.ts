@@ -396,7 +396,7 @@ export interface SigninRequest {
  */
 export interface SigninsDoorNeeds extends Pick<DoorUnits, "door">,
                                           Pick<ObjectReads, "owner" | "sandbox" | "storage"> {
-  readonly env: Pick<OwnerEnv, "ROUTING_MAC_KEY">;
+  readonly env: Pick<OwnerEnv, "ROUTING_KEYRING">;
   readonly signins: Signins;
   readonly files: Pick<Files, "leaseRenew" | "leaseSignins" | "liveLeases" | "sandboxLease">;
   readonly grants: { live(client: string): boolean };
@@ -463,8 +463,8 @@ export const signinsDoors = Object.freeze({
       authority: begun.row.authority, lease: begun.lease,
       tokens: begun.opened?.tokens ?? null, network: begun.opened?.network ?? null,
       hosts: vendorHosts(begun.row.engine, "vendor_login_in_sandbox"),
-      route: sealRoute(o.env.ROUTING_MAC_KEY, { owner: o.owner(),
-                                                   authority: begun.row.authority }),
+      route: await sealRoute(o.env.ROUTING_KEYRING, { owner: o.owner(),
+                                                         authority: begun.row.authority }),
       urls: signinUrls(begun.row.id) };
     const answer = await startOutcome("a sign-in", () => o.sandbox.signin(signin),
                                       () => o.door(() => o.signins.owned(begun.row.id)));

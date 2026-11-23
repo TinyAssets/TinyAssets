@@ -94,9 +94,9 @@ const SIGNED_IN = Object.freeze({ engine: "claude-code",
 const ROOMY = Object.freeze({ turn_requests: 10_000, turn_tokens: 1_000_000_000,
                               turn_cost: 1_000_000_000_000 });
 
-/** A token's secret's hash, once its MAC is the routing key's own for `kind`. */
+/** A token's secret's hash, once its MAC is the routing keyring's own for `kind`. */
 function hashOf(kind: "egress" | "sync", token: string): string {
-  return verifyToken(env.ROUTING_MAC_KEY, kind, token)!.hash;
+  return verifyToken(env.ROUTING_KEYRING, kind, token)!.hash;
 }
 
 /** The run a lease is for when the owner holds a connection: pi on that key. */
@@ -1427,12 +1427,12 @@ describe("the sandbox's lease", () => {
     const lease = await leased(r);
     const tokens = { egress: lease.opened.egress_token, sync: lease.opened.sync_token };
     for (const [kind, token] of Object.entries(tokens) as ["egress" | "sync", string][]) {
-      expect(token).toMatch(/^[A-Za-z0-9_-]+\.0\.[A-Za-z0-9_-]{43}\.[A-Za-z0-9_-]{43}$/);
+      expect(token).toMatch(/^[A-Za-z0-9_-]+\.0\.[A-Za-z0-9_-]{43}\.k1\.[A-Za-z0-9_-]{43}$/);
       // It has no deadline of its own: it lives while its lease is renewed.
-      expect(verifyToken(env.ROUTING_MAC_KEY, kind, token)!.expires).toBe(0);
-      expect(verifyToken(env.ROUTING_MAC_KEY, kind, token)!.owner).toBe(r.name);
+      expect(verifyToken(env.ROUTING_KEYRING, kind, token)!.expires).toBe(0);
+      expect(verifyToken(env.ROUTING_KEYRING, kind, token)!.owner).toBe(r.name);
       // Each is its own kind's alone.
-      expect(verifyToken(env.ROUTING_MAC_KEY, kind === "egress" ? "sync" : "egress", token))
+      expect(verifyToken(env.ROUTING_KEYRING, kind === "egress" ? "sync" : "egress", token))
         .toBeNull();
     }
     expect(lease.egress).not.toBe(lease.sync);
