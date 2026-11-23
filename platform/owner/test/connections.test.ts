@@ -1154,50 +1154,69 @@ describe("what a key can pay for", () => {
   });
 });
 
-describe("how strong its models are", () => {
+describe("the models its vendor serves it", () => {
   const OPENROUTER = "openrouter_user_models_v1";
   const kept = (r: Gated) =>
-    r.sql("SELECT scores, due IS NOT NULL AS due FROM connection_strength");
+    r.sql("SELECT models, due IS NOT NULL AS due FROM connection_listing");
+  const models = async (r: Gated) =>
+    (await r.stub.connectionList(r.session())).connections[0]!.models;
   /**
-   * Once the lane has kept a strength read: its due set again, after now. A row the lane made
+   * Once the lane has kept a listing read: its due set again, after now. A row the lane made
    * is due at once, and the test sets one due at 0, so neither passes before the read's outcome.
    */
   const read = (r: Gated) => until(async () => (await r.sql(
-    "SELECT due FROM connection_strength WHERE due > ?", Date.now() / 1000)).length === 1,
-                                   "the strength read");
+    "SELECT due FROM connection_listing WHERE due > ?", Date.now() / 1000)).length === 1,
+                                   "the listing read");
+  const again = async (r: Gated, answer: unknown) => {
+    await r.gateway.arm("listing", { answer });
+    await r.sql("UPDATE connection_listing SET due = 0");
+    await lanes(r);
+    await read(r);
+  };
 
-  it("is read once a connection is active, its own models' scores kept, read again daily",
-     async () => {
+  it("is read once a connection is active, and its models are then the ones listed, with " +
+     "their scores, read again daily", async () => {
     const r = await gated();
-    const [own] = (await catalog(OPENAI)).map((model) => model.id);
-    await r.gateway.arm("strength", { answer: { scores: [
-      { id: own!, score: 13.6 }, { id: "vendor/not-its-model", score: 60 }] } });
+    const [one, two, three] = (await catalog(OPENAI)).map((model) => model.id);
+    await r.gateway.arm("listing", { answer: { models: [
+      { id: one!, score: 13.6 }, { id: two!, score: null },
+      { id: "vendor/not-its-model", score: 60 }] } });
     const connection = await r.connect("sk-good", OPENAI, "OpenRouter", undefined, OPENROUTER);
     await lanes(r);
     await read(r);
-    expect(await kept(r)).toEqual([{ scores: JSON.stringify([[own, 13.6]]), due: 1 }]);
+    expect(await kept(r)).toEqual([{ models: JSON.stringify([[one, 13.6], [two, null]]),
+                                     due: 1 }]);
+    expect(await models(r)).toEqual([one, two]);
     // The read its record names, with the connection's blob.
-    const [sent] = (await r.gateway.calls()).filter((call) => call.method === "strength");
+    const [sent] = (await r.gateway.calls()).filter((call) => call.method === "listing");
     expect((sent!.args as unknown[]).slice(1)).toEqual([
       connection, 1, expect.any(String),
       { url: "https://openrouter.ai/api/v1/models/user", rows: ["data"], id: ["id"],
         score: ["benchmarks", "artificial_analysis", "intelligence_index"] }]);
-    // An answer of another shape keeps what was read, and is read again later.
-    await r.gateway.arm("strength", { answer: { scores: [{ id: own!, score: "high" }] } });
-    await r.sql("UPDATE connection_strength SET due = 0");
-    await lanes(r);
-    await read(r);
-    expect(await kept(r)).toEqual([{ scores: JSON.stringify([[own, 13.6]]), due: 1 }]);
+    // A model its vendor stops serving goes, and one it serves again comes back.
+    await again(r, { models: [{ id: two!, score: null }, { id: three!, score: 2 }] });
+    expect(await models(r)).toEqual([two, three]);
+    await again(r, { models: [{ id: one!, score: 13.6 }] });
+    expect(await models(r)).toEqual([one]);
+    // An answer of another shape, or one that lists none of its models, keeps what was read,
+    // and is read again later.
+    for (const answer of [{ models: [{ id: one!, score: "high" }] },
+                          { models: [{ id: one! }] },
+                          { models: [{ id: "vendor/not-its-model", score: 60 }] }]) {
+      await again(r, answer);
+      expect(await models(r), JSON.stringify(answer)).toEqual([one]);
+    }
     await r.stub.connectionRevoke(r.session(), { connection });
     expect(await kept(r)).toEqual([]);
   });
 
-  it("is nothing, and never read again, where its sealed endpoints hold no such read",
-     async () => {
+  it("is every model its setup check listed, never read again, where its sealed endpoints " +
+     "hold no such read", async () => {
     const r = await gated();
     await r.connect("sk-good", OPENAI, "OpenRouter", undefined, OPENROUTER);
     await lanes(r);
-    expect(await kept(r)).toEqual([{ scores: null, due: 0 }]);
+    expect(await kept(r)).toEqual([{ models: null, due: 0 }]);
+    expect(await models(r)).toEqual((await catalog(OPENAI)).map((model) => model.id));
   });
 });
 

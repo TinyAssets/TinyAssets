@@ -284,8 +284,8 @@ function keyLimits(request: Request): Response {
 /**
  * A vendor's model listing (`models.test/models`, in OpenRouter's `GET /api/v1/models/user`
  * shape), by the key sent: `sk-listed` lists a scored model, one with no benchmarks and one
- * whose score is null; `sk-unscored` scores none; `sk-odd` is an answer of another shape;
- * any other is refused.
+ * whose score is null; `sk-unscored` scores none; `sk-empty` lists nothing; `sk-odd` is an
+ * answer of another shape, `sk-noid` a row with no id; any other is refused.
  */
 function modelListing(request: Request): Response {
   const key = request.headers.get("authorization")?.replace(/^Bearer /, "");
@@ -296,6 +296,8 @@ function modelListing(request: Request): Response {
                   { id: "cohere/north-mini-code:free" },
                   scored("google/gemma-4-26b-a4b-it:free", null)],
     "sk-unscored": [{ id: "cohere/north-mini-code:free" }],
+    "sk-empty": [],
+    "sk-noid": [scored("nvidia/nemotron-3.5-super-vl:free", 13.6), { name: "no id" }],
   }[key ?? ""];
   if (key === "sk-odd") {
     return Response.json({ models: [] });

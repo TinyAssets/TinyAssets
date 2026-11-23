@@ -3,8 +3,8 @@
  * service's key (a connector, `SERVICE_PROVIDER`: no models, never metered, its scope one URL
  * of an outside service, bound to a run by `network.ts` `connectorsOf`): what each one is,
  * the blob the gateway sealed its credential into, the OAuth flows that connect one, the
- * refresh lease, what each one's key can pay for, how strong its vendor lists each of its
- * models, and the `connections` lane's housekeeping.
+ * refresh lease, what each one's key can pay for, which of its models its vendor serves it
+ * and how strong it lists them, and the `connections` lane's housekeeping.
  *
  * **No plaintext enters the object.** The binder hands a pasted key to `GATEWAY.seal`
  * and an OAuth code to `GATEWAY.exchange`; the object stores only what comes back, the
@@ -67,13 +67,17 @@
  * the next refusal); one that pays is not read again until a refusal says otherwise. `auto`
  * reads it (`usable`; `sources/src/ranking.ts` `pickable`), and so does the owner's view.
  *
- * **How strong its models are.** A source whose record says where its vendor lists each
- * model's strength (`strength`) has each active connection's models' scores kept
- * (`connection_strength`), the ones its listing scores, none until read. The lane reads them
- * as it reads credit (`LaneRead`): once a connection is active, the ones from before among
- * them, through the gateway's `strength` where the sealed endpoints allow it; again every
- * `strengthRecheckS`, and `strengthRetryS` after a failed read. `auto` orders by them the
- * models no ranking entry places (`usable`; `auto.ts` `ranked`).
+ * **The models its vendor serves it.** A source whose record says where its vendor lists the
+ * models it serves a key (`listing`) has each active connection's listed models kept
+ * (`connection_listing`): each of its models the listing lists, with the score it lists it at
+ * or none. The lane reads it as it reads credit (`LaneRead`): once a connection is active, the
+ * ones from before among them, through the gateway's `listing` where the sealed endpoints
+ * allow it; again every `listingRecheckS`, and `listingRetryS` after a failed read. Once read,
+ * a connection's models are the ones listed (`modelsOf`), for every reader: what `auto` ranks
+ * and scores (`usable`; `auto.ts` `ranked`), what a run's named model must be, what the egress
+ * door reserves by (`egressOf`) and what the owner sees (`list`); until then, or with nothing
+ * to read on its blob, the ones its setup check listed. A model its vendor stops serving goes
+ * at the next read, and one it serves again comes back, since the row keeps the whole list.
  *
  * Every write is a unit of the object's gate, and each unit reads what it acts on: a door's
  * body, or a step between the lane's or a call's outside calls. Bounds: `maxConnections`
@@ -87,7 +91,7 @@ import { randomBytes } from "node:crypto";
 
 
 import {
-  type CreditRead, egressScope, type EgressScope, SERVICE_PROVIDER, type StrengthRead,
+  type CreditRead, egressScope, type EgressScope, type ListingRead, SERVICE_PROVIDER,
 } from "../../contract/src/egress-scope";
 import { base64url, KID, parseBlob } from "../../contract/src/envelope";
 import { fields } from "../../contract/src/doors";
@@ -97,7 +101,7 @@ import { bundledSources } from "../../sources/src/catalog";
 import type { SourceRecord } from "../../sources/src/schema";
 
 import type {
-  GatewayService, KeyCredit, ModelStrength, Refreshed,
+  GatewayService, KeyCredit, ModelListing, Refreshed,
 } from "../../contract/src/gateway";
 import type {
   ConnectionCommitRequest, ConnectionPrepareRequest, ConnectionRequest, FlowFinishRequest,
@@ -140,12 +144,13 @@ interface ConnectionLimits {
    */
   readonly creditRecheckS: number;
   /**
-   * How long a connection's models' scores are kept before they are read again: a vendor's
-   * listing scores a model when it is benchmarked, so a day sees a new one soon enough.
+   * How long a connection's listed models are kept before they are read again: a vendor
+   * drops a free model when its promotion ends and scores one when it is benchmarked, so a
+   * day sees either soon enough.
    */
-  readonly strengthRecheckS: number;
-  /** How long a failed strength read waits before it is read again. */
-  readonly strengthRetryS: number;
+  readonly listingRecheckS: number;
+  /** How long a failed listing read waits before it is read again. */
+  readonly listingRetryS: number;
   /** How long the lane waits on one read of a source (`LaneRead`): the rest of its hung timeout. */
   readonly readMs: number;
   /** Reads of each kind one lane pass takes. */
@@ -174,8 +179,8 @@ export const CONNECTION_LIMITS: ConnectionLimits = Object.freeze({
   revokeMs: LANE_CALL_MS,
   revokesPerPass: 8,
   creditRecheckS: 3600,
-  strengthRecheckS: 86_400,
-  strengthRetryS: 3600,
+  listingRecheckS: 86_400,
+  listingRetryS: 3600,
   readMs: LANE_CALL_MS,
   readsPerPass: 8,
 });
@@ -189,6 +194,7 @@ export interface ConnectionView {
   readonly provider: string;
   readonly status: "pending" | "active" | "revoked" | "error";
   readonly version: number;
+  /** Its models (`modelsOf`): the ones its vendor lists it served, once read. */
   readonly models: string[];
   readonly expires_at: number | null;
   readonly created_at: number;
@@ -226,21 +232,21 @@ type Row = {
   expires_at: number | null; lease_id: string | null; lease_until: number | null;
   created_at: number; pending_until: number | null; revoked_at: number | null;
   revoke_due: number | null; revoke_tries: number; revocable: number;
-  egress: string | null; pays: number | null; scores: string | null;
+  egress: string | null; pays: number | null; listed: string | null;
 };
 
 /**
- * Every connection's row, with what its key pays for (`connection_credit`) and its models'
- * scores (`connection_strength`).
+ * Every connection's row, with what its key pays for (`connection_credit`) and the models its
+ * vendor lists it (`connection_listing`).
  */
-const ROWS = "SELECT c.*, k.pays AS pays, s.scores AS scores FROM connections c " +
+const ROWS = "SELECT c.*, k.pays AS pays, l.models AS listed FROM connections c " +
   "LEFT JOIN connection_credit k ON k.connection = c.id " +
-  "LEFT JOIN connection_strength s ON s.connection = c.id";
+  "LEFT JOIN connection_listing l ON l.connection = c.id";
 
 /** The tables of the lane's reads of a connection's source: a row each active connection. */
-type ReadTable = "connection_credit" | "connection_strength";
+type ReadTable = "connection_credit" | "connection_listing";
 const READ_TABLES: readonly ReadTable[] = Object.freeze(["connection_credit",
-                                                         "connection_strength"]);
+                                                         "connection_listing"]);
 
 /**
  * One read the `connections` lane makes of each active connection's source, where its record
@@ -342,7 +348,7 @@ function view(row: Row): ConnectionView {
   return {
     connection: row.id, source: row.source, kind: row.kind, display_name: row.display_name,
     provider: row.provider, status: row.status, version: row.version,
-    models: (JSON.parse(row.models) as ModelRecord[]).map((model) => model.id),
+    models: modelsOf(row).map((model) => model.id),
     expires_at: row.expires_at, created_at: row.created_at, revoked_at: row.revoked_at,
     provider_revocable: row.revocable === 1, provider_revoke_pending: row.revoke_due !== null,
     pays: paysOf(row),
@@ -353,18 +359,40 @@ function paysOf(row: Row): boolean | null {
   return row.pays === null ? null : row.pays === 1;
 }
 
-/** A row's models' scores, by model id; empty when none were read. */
-function scoresOf(row: Row): ReadonlyMap<string, number> {
-  return new Map(row.scores === null ? [] : JSON.parse(row.scores) as [string, number][]);
+/** A row's listed models, each its score or null, by model id; null when none were read. */
+function listedOf(row: Row): ReadonlyMap<string, number | null> | null {
+  return row.listed === null ? null
+    : new Map(JSON.parse(row.listed) as [string, number | null][]);
 }
 
-/** The gateway's strength answer, checked: each score a model id's and a finite number. */
-function strengthAnswer(value: unknown): ModelStrength | null {
-  const scores = object(value) ? value["scores"] : undefined;
-  return Array.isArray(scores) && scores.every((one) =>
-    keyed(one, ["id", "score"]) && typeof one["id"] === "string" && MODEL_ID.test(one["id"])
-      && typeof one["score"] === "number" && Number.isFinite(one["score"]))
-    ? { scores: scores as ModelStrength["scores"] } : null;
+/**
+ * A row's models: the ones its setup check listed (`connections.models`) that its vendor's
+ * listing lists, once read; every one of them until then, or with nothing to read on its blob.
+ */
+function modelsOf(row: Row): ModelRecord[] {
+  const models = JSON.parse(row.models) as ModelRecord[];
+  const listed = listedOf(row);
+  return listed === null ? models : models.filter((model) => listed.has(model.id));
+}
+
+/** A row's listed models' scores, by model id; empty when none were read or scored. */
+function scoresOf(row: Row): ReadonlyMap<string, number> {
+  return new Map([...listedOf(row) ?? []].flatMap(([id, score]) =>
+    score === null ? [] : [[id, score] as const]));
+}
+
+/**
+ * The gateway's listing answer, checked: each model a model id and its score a finite number
+ * or null (`listed_model`).
+ */
+function listingAnswer(value: unknown): ModelListing | null {
+  const models = object(value) ? value["models"] : undefined;
+  return Array.isArray(models) && models.every((one) =>
+    keyed(one, ...taken("listed_model")) && typeof one["id"] === "string"
+      && MODEL_ID.test(one["id"])
+      && (one["score"] === null
+        || (typeof one["score"] === "number" && Number.isFinite(one["score"]))))
+    ? { models: models as ModelListing["models"] } : null;
 }
 
 export class Connections {
@@ -389,17 +417,21 @@ export class Connections {
       ? { pays: value["pays"] } : null,
     kept: (id, outcome, now) => this.#credited(id, outcome, now),
   };
-  /** How strong each model is (`strength`). */
-  readonly #strength: LaneRead<StrengthRead, ModelStrength> = {
-    name: "strength", table: "connection_strength", retryS: CONNECTION_LIMITS.strengthRetryS,
-    of: (record) => record?.strength === undefined ? undefined
-      : { url: record.strength.url, rows: record.strength.rows, id: record.strength.id,
-          score: record.strength.score },
-    call: (credential, read) => this.#gateway.strength(this.#owner(), credential.connection,
-                                                       credential.version, credential.blob,
-                                                       read),
-    answer: strengthAnswer,
-    kept: (id, outcome, now) => this.#scored(id, outcome, now),
+  /** Which models its vendor serves it, and their scores (`listing`). */
+  readonly #listing: LaneRead<ListingRead, ModelListing> = {
+    name: "listing", table: "connection_listing", retryS: CONNECTION_LIMITS.listingRetryS,
+    of: (record) => {
+      if (record?.listing === undefined) {
+        return undefined;
+      }
+      const { url, rows, id, score } = record.listing;
+      return { url, rows, id, ...score === undefined ? {} : { score } };
+    },
+    call: (credential, read) => this.#gateway.listing(this.#owner(), credential.connection,
+                                                      credential.version, credential.blob,
+                                                      read),
+    answer: listingAnswer,
+    kept: (id, outcome, now) => this.#listed(id, outcome, now),
   };
 
   constructor(storage: OwnerStorage, write: Write, gateway: GatewayService,
@@ -699,7 +731,7 @@ export class Connections {
       .map((row) => Object.freeze({
         connection: row.id, source: row.source, provider: row.provider,
         display_name: row.display_name, created_at: row.created_at,
-        models: Object.freeze(JSON.parse(row.models) as ModelRecord[]),
+        models: Object.freeze(modelsOf(row)),
         pays: paysOf(row), scores: scoresOf(row),
       })));
     this.#usable = { revision: this.#revision, usable };
@@ -749,7 +781,7 @@ export class Connections {
       return null;
     }
     return { scope: egressScope(JSON.parse(row.egress)), source: row.source,
-             provider: row.provider, models: JSON.parse(row.models) as ModelRecord[] };
+             provider: row.provider, models: modelsOf(row) };
   }
 
   /** The active connections the sandbox may reach, oldest first, each with its scope. */
@@ -1019,7 +1051,7 @@ export class Connections {
    * its outcome kept in its row: revoked, the blob deleted; not revocable (the source has
    * no revocation endpoint), the blob deleted, with a notice; failed, backed off, and after
    * `revokeTries` the blob deleted anyway, with a notice. Then each due read of a source,
-   * credit and then strength (`#reads`).
+   * credit and then listing (`#reads`).
    */
   async run(_now: number, until: number): Promise<void> {
     await this.#write(() => this.#sweep(clock()));
@@ -1047,7 +1079,7 @@ export class Connections {
       await this.#write(() => this.#revokeOutcome(id, owed.version, outcome, clock()));
     }
     await this.#reads(this.#credit, until);
-    await this.#reads(this.#strength, until);
+    await this.#reads(this.#listing, until);
   }
 
   /**
@@ -1162,33 +1194,42 @@ export class Connections {
   }
 
   /**
-   * In a unit: a strength read's outcome: the scores of the connection's own models kept, read
-   * again after `strengthRecheckS`; nothing to read on its blob (`none`), none kept and no
-   * read due; a failure, the scores kept as they were, read again after `strengthRetryS`.
+   * In a unit: a listing read's outcome: each of the connection's models it lists kept, with
+   * its score, read again after `listingRecheckS`; nothing to read on its blob (`none`), none
+   * kept (its models are all its setup check listed) and no read due; a failure, or a listing
+   * that lists none of its models (a vendor's renamed ids would otherwise drop every one), the
+   * listed models kept as they were, read again after `listingRetryS`.
    */
-  #scored(id: string, outcome: ModelStrength | "none" | "failed", now: number): void {
-    if (outcome === "failed") {
-      this.#sql.exec("UPDATE connection_strength SET due = ? WHERE connection = ?",
-                     now + CONNECTION_LIMITS.strengthRetryS, id);
-      return;
-    }
+  #listed(id: string, outcome: ModelListing | "none" | "failed", now: number): void {
     const row = this.#row(id)!;
-    let scores: string | null = null;
-    if (outcome !== "none") {
-      const models = new Set((JSON.parse(row.models) as ModelRecord[]).map((model) => model.id));
-      const kept = new Map<string, number>();
-      for (const { id: model, score } of outcome.scores) {
-        if (models.has(model) && !kept.has(model)) {
-          kept.set(model, score);
+    let listed: string | null = null;
+    if (outcome !== "none" && outcome !== "failed") {
+      const served = new Map<string, number | null>();
+      for (const { id: model, score } of outcome.models) {
+        if (!served.has(model)) {
+          served.set(model, score);
         }
       }
-      scores = JSON.stringify([...kept]);
+      const kept = (JSON.parse(row.models) as ModelRecord[]).flatMap(({ id: model }) =>
+        served.has(model) ? [[model, served.get(model)!] as const] : []);
+      if (kept.length === 0) {
+        console.error("a connection's listing read listed none of its models; it is read " +
+                      "again later");
+        outcome = "failed";
+      } else {
+        listed = JSON.stringify(kept);
+      }
     }
-    if (scores !== row.scores) {
+    if (outcome === "failed") {
+      this.#sql.exec("UPDATE connection_listing SET due = ? WHERE connection = ?",
+                     now + CONNECTION_LIMITS.listingRetryS, id);
+      return;
+    }
+    if (listed !== row.listed) {
       this.#changed();
     }
-    this.#sql.exec("UPDATE connection_strength SET scores = ?, due = ? WHERE connection = ?",
-                   scores, scores === null ? null : now + CONNECTION_LIMITS.strengthRecheckS,
+    this.#sql.exec("UPDATE connection_listing SET models = ?, due = ? WHERE connection = ?",
+                   listed, listed === null ? null : now + CONNECTION_LIMITS.listingRecheckS,
                    id);
   }
 

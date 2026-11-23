@@ -3,7 +3,7 @@
  * credentials stripped, the sealed one injected, the sealed endpoints enforced, a stalled
  * answer cut, and the secret redacted from what comes back. And the connection's setup check
  * (`verify`), and the reads of what its key can pay for (`credit`) and of how strong its
- * vendor lists each model (`strength`).
+ * vendor lists the models it serves a key (`listing`).
  */
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 
@@ -17,7 +17,9 @@ import { checkedRecord } from "../../contract/src/model-record";
 import { Refusal } from "../../contract/src/refusal";
 import { EGRESS_DEADLINE_S } from "../../contract/src/limits";
 import { serviceSource, type Source } from "../../contract/src/egress-scope";
-import { credit, forwardMetered, forwardRead, strength, verify } from "../src/forward";
+import {
+  credit, forwardMetered, forwardRead, listing, strength, verify,
+} from "../src/forward";
 import { redaction } from "../src/redact";
 import { seal, type Binding } from "../src/keyring";
 import { steer } from "./fake-upstream";
@@ -588,30 +590,38 @@ describe("credit", () => {
   });
 });
 
-describe("strength", () => {
+describe("listing", () => {
   /** OpenAI's calls, with a vendor's model listing at `models.test` sealed beside them. */
   const LISTED: Source = Object.freeze({ ...OPENAI, endpoints: [...OPENAI.endpoints, {
     origin: "https://models.test", paths: ["/models"], methods: ["GET"] }] });
   /** OpenRouter's read, as its source record has it. */
   const READ = { url: "https://models.test/models", rows: ["data"], id: ["id"],
                  score: ["benchmarks", "artificial_analysis", "intelligence_index"] };
-  const read = async (key: string, record: Source = LISTED, asked: unknown = READ) => {
+  const { score: _score, ...UNSCORED } = READ;
+  const read = async (key: string, record: Source = LISTED, asked: unknown = READ,
+                      reader: typeof listing | typeof strength = listing) => {
     const env = ring("k1");
-    return strength(env, ALICE, await sealed(env, ALICE, key, record), asked)
+    return reader(env, ALICE, await sealed(env, ALICE, key, record), asked)
       .catch((caught: unknown) => caught);
   };
 
-  it("reads each model's score where its vendor lists one, and none for a model it scores " +
-     "not", async () => {
-    expect(await read("sk-listed")).toEqual({ scores: [
-      { id: "nvidia/nemotron-3.5-super-vl:free", score: 13.6 }] });
+  it("reads each model its vendor serves the key, with its score where it lists one",
+     async () => {
+    expect(await read("sk-listed")).toEqual({ models: [
+      { id: "nvidia/nemotron-3.5-super-vl:free", score: 13.6 },
+      { id: "cohere/north-mini-code:free", score: null },
+      { id: "google/gemma-4-26b-a4b-it:free", score: null }] });
+    // A vendor that gives no score: each model served, none scored.
+    expect(await read("sk-unscored", LISTED, UNSCORED)).toEqual({ models: [
+      { id: "cohere/north-mini-code:free", score: null }] });
   });
 
-  it("answers a refused key and an answer of another shape, or with no score, with fixed codes",
-     async () => {
+  it("answers a refused key and an answer of another shape, empty, or with no score where the " +
+     "read names one, with fixed codes", async () => {
     expect(await read("sk-bad")).toMatchObject({ code: "upstream_unauthorized" });
-    expect(await read("sk-odd")).toMatchObject({ code: "upstream_error" });
-    expect(await read("sk-unscored")).toMatchObject({ code: "upstream_error" });
+    for (const key of ["sk-odd", "sk-empty", "sk-noid", "sk-unscored"]) {
+      expect(await read(key), key).toMatchObject({ code: "upstream_error" });
+    }
   });
 
   it("sends the key only to a GET its sealed endpoints allow, and takes only a read",
@@ -623,6 +633,14 @@ describe("strength", () => {
       expect(await read("sk-listed", LISTED, bad), JSON.stringify(bad))
         .toMatchObject({ code: "invalid_request" });
     }
+  });
+
+  it("answers the owner's version before's strength read with the scored models alone",
+     async () => {
+    expect(await read("sk-listed", LISTED, READ, strength)).toEqual({ scores: [
+      { id: "nvidia/nemotron-3.5-super-vl:free", score: 13.6 }] });
+    expect(await read("sk-listed", LISTED, UNSCORED, strength))
+      .toMatchObject({ code: "invalid_request" });
   });
 });
 

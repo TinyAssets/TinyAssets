@@ -1103,8 +1103,11 @@ describe("auto and the owner's sign-ins", () => {
     const keyed = async (pays: boolean) => {
       const r = await gated();
       await r.gateway.arm("credit", { answer: { pays } });
-      // The vendor scores one free model; the other, first by id, it does not.
-      await r.gateway.arm("strength", { answer: { scores: [{ id: FREE, score: 11.8 }] } });
+      // The vendor serves and scores one free model, serves the router and the priced model
+      // unscored, and no longer serves the other free one, first by id.
+      await r.gateway.arm("listing", { answer: { models: [
+        { id: PAID, score: null }, { id: "openrouter/auto", score: null },
+        { id: FREE, score: 11.8 }] } });
       await r.connect("sk-good", OPENAI, "OpenRouter", models, "openrouter_user_models_v1");
       await drainDue(r.stub);
       await defineAgent(r.stub, r.bind(), "helper", AUTO_AGENT);

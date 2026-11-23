@@ -151,4 +151,4 @@ a model when it is benchmarked), an hour after a failure.
 ## Owed
 
 - [ ] live: at the stage, the owner's OpenRouter connection's next lane pass reads `GET /api/v1/models/user` and keeps scores for its `:free` models (`connection_strength`), and the next `auto` run is on the highest-scored one the listing scores (on 2026-11-23, `nvidia/nemotron-3.5-super-vl:free`).
-- [ ] untangle/served-models: a connection lists only the models its vendor's listing serves its key (the same `models/user` read), so a free id the vendor dropped is never picked; researched first.
+- [x] untangle/served-models: a connection lists only the models its vendor's listing serves its key (the same `models/user` read), so a free id the vendor dropped is never picked; researched first. Done (`served-models.md`).
