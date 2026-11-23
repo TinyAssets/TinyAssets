@@ -1,12 +1,12 @@
 /**
  * Cloudflare, as the deploy kit and the import window speak to it over its REST API with the
  * account's token: the zone and its account, the account's Workers, their secrets' names,
- * their deployments and their versions' tags, KV namespaces, keys and values, R2 buckets with
- * their lock rules and objects, queues with their messages and consumers, and the zone's
- * Worker routes, DNS records, Workers custom domains and WAF custom rules, and the Workers'
- * logs (Workers Observability's telemetry query). Every call is checked: a failed listing
- * or read throws, never reads as "absent", and a body that is not JSON throws. Every
- * listing is read to its last page. The kit's other Cloudflare tool is wrangler
+ * their deployments and their versions (whether listed, and their tags), KV namespaces, keys
+ * and values, R2 buckets with their lock rules and objects, queues with their messages and
+ * consumers, and the zone's Worker routes, DNS records, Workers custom domains and WAF custom
+ * rules, and the Workers' logs (Workers Observability's telemetry query). Every call is
+ * checked: a failed listing or read throws, never reads as "absent", and a body that is not
+ * JSON throws. Every listing is read to its last page. The kit's other Cloudflare tool is wrangler
  * (`deploy.ts`), which uploads and deploys the run's versions; a rollback's deployment is
  * this client's.
  *
@@ -25,6 +25,13 @@ const CF_API = "https://api.cloudflare.com/client/v4";
  */
 export const TELEMETRY_PERMISSION =
   "Workers Observability Write (the dashboard's Account, Workers Observability, Edit)";
+/**
+ * Cloudflare's error code for a Worker version its versions API does not hold, "The requested
+ * Worker version could not be found": its answer to wrangler's read of a version wrangler had
+ * just uploaded (runs 45184403474 and 45184872714, 2026-11-23). Its docs name neither the code
+ * nor the HTTP status it comes with, so the code alone is read.
+ */
+const NO_VERSION = 100146;
 /** The most messages one Queues batch push takes (Cloudflare's Queues limits). */
 export const BATCH = 100;
 
@@ -56,6 +63,20 @@ function valuePath(account: string, namespace: string, key: string): string {
 
 function codes(answer: Answer): string {
   return JSON.stringify((envelope(answer).errors ?? []).map((error) => error.code ?? 0));
+}
+
+/** Whether `answer`'s errors carry Cloudflare's error code `code`. */
+function carries(answer: Answer, code: number): boolean {
+  return (envelope(answer).errors ?? []).some((error) => error.code === code);
+}
+
+/** `answer`'s envelope when it answered success; any other answer throws: `what` failed. */
+function succeeded(what: string, answer: Answer): Envelope {
+  const body = envelope(answer);
+  if (answer.status !== 200 || body.success !== true) {
+    throw new Error(`${what} failed (${answer.status}, ${codes(answer)})`);
+  }
+  return body;
 }
 
 /**
@@ -396,12 +417,7 @@ export class Cloudflare {
 
   /** A call's envelope when it answered success; any other answer throws: `what` failed. */
   async #ok(what: string, path: string, init?: RequestInit): Promise<Envelope> {
-    const answer = await this.#call(path, init);
-    const body = envelope(answer);
-    if (answer.status !== 200 || body.success !== true) {
-      throw new Error(`${what} failed (${answer.status}, ${codes(answer)})`);
-    }
-    return body;
+    return succeeded(what, await this.#call(path, init));
   }
 
   /** A JSON body's write, its envelope as `#ok` checks it. */
@@ -537,12 +553,30 @@ export class Cloudflare {
    */
   async annotations(account: string, script: string, version: string):
       Promise<{ readonly tag: string | null; readonly trigger: string | null }> {
-    const { result } = await this.#ok(
-      `reading the version ${version} of ${script}`,
-      `/accounts/${account}/workers/scripts/${script}/versions/${version}`);
-    const noted = (result as { annotations?: Record<string, unknown> } | null)?.annotations;
+    const read = await this.#version(account, script, version);
+    if (read === null) {
+      throw new Error(`reading the version ${version} of ${script} failed: Cloudflare's versions ` +
+                      `API holds no such version (${NO_VERSION})`);
+    }
+    const noted = (read.result as { annotations?: Record<string, unknown> } | null)?.annotations;
     const text = (value: unknown) => typeof value === "string" && value !== "" ? value : null;
     return { tag: text(noted?.["workers/tag"]), trigger: text(noted?.["workers/triggered_by"]) };
+  }
+
+  /** Whether Cloudflare's versions API reads the Worker `script`'s version `version`. */
+  async listed(account: string, script: string, version: string): Promise<boolean> {
+    return await this.#version(account, script, version) !== null;
+  }
+
+  /**
+   * Cloudflare's versions API's read of the Worker `script`'s version `version`, or null only
+   * when it answers that it holds no such version (`NO_VERSION`); any other failure throws.
+   */
+  async #version(account: string, script: string, version: string): Promise<Envelope | null> {
+    const answer = await this.#call(
+      `/accounts/${account}/workers/scripts/${script}/versions/${version}`);
+    return carries(answer, NO_VERSION) ? null
+      : succeeded(`reading the version ${version} of ${script}`, answer);
   }
 
   /** The tag of the Worker `script`'s version `version` (`workers/tag`), or null when untagged. */
@@ -604,7 +638,7 @@ export class Cloudflare {
     } catch {
       // An error body that is not JSON names no code: the read failed.
     }
-    if (status === 404 && (envelope(answer).errors ?? []).some((error) => error.code === 10009)) {
+    if (status === 404 && carries(answer, 10009)) {
       return undefined;
     }
     throw new Error(`reading ${key} failed (${status}, ${codes(answer)})`);
@@ -685,8 +719,7 @@ export class Cloudflare {
     if (answer.status === 200) {
       return answer.body;
     }
-    if (answer.status === 404 && (envelope(answer).errors ?? []).some((error) =>
-      error.code === 10007)) {
+    if (answer.status === 404 && carries(answer, 10007)) {
       return undefined;
     }
     throw new Error(`reading ${key} of the R2 bucket ${bucket} failed (${answer.status}, ` +
