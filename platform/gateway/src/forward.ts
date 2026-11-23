@@ -318,7 +318,7 @@ async function serialized(read: Awaited<ReturnType<typeof weighedBody>>, method:
   }
   const pricing = { fallbacks: fallbackList(rules, parsed), routed: terms.routed };
   const text = JSON.stringify(clamped(meter, parsed as Record<string, unknown>,
-                                      terms.max_output_tokens, upstream.api));
+                                      terms.max_output_tokens, upstream));
   return { text, model, pricing };
 }
 

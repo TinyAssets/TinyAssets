@@ -156,11 +156,11 @@ pi is no longer the engine the platform runs, but pi-ai is more than a catalog t
 
 ## Owed
 
-- [ ] untangle/openrouter-messages: OpenRouter's Claude models are on `anthropic-messages`
+- [x] untangle/openrouter-messages: OpenRouter's Claude models are on `anthropic-messages`
   (OpenRouter's `/api/v1/messages`) in pi-ai's catalog, and a sealed upstream speaks one API,
   so an OpenRouter connection lists none of them (20 in 1.6.0, `anthropic/claude-opus-5.5`
-  among them). Its own research: one record on both APIs (each model's API from the catalog,
-  the meter's and the egress scope's rules by the model's API) or a second record.
+  among them). A second record (`openrouter-messages.md`): an engine takes one base URL a
+  connection, and OpenRouter's two APIs are at two.
 - [ ] untangle/listing-records: a connection keeps the catalog records of its connect, so a
   pin bump reaches only new connections. #5833's daily listing read (landed) can answer each
   listed model's record from the gateway's current catalog, so every connection moves with

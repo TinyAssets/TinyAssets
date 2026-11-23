@@ -253,12 +253,14 @@ function objectAt(body: Record<string, unknown>, path: readonly string[]): Recor
 /**
  * `body` with every output-cap alias the API reads at most `cap` (the one pi-ai sets set to
  * `cap` when the request names none); when it streams, the API's usage-report fields set,
- * so its answer reports what it used; and each option the API's rules default when absent
- * (`default_when_absent`) set to that value. In place: `body` itself, changed and returned,
- * so a call's request is held once (egress shape research §2), never copied.
+ * so its answer reports what it used; and each option the API's rules default when absent on
+ * the sealed source's provider (`default_when_absent`) set to that value. In place: `body`
+ * itself, changed and returned, so a call's request is held once (egress shape research §2),
+ * never copied.
  */
 export function clamped(meter: Meter, body: Record<string, unknown>, cap: number,
-                        api: string): Record<string, unknown> {
+                        { provider, api }: Pick<Upstream, "provider" | "api">):
+    Record<string, unknown> {
   const rules = apiRules(api);
   const aliases = [meter.output_field,
                    ...(rules?.outputs ?? []).filter((path) =>
@@ -284,9 +286,9 @@ export function clamped(meter: Meter, body: Record<string, unknown>, cap: number
     }
   }
   // An option left to the account's default, which pi-ai cannot price: the priced value.
-  for (const { path, default_when_absent: value } of rules?.unpriced ?? []) {
-    if (value !== undefined && valueAtPath(body, path) === undefined) {
-      objectAt(body, path.slice(0, -1))[path.at(-1)!] = value;
+  for (const { path, default_when_absent: absent } of rules?.unpriced ?? []) {
+    if (absent?.provider === provider && valueAtPath(body, path) === undefined) {
+      objectAt(body, path.slice(0, -1))[path.at(-1)!] = absent.value;
     }
   }
   return body;
