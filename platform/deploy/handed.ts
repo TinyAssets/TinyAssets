@@ -161,14 +161,23 @@ function takesType(taken: readonly JsonType[], type: JsonType): boolean {
   return taken.includes(type) || (type === "integer" && taken.includes("number"));
 }
 
+/** A hold across a deploy: each way it refuses, and each door field held by name alone. */
+export interface Hold {
+  readonly problems: readonly string[];
+  /**
+   * Each door field, as `<door> <field>`, the tree's owner types and the doors' version before
+   * does not: what was handed is unknown, so only its name is held.
+   */
+  readonly untyped: readonly string[];
+}
+
 /**
  * Each type of a field the doors' version before hands (`was`) that the tree's owner takes
- * (`now`) no more, by the field; and each field it types that the version before does not,
- * which only its name holds.
+ * (`now`) no more, and each field it types that the version before does not, which only its
+ * name holds: of the request `named`.
  */
-function typeProblems(was: Args, now: Args): { narrowed: [string, JsonType[]][];
-                                               untyped: string[] } {
-  const narrowed: [string, JsonType[]][] = [];
+function typeHold(named: string, was: Args, now: Args): Hold {
+  const problems: string[] = [];
   const untyped: string[] = [];
   for (const name of [...Object.keys(was.required), ...Object.keys(was.optional)]) {
     const schema = schemaOf(now, name);
@@ -178,26 +187,22 @@ function typeProblems(was: Args, now: Args): { narrowed: [string, JsonType[]][];
     }
     const handed = fieldTypes(name, schemaOf(was, name));
     if (handed === null) {
-      untyped.push(name);
+      untyped.push(`${named} ${name}`);
       continue;
     }
     const all = [...taken, ...now.droppedTypes?.[name] ?? []];
     const refused = handed.filter((type) => !takesType(all, type));
     if (refused.length > 0) {
-      narrowed.push([name, refused]);
+      problems.push(`${named} no longer takes ${name} as ${refused.join(" or ")}, which the ` +
+        "doors' version before hands: take it as that too first (droppedTypes: taken, no " +
+        "longer handed), and take it out once the stage serves no doors version that hands it");
     }
   }
-  return { narrowed, untyped };
-}
-
-/** Each way a hold of the door table refuses, and each field it held by name alone. */
-interface DoorHold {
-  readonly problems: string[];
-  readonly untyped: string[];
+  return { problems, untyped };
 }
 
 /** Each way the tree's arguments of `door` refuse what the doors' version before hands it. */
-function argsProblems(door: string, then: DoorArgs, now: DoorArgs): DoorHold {
+function argsProblems(door: string, then: DoorArgs, now: DoorArgs): Hold {
   if (then === "loose" || now === "loose" || now === "none") {
     return { problems: [], untyped: [] };
   }
@@ -214,9 +219,9 @@ function argsProblems(door: string, then: DoorArgs, now: DoorArgs): DoorHold {
                        "no doors version that calls it without"), untyped: [] };
   }
   const pairs = Object.entries(requestSides(then)).flatMap(([side, was]) =>
-    paired(side).map(([key, args]) => ({ key, was, args, types: typeProblems(was, args) })));
-  return { untyped: pairs.flatMap(({ key, types }) =>
-             types.untyped.map((field) => `${named(key)} ${field}`)),
+    paired(side).map(([key, args]) => ({ key, was, args,
+                                         types: typeHold(named(key), was, args) })));
+  return { untyped: pairs.flatMap(({ types }) => types.untyped),
            problems: pairs.flatMap(({ key, was, args, types }) => [
       ...fieldProblems(argsFields(was), argsFields(args), {
         untaken: (field) => `${named(key)} no longer takes ${field}, which the doors' version ` +
@@ -230,17 +235,14 @@ function argsProblems(door: string, then: DoorArgs, now: DoorArgs): DoorHold {
       ...was.undefinedAllowed === true && args.undefinedAllowed !== true
         ? [`${named(key)} refuses a field sent undefined, which the doors' version before ` +
            "may hand"] : [],
-      ...types.narrowed.map(([field, refused]) => `${named(key)} no longer takes ${field} as ${
-        refused.join(" or ")}, which the doors' version before hands: take it as that too ` +
-        "first (droppedTypes: taken, no longer handed), and take it out once the stage serves " +
-        "no doors version that hands it"),
+      ...types.problems,
     ]) };
 }
 
 /** Each way the tree's owner refuses what the doors' version before `then` calls it with. */
-function doorProblems(then: Before, now: Side): DoorHold {
+function doorProblems(then: Before, now: Side): Hold {
   const rows = new Map(now.doors.map((row) => [row.door, row]));
-  const held = then.doors.map((was): DoorHold => {
+  const held = then.doors.map((was): Hold => {
     const row = rows.get(was.door);
     return row !== undefined ? argsProblems(was.door, was.args, row.args)
       : { untyped: [], problems: was.dropped === true || then.cutover.doors.has(was.door) ? []
@@ -253,16 +255,6 @@ function doorProblems(then: Before, now: Side): DoorHold {
 }
 
 // --- The whole hold --------------------------------------------------------------------------
-
-/** A hold across a deploy: each way it refuses, and each door field held by name alone. */
-export interface Hold {
-  readonly problems: readonly string[];
-  /**
-   * Each door field, as `<door> <field>`, the tree's owner types and the doors' version before
-   * does not: what was handed is unknown, so only its name is held.
-   */
-  readonly untyped: readonly string[];
-}
 
 /**
  * Each way `now` refuses, across a deploy, what the versions before hand it or it hands them:
