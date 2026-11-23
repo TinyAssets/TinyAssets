@@ -141,10 +141,8 @@ room, and a reader never scans again what it passed. It does tell a caller how m
 changes happened, and when, including other writers' private rows. A visiting owner can call
 `board_digest` and `collection_list` (`owner/doors.json` caller `visitors`). The
 per-collection `seq` that `collection_list` pages by tells the same of one collection.
-Answering only the newest change the caller can see would keep a reader's cursor behind every
-change it cannot see, so a history prune past it would answer `reset: true` to a reader who
-missed nothing. That is a trade the spec settled the other way, so it is a founder question,
-not a fix here.
+Fixed in `untangle/board-cursor` (`board-cursor.md`): a cursor is the reader's own last
+item, and a spurious reset after a prune is the accepted cost.
 
 ## 10. `file_history` shows an append as `write`: intended
 

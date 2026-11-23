@@ -170,8 +170,8 @@ export function headWindow(chars: number): number {
  * Changed rows as a digest shows them, fitted to one answer (`pages.ts`): each body cut to
  * its first `chars` characters, read from its row or its placed body's window; the rows in
  * order while they fit, at least one, the first's head cut further when it does not; the
- * page ends before a placed body not read, and when rows are left the cursor is the last
- * row's change.
+ * page ends before a placed body not read, and the cursor is the last kept row's change, or
+ * the store's (the one given, or a reset's floor) when none is kept.
  */
 export function heads(changes: Changes, chars: number, windows: ReadonlyMap<string, Window>,
                bytes: number = PAGE_BYTES): Heads {
@@ -207,7 +207,7 @@ export function heads(changes: Changes, chars: number, windows: ReadonlyMap<stri
     throw new Error("a digest's first row is always read");
   }
   return { ...reset,
-           cursor: kept.length === changes.rows.length ? changes.cursor : kept.at(-1)!.change,
+           cursor: kept.at(-1)?.change ?? changes.cursor,
            rows: kept };
 }
 

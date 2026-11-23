@@ -408,6 +408,9 @@ describe("a write rings only who follows it and may read it, and never on an age
     await control([r.owner]);
     const muse = await r.register(MUSE, "Muse", "mcp_event");
     await subscribed(r, MUSE, { board: true, rooms: ["room:app:lobby"] });
+    const bob = { owner: r.owner, caller: "bob", origin: null };
+    // A visiting owner's private row is no change the agent can see: no wake is after it.
+    await write(r, "board", "bob's", bob, true);
     await write(r, "board", "t0");
     const [first] = (await rings(r, 1)).map((ring) => JSON.parse(ring.request.body) as Delivered);
     expect([first!.data.changes, first!.data.read, first!.data.after])
@@ -421,6 +424,7 @@ describe("a write rings only who follows it and may read it, and never on an age
       agent_id: muse, max_wakes_per_hour: null, batch_window_s: 3600,
       expected_generation: (await r.stub.policyRead(r.bind(null))).generation });
     const before = (await r.sql("SELECT change FROM collection_clock"))[0]!["change"];
+    await write(r, "room:app:lobby", "aside", bob, true);
     await r.post(null, dm(muse), { body: "new mail" });
     await write(r, "room:app:lobby", "m1");
     await write(r, "room:app:den", "m2");  // not followed
