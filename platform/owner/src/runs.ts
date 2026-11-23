@@ -1029,9 +1029,10 @@ export class Runs {
    * 4.1): its named engine, on its named credential (else its record's credentials in
    * order, a key's run on the named connection, else the strongest connected one whose
    * source lists the engine); or for `auto`, the strongest connected source that lists an
-   * engine, on a model a run can call turn by turn unless the agent names one. An unattended run takes only a credential its record allows unattended. The
-   * sign-ins read are the run's own sandbox's (`authority`'s): the owner's own sandbox's
-   * (`engine_signins`), or an outside client's, as its own runner reported them on its live
+   * engine, on a model a run can call turn by turn unless the agent names one. An unattended
+   * run takes only a credential its record allows unattended. The sign-ins read are the
+   * run's own sandbox's (`authority`'s): the owner's own sandbox's (`engine_signins`), or an
+   * outside client's, as its own runner reported them on its live
    * lease. A login is never copied: a client's `auto` run uses a plan only where that
    * client's sandbox is known signed in itself, else the owner's keys. An agent that names
    * the vendor's sign-in is admitted unless its sandbox is known signed out (the owner's
