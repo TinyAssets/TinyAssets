@@ -3,8 +3,9 @@
  * service's key (a connector, `SERVICE_PROVIDER`: no models, never metered, its scope one URL
  * of an outside service, bound to a run by `network.ts` `connectorsOf`): what each one is,
  * the blob the gateway sealed its credential into, the OAuth flows that connect one, the
- * refresh lease, what each one's key can pay for, which of its models its vendor serves it
- * and how strong it lists them, and the `connections` lane's housekeeping.
+ * refresh lease, what each one's key can pay for, the models it reaches now (the gateway's
+ * catalog, as its vendor serves them and how strong it lists them), and the `connections`
+ * lane's housekeeping.
  *
  * **No plaintext enters the object.** The binder hands a pasted key to `GATEWAY.seal`
  * and an OAuth code to `GATEWAY.exchange`; the object stores only what comes back, the
@@ -22,7 +23,8 @@
  * 2. For OAuth, the callback's `flowFinish`, in the same session, uses the flow up and
  *    hands back the verifier for the gateway's exchange.
  * 3. `commit`: the sealed blob, its kid, the models the gateway's setup check listed (each
- *    its whole pi-ai capability record, which the object has no catalog for: `ModelRecord`),
+ *    its whole pi-ai capability record, which the object has no catalog for: `ModelRecord`;
+ *    its models until the lane's first read of them),
  *    where sandbox egress may forward its credential (`egress`: the sealed base URLs and
  *    endpoints the check read from the blob, no secret; the egress door's admission reads
  *    it) and, for OAuth, the access expiry in clear.
@@ -67,17 +69,20 @@
  * the next refusal); one that pays is not read again until a refusal says otherwise. `auto`
  * reads it (`usable`; `sources/src/ranking.ts` `pickable`), and so does the owner's view.
  *
- * **The models its vendor serves it.** A source whose record says where its vendor lists the
- * models it serves a key (`listing`) has each active connection's listed models kept
- * (`connection_listing`): each of its models the listing lists, with the score it lists it at
- * or none. The lane reads it as it reads credit (`LaneRead`): once a connection is active, the
- * ones from before among them, through the gateway's `listing` where the sealed endpoints
- * allow it; again every `listingRecheckS`, and `listingRetryS` after a failed read. Once read,
- * a connection's models are the ones listed (`modelsOf`), for every reader: what `auto` ranks
- * and scores (`usable`; `auto.ts` `ranked`), what a run's named model must be, what the egress
- * door reserves by (`egressOf`) and what the owner sees (`list`); until then, or with nothing
- * to read on its blob, the ones its setup check listed. A model its vendor stops serving goes
- * at the next read, and one it serves again comes back, since the row keeps the whole list.
+ * **The models it reaches now.** The catalog is the gateway's, so each active model
+ * connection's models are read through it (`connection_models`): the gateway's `models`, the
+ * records its blob reaches by the catalog now (only on the APIs the blob was sealed for: a new
+ * API is a reconnect, the owner's consent), each kept with the score its vendor lists it at, or
+ * none; where its source record says where its vendor lists the models it serves a key
+ * (`listing`), only the ones the gateway's `listing` lists, where the sealed endpoints allow
+ * that read. The lane reads them as it reads credit (`LaneRead`): once a connection is active,
+ * the ones from before among them, so a catalog bump reaches every connection with no
+ * reconnect; again every `modelsRecheckS`, and `modelsRetryS` after a failed read. Once read,
+ * they are a connection's models (`modelsOf`), for every reader: what `auto` ranks and scores
+ * (`usable`; `auto.ts` `ranked`), what a run's named model must be, what the egress door
+ * reserves by (`egressOf`) and what the owner sees (`list`); until then, the ones its setup
+ * check listed. A model its vendor stops serving goes at the next read, and one it serves again
+ * comes back.
  *
  * Every write is a unit of the object's gate, and each unit reads what it acts on: a door's
  * body, or a step between the lane's or a call's outside calls. Bounds: `maxConnections`
@@ -101,7 +106,7 @@ import { bundledSources } from "../../sources/src/catalog";
 import type { SourceRecord } from "../../sources/src/schema";
 
 import type {
-  GatewayService, KeyCredit, ModelListing, Refreshed,
+  GatewayService, KeyCredit, ModelListing, Refreshed, SealedModels,
 } from "../../contract/src/gateway";
 import type {
   ConnectionCommitRequest, ConnectionPrepareRequest, ConnectionRequest, FlowFinishRequest,
@@ -144,13 +149,13 @@ interface ConnectionLimits {
    */
   readonly creditRecheckS: number;
   /**
-   * How long a connection's listed models are kept before they are read again: a vendor
-   * drops a free model when its promotion ends and scores one when it is benchmarked, so a
-   * day sees either soon enough.
+   * How long a connection's models are kept before they are read again: a vendor drops a free
+   * model when its promotion ends and scores one when it is benchmarked, and the gateway's
+   * catalog moves at a pin bump, about monthly, so a day sees each soon enough.
    */
-  readonly listingRecheckS: number;
-  /** How long a failed listing read waits before it is read again. */
-  readonly listingRetryS: number;
+  readonly modelsRecheckS: number;
+  /** How long a failed read of a connection's models waits before it is read again. */
+  readonly modelsRetryS: number;
   /** How long the lane waits on one read of a source (`LaneRead`): the rest of its hung timeout. */
   readonly readMs: number;
   /** Reads of each kind one lane pass takes. */
@@ -179,8 +184,8 @@ export const CONNECTION_LIMITS: ConnectionLimits = Object.freeze({
   revokeMs: LANE_CALL_MS,
   revokesPerPass: 8,
   creditRecheckS: 3600,
-  listingRecheckS: 86_400,
-  listingRetryS: 3600,
+  modelsRecheckS: 86_400,
+  modelsRetryS: 3600,
   readMs: LANE_CALL_MS,
   readsPerPass: 8,
 });
@@ -194,7 +199,7 @@ export interface ConnectionView {
   readonly provider: string;
   readonly status: "pending" | "active" | "revoked" | "error";
   readonly version: number;
-  /** Its models (`modelsOf`): the ones its vendor lists it served, once read. */
+  /** Its models (`modelsOf`): the gateway's catalog now, as its vendor serves them, once read. */
   readonly models: string[];
   readonly expires_at: number | null;
   readonly created_at: number;
@@ -232,28 +237,28 @@ type Row = {
   expires_at: number | null; lease_id: string | null; lease_until: number | null;
   created_at: number; pending_until: number | null; revoked_at: number | null;
   revoke_due: number | null; revoke_tries: number; revocable: number;
-  egress: string | null; pays: number | null; listed: string | null;
+  egress: string | null; pays: number | null; read: string | null;
 };
 
 /**
- * Every connection's row, with what its key pays for (`connection_credit`) and the models its
- * vendor lists it (`connection_listing`).
+ * Every connection's row, with what its key pays for (`connection_credit`) and its models as
+ * last read (`connection_models`).
  */
-const ROWS = "SELECT c.*, k.pays AS pays, l.models AS listed FROM connections c " +
+const ROWS = "SELECT c.*, k.pays AS pays, m.models AS read FROM connections c " +
   "LEFT JOIN connection_credit k ON k.connection = c.id " +
-  "LEFT JOIN connection_listing l ON l.connection = c.id";
+  "LEFT JOIN connection_models m ON m.connection = c.id";
 
 /** The tables of the lane's reads of a connection's source: a row each active connection. */
-type ReadTable = "connection_credit" | "connection_listing";
+type ReadTable = "connection_credit" | "connection_models";
 const READ_TABLES: readonly ReadTable[] = Object.freeze(["connection_credit",
-                                                         "connection_listing"]);
+                                                         "connection_models"]);
 
 /**
  * One read the `connections` lane makes of each active connection's source, where its record
  * names one: its table (its `due` the next read), the record's read, the gateway's call, the
  * answer checked (null for one of another shape), what an outcome keeps (in a unit, for the
- * connection at the version read still active: `none`, nothing to read on its blob), and how
- * long a read waits when the credential cannot be sent yet.
+ * connection at the version read still active), and how long a read waits when the credential
+ * cannot be sent yet.
  */
 interface LaneRead<R, A> {
   readonly name: string;
@@ -262,7 +267,20 @@ interface LaneRead<R, A> {
   of(record: SourceRecord | undefined): R | undefined;
   call(credential: Credential, read: R): Promise<unknown>;
   answer(value: unknown): A | null;
-  kept(id: string, outcome: A | "none" | "failed", now: number): void;
+  kept(id: string, outcome: A | "failed", now: number): void;
+}
+
+/**
+ * A read's answer, or null where the blob reaches no such read (`endpoint_refused`): one
+ * sealed before its record named the read, which has nothing to read on it.
+ */
+function reached<T>(reading: Promise<T>): Promise<T | null> {
+  return reading.catch((error: unknown) => {
+    if (refusalOf(error)?.code === "endpoint_refused") {
+      return null;
+    }
+    throw error;
+  });
 }
 
 /** How a provider revoke ended: confirmed, impossible (no endpoint), or not confirmed. */
@@ -299,6 +317,23 @@ function modelInfo(value: unknown): ModelRecord {
     throw new Refusal("invalid", "invalid connection model");
   }
   return value as ModelRecord;
+}
+
+/**
+ * A connection's models as the gateway lists them, at its setup check or at a read of them
+ * (`models`): at most `maxModels`, each whole (`modelInfo`), none twice, within
+ * `MODELS_JSON_MAX`.
+ */
+function checkedModels(models: unknown): ModelRecord[] {
+  if (!Array.isArray(models) || models.length > CONNECTION_LIMITS.maxModels) {
+    throw new Refusal("invalid", "invalid connection models");
+  }
+  const checked = models.map(modelInfo);
+  if (new Set(checked.map((model) => model.id)).size !== checked.length
+      || utf8Bytes(JSON.stringify(checked)) > MODELS_JSON_MAX) {
+    throw new Refusal("invalid", "invalid connection models");
+  }
+  return checked;
 }
 
 /** A sealed blob as the gateway writes it, under `kid` (`contract/src/envelope.ts`). */
@@ -359,46 +394,68 @@ function paysOf(row: Row): boolean | null {
   return row.pays === null ? null : row.pays === 1;
 }
 
-/** A row's listed models, each its score or null, by model id; null when none were read. */
-function listedOf(row: Row): ReadonlyMap<string, number | null> | null {
-  return row.listed === null ? null
-    : new Map(JSON.parse(row.listed) as [string, number | null][]);
+/** A connection's models as `connection_models` keeps them: each record, with its score. */
+type Served = readonly (readonly [ModelRecord, number | null])[];
+
+/** A row's models as last read, each with its score or null; null when none were read. */
+function readOf(row: Row): Served | null {
+  return row.read === null ? null : JSON.parse(row.read) as Served;
 }
 
-/**
- * A row's models: the ones its setup check listed (`connections.models`) that its vendor's
- * listing lists, once read; every one of them until then, or with nothing to read on its blob.
- */
+/** A row's models: the ones last read (`connection_models`), its setup check's until then. */
 function modelsOf(row: Row): ModelRecord[] {
-  const models = JSON.parse(row.models) as ModelRecord[];
-  const listed = listedOf(row);
-  return listed === null ? models : models.filter((model) => listed.has(model.id));
+  const read = readOf(row);
+  return read === null ? JSON.parse(row.models) as ModelRecord[]
+    : read.map(([model]) => model);
 }
 
-/** A row's listed models' scores, by model id; empty when none were read or scored. */
+/** A row's models' scores, by model id; empty when none were read or scored. */
 function scoresOf(row: Row): ReadonlyMap<string, number> {
-  return new Map([...listedOf(row) ?? []].flatMap(([id, score]) =>
+  return new Map((readOf(row) ?? []).flatMap(([{ id }, score]) =>
     score === null ? [] : [[id, score] as const]));
 }
 
+/** What one read of a connection's models found: its blob's records, and its vendor's listing. */
+interface ModelsRead {
+  readonly sealed: SealedModels;
+  /** Null where its record names no listing, or its blob reaches no such read. */
+  readonly listing: ModelListing | null;
+}
+
 /**
- * The models of `models` that `listing` lists, as `connection_listing` keeps them: each one's
- * id and score, in `models`' order; `failed` for a listing that lists none of them.
+ * The records of `read` its listing lists (every one where it has none), each with the score
+ * it lists it at, in the records' order, as `connection_models` keeps them; `unmatched` for a
+ * listing that lists none of them, `failed` for no record or more than `MODELS_JSON_MAX` kept.
  */
-function listedJson(models: readonly ModelRecord[], listing: ModelListing): string | "failed" {
-  const served = new Map<string, number | null>();
-  for (const { id, score } of listing.models) {
-    if (!served.has(id)) {
-      served.set(id, score);
+function servedJson({ sealed, listing }: ModelsRead): string | "unmatched" | "failed" {
+  const listed = new Map<string, number | null>();
+  for (const { id, score } of listing?.models ?? []) {
+    if (!listed.has(id)) {
+      listed.set(id, score);
     }
   }
-  const kept = models.flatMap(({ id }) => served.has(id) ? [[id, served.get(id)!] as const] : []);
-  if (kept.length === 0) {
-    console.error("a connection's listing read listed none of its models; it is read again " +
-                  "later");
-    return "failed";
+  const kept: Served = sealed.models.flatMap((model): Served =>
+    listing === null ? [[model, null]]
+      : listed.has(model.id) ? [[model, listed.get(model.id)!]] : []);
+  const json = JSON.stringify(kept);
+  if (kept.length > 0 && utf8Bytes(json) <= MODELS_JSON_MAX) {
+    return json;
   }
-  return JSON.stringify(kept);
+  const unmatched = kept.length === 0 && sealed.models.length > 0;
+  console.error(unmatched ? "a connection's listing read listed none of its models; it is " +
+                  "read again later"
+                : `a connection's models read kept ${kept.length} models in ` +
+                  `${utf8Bytes(json)} bytes; it is read again later`);
+  return unmatched ? "unmatched" : "failed";
+}
+
+/** The gateway's `models` answer, its models held to the commit's rule (`checkedModels`). */
+function sealedAnswer(value: unknown): SealedModels | null {
+  try {
+    return { models: checkedModels(object(value) ? value["models"] : undefined) };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -427,31 +484,48 @@ export class Connections {
   #revision = 0;
   #usable: { revision: number; usable: readonly Usable[] } | null = null;
   /** What each key can pay for (`credit`). */
-  readonly #credit: LaneRead<CreditRead, KeyCredit> = {
+  readonly #credit: LaneRead<CreditRead, KeyCredit | "none"> = {
     name: "credit", table: "connection_credit", retryS: CONNECTION_LIMITS.creditRecheckS,
     of: (record) => record?.credit === undefined ? undefined
       : { url: record.credit.url, none_when: record.credit.none_when },
-    call: (credential, read) => this.#gateway.credit(this.#owner(), credential.connection,
-                                                     credential.version, credential.blob, read),
-    answer: (value) => object(value) && typeof value["pays"] === "boolean"
-      ? { pays: value["pays"] } : null,
+    call: (credential, read) => reached(this.#gateway.credit(
+      this.#owner(), credential.connection, credential.version, credential.blob, read)),
+    answer: (value) => value === null ? "none"
+      : object(value) && typeof value["pays"] === "boolean" ? { pays: value["pays"] } : null,
     kept: (id, outcome, now) => this.#credited(id, outcome, now),
   };
-  /** Which models its vendor serves it, and their scores (`listing`). */
-  readonly #listing: LaneRead<ListingRead, ModelListing> = {
-    name: "listing", table: "connection_listing", retryS: CONNECTION_LIMITS.listingRetryS,
+  /**
+   * The models its blob reaches by the gateway's catalog now (`models`), and of them the ones
+   * its vendor serves it, with their scores (`listing`), for a gateway source's connection.
+   */
+  readonly #models: LaneRead<{ readonly listing: ListingRead | null }, ModelsRead> = {
+    name: "models", table: "connection_models", retryS: CONNECTION_LIMITS.modelsRetryS,
     of: (record) => {
-      if (record?.listing === undefined) {
+      if (record?.upstream === undefined) {
         return undefined;
       }
+      if (record.listing === undefined) {
+        return { listing: null };
+      }
       const { url, rows, id, score } = record.listing;
-      return { url, rows, id, ...score === undefined ? {} : { score } };
+      return { listing: { url, rows, id, ...score === undefined ? {} : { score } } };
     },
-    call: (credential, read) => this.#gateway.listing(this.#owner(), credential.connection,
-                                                      credential.version, credential.blob,
-                                                      read),
-    answer: listingAnswer,
-    kept: (id, outcome, now) => this.#listed(id, outcome, now),
+    call: async (credential, read) => {
+      const { connection, version, blob } = credential;
+      const sealed = await this.#gateway.models(this.#owner(), connection, version, blob);
+      // With no listing to read on its blob, its models are every one it reaches.
+      const listing = read.listing === null ? null : await reached(this.#gateway.listing(
+        this.#owner(), connection, version, blob, read.listing));
+      return { sealed, listing };
+    },
+    answer: (value) => {
+      const { sealed, listing } = value as { sealed: unknown; listing: unknown };
+      const models = sealedAnswer(sealed);
+      const listed = listing === null ? null : listingAnswer(listing);
+      return models === null || (listing !== null && listed === null) ? null
+        : { sealed: models, listing: listed };
+    },
+    kept: (id, outcome, now) => this.#served(id, outcome, now),
   };
 
   constructor(storage: OwnerStorage, write: Write, gateway: GatewayService,
@@ -537,15 +611,7 @@ export class Connections {
     const id = grammar(r["connection"], CONNECTION_ID, "connection");
     const kid = grammar(r["kid"], KID, "kid");
     const blob = blobOf(r["blob"], kid);
-    const models = r["models"];
-    if (!Array.isArray(models) || models.length > CONNECTION_LIMITS.maxModels) {
-      throw new Refusal("invalid", "invalid connection models");
-    }
-    const checked = models.map(modelInfo);
-    if (new Set(checked.map((model) => model.id)).size !== checked.length
-        || utf8Bytes(JSON.stringify(checked)) > MODELS_JSON_MAX) {
-      throw new Refusal("invalid", "invalid connection models");
-    }
+    const checked = checkedModels(r["models"]);
     const row = this.#row(id);
     if (row === undefined || row.status !== "pending" || row.version !== r["version"]
         || row.pending_until === null || row.pending_until <= now) {
@@ -1071,7 +1137,7 @@ export class Connections {
    * its outcome kept in its row: revoked, the blob deleted; not revocable (the source has
    * no revocation endpoint), the blob deleted, with a notice; failed, backed off, and after
    * `revokeTries` the blob deleted anyway, with a notice. Then each due read of a source,
-   * credit and then listing (`#reads`).
+   * credit and then models (`#reads`).
    */
   async run(_now: number, until: number): Promise<void> {
     await this.#write(() => this.#sweep(clock()));
@@ -1099,7 +1165,7 @@ export class Connections {
       await this.#write(() => this.#revokeOutcome(id, owed.version, outcome, clock()));
     }
     await this.#reads(this.#credit, until);
-    await this.#reads(this.#listing, until);
+    await this.#reads(this.#models, until);
   }
 
   /**
@@ -1115,7 +1181,7 @@ export class Connections {
       if (owed === null) {
         continue;
       }
-      let outcome: A | "none" | "failed" = "failed";
+      let outcome: A | "failed" = "failed";
       try {
         const reading = read.call(owed.credential, owed.read);
         const answer = await inTime(reading, CONNECTION_LIMITS.readMs);
@@ -1128,15 +1194,8 @@ export class Connections {
           }
         }
       } catch (error) {
-        // A blob sealed before its record named the read reaches no such endpoint: there is
-        // nothing to read on it.
-        const code = refusalOf(error)?.code;
-        if (code === "endpoint_refused") {
-          outcome = "none";
-        } else {
-          console.error(`a connection's ${read.name} read failed (${code ?? "no code"}); it ` +
-                        "is read again later");
-        }
+        console.error(`a connection's ${read.name} read failed ` +
+                      `(${refusalOf(error)?.code ?? "no code"}); it is read again later`);
       }
       await this.#write(() => {
         if (this.current(id, owed.credential.version)) {
@@ -1214,34 +1273,32 @@ export class Connections {
   }
 
   /**
-   * In a unit: a listing read's outcome: each of the connection's models it lists kept, with
-   * its score, read again after `listingRecheckS`; nothing to read on its blob (`none`), none
-   * kept (its models are all its setup check listed) and no read due; a failure, or a listing
-   * that lists none of its models (a vendor's renamed ids would otherwise drop every one), the
-   * listed models kept as they were, read again after `listingRetryS`; the owner is told of
-   * the last, once while the notice is kept, since a key that lost every one reads the same.
+   * In a unit: a models read's outcome: its blob's records its listing lists (every one where
+   * its record names none, or its blob reaches no such read), each with its score, kept and
+   * read again after `modelsRecheckS`; a failure, or a read that leaves no model (a vendor's
+   * renamed ids would otherwise drop every one), its models kept as they were, read again after
+   * `modelsRetryS`. The owner is told when its vendor lists none of them, once while the notice
+   * is kept, since a key that lost every one reads the same.
    */
-  #listed(id: string, outcome: ModelListing | "none" | "failed", now: number): void {
+  #served(id: string, outcome: ModelsRead | "failed", now: number): void {
     const row = this.#row(id)!;
-    const listed = outcome === "none" ? null : outcome === "failed" ? outcome
-      : listedJson(JSON.parse(row.models) as ModelRecord[], outcome);
-    if (listed === "failed" && outcome !== "failed") {
+    const served = outcome === "failed" ? outcome : servedJson(outcome);
+    if (served === "unmatched") {
       this.#notices.once("connection_listing_unmatched", `${row.display_name} (${id}): its ` +
                            "vendor lists it none of its models, so they are kept as they were " +
                            "and read again hourly; if its key lost access, check it at the " +
                            "provider", now);
     }
-    if (listed === "failed") {
-      this.#sql.exec("UPDATE connection_listing SET due = ? WHERE connection = ?",
-                     now + CONNECTION_LIMITS.listingRetryS, id);
+    if (served === "failed" || served === "unmatched") {
+      this.#sql.exec("UPDATE connection_models SET due = ? WHERE connection = ?",
+                     now + CONNECTION_LIMITS.modelsRetryS, id);
       return;
     }
-    if (listed !== row.listed) {
+    if (served !== row.read) {
       this.#changed();
     }
-    this.#sql.exec("UPDATE connection_listing SET models = ?, due = ? WHERE connection = ?",
-                   listed, listed === null ? null : now + CONNECTION_LIMITS.listingRecheckS,
-                   id);
+    this.#sql.exec("UPDATE connection_models SET models = ?, due = ? WHERE connection = ?",
+                   served, now + CONNECTION_LIMITS.modelsRecheckS, id);
   }
 
   /**

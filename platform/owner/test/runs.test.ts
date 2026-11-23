@@ -954,7 +954,13 @@ describe("auto and the owner's sign-ins", () => {
      "file where it has one", async () => {
     const r = await gated();
     const [base] = await catalog(OPENAI);
-    await r.connect("sk-good", OPENAI, "Weaker", [{ ...base!, id: "gpt-5.1-codex" }]);
+    // Each key's models, as its setup check and the gateway's catalog list them.
+    const keyOn = async (display: string, id: string) => {
+      const models = [{ ...base!, id }];
+      await r.gateway.arm("models", { answer: { models } });
+      return r.connect("sk-good", OPENAI, display, models);
+    };
+    await keyOn("Weaker", "gpt-5.1-codex");
     await defineAgent(r.stub, r.bind(), "helper", AUTO_AGENT);
     // A run of `helper`, settled at once, so the tier's simultaneous runs never refuse one.
     const helper = async () => {
@@ -971,8 +977,7 @@ describe("auto and the owner's sign-ins", () => {
     expect(await helper()).toMatchObject(plan);
     // That provider's key on a model ranked above the plan's in the top tier: still the plan,
     // which the owner pays for already.
-    const stronger = await r.connect("sk-good", OPENAI, "Stronger",
-                                     [{ ...base!, id: "gpt-6.1-sol" }]);
+    const stronger = await keyOn("Stronger", "gpt-6.1-sol");
     expect(await helper()).toMatchObject(plan);
     // The owner's own ranking, whole in place of the platform's: OpenAI's a tier above, in a
     // file past the inline bytes, so read from its chunks.
@@ -1065,13 +1070,17 @@ describe("auto and the owner's sign-ins", () => {
      "agent names runs", async () => {
     // The stage finding of 2026-11-23: an OpenRouter key whose catalog lists Claude Fable
     // only as its batch variants and as `~…-latest`. The models are put on the fake upstream's
-    // source; the rule reads the connection's source record, OpenRouter's.
+    // source, as its setup check and the gateway's catalog list them; the rule reads the
+    // connection's source record, OpenRouter's.
     const [base] = await catalog(OPENAI);
-    const listed = (...ids: string[]) => ids.map((id) => ({ ...base!, id }));
     const BATCH = "anthropic/claude-fable-5.1:batch";
+    const keyOn = async (r: Gated, display: string, ...ids: string[]) => {
+      const models = ids.map((id) => ({ ...base!, id }));
+      await r.gateway.arm("models", { answer: { models } });
+      return r.connect("sk-good", OPENAI, display, models, "openrouter_user_models_v1");
+    };
     const r = await gated();
-    await r.connect("sk-good", OPENAI, "OpenRouter",
-                    listed(BATCH, "~anthropic/claude-fable-latest"), "openrouter_user_models_v1");
+    await keyOn(r, "OpenRouter", BATCH, "~anthropic/claude-fable-latest");
     await defineAgent(r.stub, r.bind(), "helper", AUTO_AGENT);
     expect((await ownerRun(r.stub, r.bind(), undefined, "helper")).run)
       .toMatchObject({ credential: "api_key", model: "~anthropic/claude-fable-latest" });
@@ -1083,8 +1092,7 @@ describe("auto and the owner's sign-ins", () => {
     // A key listing only batch variants: no source for an agent that names no model, on
     // `auto` or on its engine and the connection, saying how to run one; naming one, it runs.
     const s = await gated();
-    const only = await s.connect("sk-good", OPENAI, "Batch only", listed(BATCH),
-                                 "openrouter_user_models_v1");
+    const only = await keyOn(s, "Batch only", BATCH);
     await defineAgent(s.stub, s.bind(), "helper", AUTO_AGENT);
     const unpicked = `${NO_SOURCE} (its connections list only models a run is given when its ` +
       "agent names one (agent.json's model))";
@@ -1150,6 +1158,7 @@ describe("auto and the owner's sign-ins", () => {
     const keyed = async (pays: boolean) => {
       const r = await gated();
       await r.gateway.arm("credit", { answer: { pays } });
+      await r.gateway.arm("models", { answer: { models } });
       // The vendor scores none of them, and no longer serves the other free one, first by id.
       await r.gateway.arm("listing", { answer: { models: [
         { id: PAID, score: null }, { id: "openrouter/auto", score: null },
