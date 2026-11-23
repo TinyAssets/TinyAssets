@@ -151,8 +151,8 @@ export interface SandboxRun {
   readonly credential: CredentialKind;
   /** An API-key run's connection; absent on the vendor's own sign-in. */
   readonly connection?: string;
-  /** The model it is given, or null: its engine's own default. */
-  readonly model: string | null;
+  /** The model it is given (`Runs.choose`). */
+  readonly model: string;
 }
 
 /** A run as the owner's rules decide its calls (`actions.ts`): its id, agent and conversation. */
@@ -1177,12 +1177,12 @@ export class Launcher implements RunHost {
   }
 
   /**
-   * The API of the model an API-key run is given (`EngineRun.api`), whose base it is handed;
-   * null for a run that names none, or a model its connection does not list (its calls are
-   * refused at the door), which are given the connection's first API.
+   * The API of the model an API-key run is given (`EngineRun.api`), whose base it is handed:
+   * one its connection lists, as its admission chose it in this unit. Null on the vendor's own
+   * sign-in; refused for a model its connection does not list or an API it is not sealed for.
    */
   #runApi(run: SandboxRun): string | null {
-    if (run.connection === undefined || run.model === null) {
+    if (run.connection === undefined) {
       return null;
     }
     const egress = this.#o.connections.egressible()
@@ -1190,8 +1190,13 @@ export class Launcher implements RunHost {
     const model = this.#o.connections.usable()
       .find((entry) => entry.connection === run.connection)?.models
       .find((entry) => entry.id === run.model);
-    return egress === undefined || "kind" in egress || model === undefined ? null
-      : modelApi(egress, model)?.api ?? null;
+    const api = egress === undefined || "kind" in egress || model === undefined ? null
+      : modelApi(egress, model);
+    if (api === null) {
+      throw new Refusal("run_config_invalid", "an API-key run's model is one its connection " +
+                                              "lists, on an API it is sealed for");
+    }
+    return api.api;
   }
 
   /**
