@@ -424,7 +424,7 @@ test("the owner makes an agent, starts a run and sees its live frames and its re
   // Every run is given its model, never its engine's own default, and the owner sees which:
   // on the agent's page before the run, attended and unattended alike, and on its line.
   assert.equal(typeof start.model, "string");
-  for (const who of ["A run you start now", "A run on a schedule, or on mail not from you, now"]) {
+  for (const who of ["A run you start now", "A run on your schedule, now"]) {
     assert.ok(previewed.includes(`${who}: pi (${start.model}) on ${keyName} (${groq}).`),
               previewed);
   }
@@ -1272,6 +1272,21 @@ async function holding(pattern, body) {
     await page.unroute(pattern, handler);
   }
 }
+
+test("an agent whose agent.json is refused keeps its page, its runs' lines saying why",
+     { timeout: 60_000 }, async () => {
+  const path = "/workspace/agents/helper/agent.json";
+  const read = await api("files/read", { path });
+  const broke = await api("files/write", { path, expected_etag: read.body.entry.etag, text: "{" });
+  await page.goto(`${ORIGIN}/app#agents/helper`);
+  await page.locator("main p", { hasText: "A run on your schedule, now: refused, " }).waitFor();
+  await page.getByRole("link", { name: "agent.json" }).waitFor();
+  const lines = await page.locator("main p", { hasText: ": refused, " }).allInnerTexts();
+  assert.deepEqual(lines.map((line) => line.split(": refused, ")[0]),
+                   ["A run you start now", "A run on your schedule, now"], lines.join(" | "));
+  assert.equal((await api("files/write", { path, expected_etag: broke.body.entry.etag,
+                                           text: read.body.text })).status, 200);
+});
 
 test("a save re-lists its own folder, never the folder the owner went to since",
      { timeout: 60_000 }, async () => {

@@ -559,9 +559,18 @@ async function agent(name) {
   const newFile = h("input", { type: "text", placeholder: "skills/notes/SKILL.md" });
   const model = h("div", {});
   const showModel = async () => {
-    const { attended, unattended } = await call("agent/model", { agent_id: name });
+    // The read is the admission's: an agent it refuses (its agent.json not one) is refused
+    // to both runs, and the page stays, its files there to fix it.
+    const { attended, unattended } = await call("agent/model", { agent_id: name })
+      .catch((error) => {
+        if (!(error instanceof Refused)) {
+          throw error;
+        }
+        return { attended: { refused: error.message }, unattended: { refused: error.message } };
+      });
+    // An outside client's run picks by its own sandbox's sign-ins: not these.
     fill(model, modelLine("A run you start now", attended),
-         modelLine("A run on a schedule, or on mail not from you, now", unattended));
+         modelLine("A run on your schedule, now", unattended));
   };
   // A saved agent.json can change the model its runs are given.
   const shown = () => Promise.all([listFiles(), showModel()]);

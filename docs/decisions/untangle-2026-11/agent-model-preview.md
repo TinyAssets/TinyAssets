@@ -74,7 +74,7 @@ app shows connections by name. Directions 3 and 4, Facts 8 and 15.
    `model_unranked` (the fold-in: `<display_name> (<id>)`) and the preview.
 3. **`agentModel`** door, route `agent/model`; its row's answer declared.
 4. **The agent page** shows two lines under its name, read once as it opens: a run the owner
-   starts there, and an unattended one (a schedule's, mail not from the owner).
+   starts there, and an unattended one of its own authority ("A run on your schedule").
 5. **The owner spec's admission** says it.
 
 ## Problems found (untangle step 2)
@@ -94,3 +94,16 @@ app shows connections by name. Directions 3 and 4, Facts 8 and 15.
   shows on the next open. Each run's line shows the model it was given.
 - **`connection_listing_unmatched` names a connection in `connections.ts`** from its own row,
   the same words: a different module's notice of a connection, not of a run's place.
+
+## Review (2026-11-23)
+
+- **The unattended line said "or on mail not from you"**, but mail not from the owner carries
+  an outside client's authority (`ledger.ts`: `attended` is `origin === null`), whose pick
+  reads that client's sandbox's sign-ins, which the preview does not: an `auto` agent the
+  owner's Claude Code sign-in runs unattended could show that sign-in for mail a client's
+  run then runs on a key, or is refused. Fixed: "A run on your schedule", the owner's own
+  unattended runs, which the preview reads.
+- **An agent whose read admission refuses** (`agent.json`, `mcp.json` or `hooks.json` not
+  one, the ranking file not one) **lost its page**: `agent/model`'s refusal failed the page's
+  render, so its files, there to fix it, were not shown. Fixed: the refusal is both lines'
+  `refused, <words>`, as the run would meet it; `app.e2e.mjs` holds it.
