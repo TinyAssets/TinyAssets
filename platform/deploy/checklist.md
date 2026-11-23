@@ -445,7 +445,9 @@ It never counts as "absent".
        - Its first sign-in is then admitted automatically: the gate admits the listed id,
          and the doors admit a new owner at sign-up.
     4. **Create the canary owner** (tester B, signing in through the doors), then mint its
-       API key in the owner app and store it as the `production` secret `TA_PROBE_KEY`.
+       API key in the owner app (API keys, a name alone: the key does what a connected app
+       may, so it writes, reads and removes the owner's files and runs its main agent) and
+       store it as the `production` secret `TA_PROBE_KEY`.
        H2's probes use it too. In the same owner app, connect the free-tier model key
        (for example a Google AI Studio key) as the owner's model source: the full run runs
        on it. The key goes into the app's connect form alone, never a GitHub secret: only
@@ -492,8 +494,10 @@ It never counts as "absent".
   4. **Open the gate to the stage accounts alone** with mode `control`: their two WorkOS
      user ids (`user_…`) as `canary`, `outside` on, `ordinary` still `canary`. A sign-in by
      any other id is refused at the gate, with no owner made.
-  5. **Each account signs in and mints one API key**; store the probe keys (`TA_PROBE_KEY`
-     and the rest, as after `routes` above) and run the platform's canary keyed.
+  5. **Each account signs in and mints one API key** (as after `routes` above, step 4); store
+     the probe keys (`TA_PROBE_KEY` and the rest) and run the platform's canary keyed. A key
+     the list shows with scopes (not "everything") is registered as no agent, so it acts
+     nowhere: turn it off and mint another.
   6. **The end:** each stage account's own erasure in the owner app, then `handback` of the
      stage's route record, the one the next `routes` plan or a refused handback names. It
      deletes the stage host's routes and DNS record, detaches the

@@ -10,10 +10,11 @@
  *
  * - **Mint**, from the owner's browser in session: the object's `keyMint`, one unit that
  *   counts the live keys strictly (`MAX_KEYS`, the owner-set clients' own bound), sets the
- *   grant (the key's own origin, source `api_key`, scoped, revision 0), applies an agent's
- *   held key request with it when the owner names one (`proposal`), and writes the key's
- *   row; then the directory entry, then the secret, once. A refused mint writes no entry;
- *   an entry that fails to write leaves a grant the owner can revoke.
+ *   grant (the key's own origin, source `api_key`, revision 0; full unless the mint names
+ *   scopes, and a scoped key acts once registered as an agent, `outside-agents`), applies
+ *   an agent's held key request with it when the owner names one (`proposal`), and writes
+ *   the key's row; then the directory entry, then the secret, once. A refused mint writes
+ *   no entry; an entry that fails to write leaves a grant the owner can revoke.
  * - **Use** (`presentedKey`, the one check of both doors a key opens, `/api` and `/mcp`):
  *   the `Authorization: Bearer` header alone, never a query or a cookie; parse, read the
  *   entry, compare hashes, then the kill switch. A wrong key is `401` before any object is
