@@ -439,8 +439,8 @@ describe("the key store", () => {
     const app = await signInApp({ owner: who });
     const stub = doorsEnv.OWNER.getByName(who);
     const change = { type: "api_key_request", scopes: SCOPES };
-    const proposed = (request_id: string) =>
-      ownDoor(who, "policyProposal", { request_id });
+    const proposed = async (request_id: string) =>
+      (await ownDoor(who, "policyProposals")).cards.find((card) => card.card_id === request_id)!;
     await ownDoor(who, "policyPropose", { change, request_id: "card-key-1" });
     const { digest } = await proposed("card-key-1");
     const proposal = { request_id: "card-key-1", digest };

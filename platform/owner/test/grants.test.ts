@@ -522,6 +522,7 @@ describe("every door admits an outside client against its grant", () => {
     const owners = most - share - 1;
     await inStores(r.stub, ({ policy, gate }) => {
       const now = clock();
+      const held = (card: string) => policy.list().find((each) => each.card_id === card) ?? null;
       policy.propose({ n: 4 }, "d", CLAUDE.client, now);
       policy.propose({ n: 1 }, "a", CHATGPT.client, now);
       for (let n = 1; n < share; n++) {
@@ -530,23 +531,23 @@ describe("every door admits an outside client against its grant", () => {
       // Past its share, a client's new card lets its own oldest pending one go, never
       // another's older one.
       policy.propose({ n: -1 }, "c", CHATGPT.client, now);
-      expect([policy.held("a"), policy.held("d") !== null]).toEqual([null, true]);
+      expect([held("a"), held("d") !== null]).toEqual([null, true]);
       for (let n = 0; n < owners; n++) {  // the owner past a client's share
         policy.propose({ card: n }, `o${n}`, "owner", now);
       }
       // The set full, the owner's next card lets its own oldest go, never a client's.
       policy.propose({ n: 6 }, "i", "owner", now);
-      expect([policy.held("o0"), policy.held("d") !== null]).toEqual([null, true]);
+      expect([held("o0"), held("d") !== null]).toEqual([null, true]);
       // An applied card frees its proposer's share.
-      const { digest } = policy.held("c2")!;
+      const { digest } = held("c2")!;
       gate.storage.sql.exec("UPDATE policy_proposals SET applied_at = ? WHERE request_id = ?",
                              now, "c2");
       expect(digest).toMatch(/^sha256:/);
       policy.propose({ n: 7 }, "g", CHATGPT.client, now);
-      expect(policy.held("c3")).not.toBeNull();
+      expect(held("c3")).not.toBeNull();
       // A client below its share at the full set lets the oldest outside card go: CLAUDE's.
       policy.propose({ n: 8 }, "e", CLAUDE.client, now);
-      expect([policy.held("d"), policy.held("o1") !== null]).toEqual([null, true]);
+      expect([held("d"), held("o1") !== null]).toEqual([null, true]);
     });
     expect((await r.table("proposal_shares")).map((row) => [row["proposer"], row["pending"]])
       .sort()).toEqual([[CHATGPT.client, share], [CLAUDE.client, 1], ["owner", owners]].sort());

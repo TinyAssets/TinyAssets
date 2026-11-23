@@ -113,10 +113,10 @@ mechanism for both kinds of the owner's answer, not a second view beside it.
 
 ## Owed
 
-- [ ] `untangle/policy-answers`: a policy proposal and a key request wait on the owner with
+- [x] `untangle/policy-answers`: a policy proposal and a key request wait on the owner with
   no list, no decline and no screen; each joins `KINDS` with its list door and a no, as a held
   call does here, researched first.
-- [ ] live: once the stage serves no doors version before this one, take out `actionRequest`,
+- [x] live: once the stage serves no doors version before this one, take out `actionRequest`,
   the one-card read kept `dropped` (both tables' rows and its handler), as
   `drop-register-proposal.md` took out `registerProposal`.
 - [ ] live: after the next deploy of the doors and the owner, on the stage: with an `ask`

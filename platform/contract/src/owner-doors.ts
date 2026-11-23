@@ -66,7 +66,9 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
   registerPropose(binding: Binding, request: DoorRequest<"registerPropose">):
     Promise<DoorAnswer<"registerPropose">>;
   /**
-   * Propose a change to the owner's policy, for the owner to approve.
+   * Propose a change to the owner's policy, for the owner to apply or decline. The answer's
+   * approve_url is the owner's page of it: give it to your user, who opens it signed in to
+   * TinyAssets.
    */
   policyPropose(binding: Binding, request: DoorRequest<"policyPropose">):
     Promise<DoorAnswer<"policyPropose">>;
@@ -247,8 +249,11 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
   policyReceipts(binding: Binding): Promise<DoorAnswer<"policyReceipts">>;
   policyWrite(binding: Binding, request: DoorRequest<"policyWrite">):
     Promise<DoorAnswer<"policyWrite">>;
-  policyProposal(binding: Binding, request: DoorRequest<"policyProposal">):
-    Promise<DoorAnswer<"policyProposal">>;
+  policyProposals(binding: Binding): Promise<DoorAnswer<"policyProposals">>;
+  policyApply(binding: Binding, request: DoorRequest<"policyApply">):
+    Promise<DoorAnswer<"policyApply">>;
+  policyDecline(binding: Binding, request: DoorRequest<"policyDecline">):
+    Promise<DoorAnswer<"policyDecline">>;
   policyWakeLimits(binding: Binding, request: DoorRequest<"policyWakeLimits">):
     Promise<DoorAnswer<"policyWakeLimits">>;
   actionRequests(binding: Binding): Promise<DoorAnswer<"actionRequests">>;
@@ -412,7 +417,7 @@ type Loose =
       | "admissionSet" | "wakeEvents" | "signinEvents" | "tierSet" | "egressOpen" | "egressReserve"
       | "egressBeat" | "egressSettle";
 /** The doors the doors call no more, which the object still takes, its types with it. */
-type Dropped = "actionRequest";
+type Dropped = "policyProposal";
 /** What `DoorTypes` may say of a door, by its row. */
 type Parts<D> = "answer" | (D extends keyof DoorRequests ? "values" | "handed"
   : D extends Loose ? "loose" : never);

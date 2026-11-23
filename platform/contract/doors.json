@@ -140,7 +140,7 @@
       "tool": {
         "name": "policy_propose", "title": "Propose policy change", "readOnlyHint": false,
         "destructiveHint": false, "idempotentHint": false, "openWorldHint": false,
-        "description": "Propose a change to the owner's policy, for the owner to approve."
+        "description": "Propose a change to the owner's policy, for the owner to apply or decline. The answer's approve_url is the owner's page of it: give it to your user, who opens it signed in to TinyAssets."
       }
     },
     {
@@ -634,13 +634,32 @@
       "capability": null,
       "args": {
         "refused": "invalid policy request",
-        "required": { "expected_generation": {}, "policy": {} }, "optional": { "proposal": {} }
+        "required": { "expected_generation": {}, "policy": {} }, "optional": {},
+        "dropped": ["proposal"]
       }
     },
     {
-      "door": "policyProposal", "class": "read", "capability": null,
+      "door": "policyProposal", "class": "read", "capability": null, "dropped": true,
       "args": {
         "refused": "invalid policy request", "required": { "request_id": {} }, "optional": {}
+      }
+    },
+    {
+      "door": "policyProposals", "class": "read", "capability": null, "args": "none"
+    },
+    {
+      "door": "policyApply", "class": "work", "act": { "name": "security.change" },
+      "capability": null,
+      "args": {
+        "refused": "invalid policy request", "required": { "card_id": {}, "digest": {} },
+        "optional": {}
+      }
+    },
+    {
+      "door": "policyDecline", "class": "reduce", "capability": null,
+      "args": {
+        "refused": "invalid policy request", "required": { "card_id": {}, "digest": {} },
+        "optional": {}
       }
     },
     {
@@ -652,12 +671,6 @@
           "expected_generation": {}
         },
         "optional": {}
-      }
-    },
-    {
-      "door": "actionRequest", "class": "read", "capability": null, "dropped": true,
-      "args": {
-        "refused": "invalid action request", "required": { "card_id": {} }, "optional": {}
       }
     },
     {
