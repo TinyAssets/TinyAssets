@@ -91,5 +91,5 @@ Direction 2 puts the vendor's facts in its record, never in code.
 ## Owed
 
 - [ ] live: at the stage, OpenRouter's `GET /api/v1/key` answers `data.is_free_tier` and `data.limit_remaining` as the record reads them, and says which case the stage key is in; the stage connection's next priced call is refused `402`, its sources row then says "Free models only", and the next `auto` run is on a `:free` model.
-- [ ] untangle/free-model-ranking: a ranking tier for the models a no-credit key is served (OpenRouter's `:free` variants), researched first.
+- [x] untangle/free-model-ranking: a ranking tier for the models a no-credit key is served (OpenRouter's `:free` variants), researched first. Done by the vendor's strength listing, not a tier (`free-model-ranking.md`).
 - [x] fix/router-metering: a zero-priced router (`openrouter/auto` and its kind) is reserved and settled at zero though it bills the routed model; researched first.

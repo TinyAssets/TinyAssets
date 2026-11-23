@@ -69,6 +69,21 @@
     ],
     "cite": "https://openrouter.ai/docs/api_reference/limits"
   },
+  "strength": {
+    "url": "https://openrouter.ai/api/v1/models/user",
+    "rows": [
+      "data"
+    ],
+    "id": [
+      "id"
+    ],
+    "score": [
+      "benchmarks",
+      "artificial_analysis",
+      "intelligence_index"
+    ],
+    "cite": "https://openrouter.ai/docs/client-sdks/typescript/models/aabenchmarkentry"
+  },
   "routers": [
     {
       "models": [

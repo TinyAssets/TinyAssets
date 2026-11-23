@@ -22,7 +22,7 @@ function model(id: string, output = 1): ModelRecord {
 function key(connection: string, provider: string, created: number,
              ...models: ModelRecord[]): Usable {
   return { connection, source: provider, provider, display_name: connection, created_at: created,
-           models, pays: null };
+           models, pays: null, scores: new Map() };
 }
 
 const CLAUDE_PLAN: Plan = { engine: "claude-code", provider: "anthropic",
@@ -72,6 +72,24 @@ describe("the strongest source, on the platform's ranking", () => {
       "c-o/vendor/unranked-x"]);
     expect(order.filter((one) => one.place === null).map(named))
       .toEqual(["c-o/vendor/unranked-y", "c-o/vendor/unranked-x"]);
+  });
+
+  it("orders unknown models by their vendor's score, a scored one first, then by price, " +
+     "never above a ranked one", () => {
+    const free = (id: string) => model(id, 0);
+    const listed = { ...key("c-o", "openrouter", 1, free("cohere/north-mini-code:free"),
+                            free("google/gemma-4-31b-it:free"),
+                            free("nvidia/nemotron-3-ultra-550b-a55b:free"),
+                            free("nvidia/nemotron-3.5-super-vl:free"),
+                            model("vendor/unranked-x", 9), model("anthropic/claude-opus-5")),
+                     scores: new Map([["google/gemma-4-31b-it:free", 4.4],
+                                      ["nvidia/nemotron-3-ultra-550b-a55b:free", 11.8],
+                                      ["nvidia/nemotron-3.5-super-vl:free", 13.6],
+                                      ["anthropic/claude-opus-5", 1]]) };
+    expect(ranked([listed], [], shippedRanking()).map(named)).toEqual([
+      "c-o/anthropic/claude-opus-5", "c-o/nvidia/nemotron-3.5-super-vl:free",
+      "c-o/nvidia/nemotron-3-ultra-550b-a55b:free", "c-o/google/gemma-4-31b-it:free",
+      "c-o/vendor/unranked-x", "c-o/cohere/north-mini-code:free"]);
   });
 
   it("breaks a tie by the older connection, and is none with nothing connected", () => {

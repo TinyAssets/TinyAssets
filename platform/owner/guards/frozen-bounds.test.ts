@@ -197,7 +197,9 @@ export const SPELLED: Readonly<Record<string, readonly Place[]>> = Object.freeze
   // its twin in code a constant of its own, now one bound.
   INLINE_BYTES: TABLE("file_contents", (n) => `CHECK (inline IS NULL OR size <= ${n})`),
   CONNECTION_BLOB_MAX: TABLE("connection_secrets", (n) => `CHECK (length(blob) <= ${n})`),
-  MODELS_JSON_MAX: TABLE("connections", (n) => `length(CAST(models AS BLOB)) <= ${n})`),
+  MODELS_JSON_MAX: [...TABLE("connections", (n) => `length(CAST(models AS BLOB)) <= ${n})`),
+                    ...TABLE("connection_strength",
+                             (n) => `length(CAST(scores AS BLOB)) <= ${n})),`)],
   EGRESS_JSON_MAX: TABLE("connections", (n) => `length(CAST(egress AS BLOB)) <= ${n})`),
   REDIRECT_URI_MAX: TABLE("connection_flows", (n) => `length(redirect_uri) <= ${n})`),
   EGRESS_PATH_MAX: TABLE("egress_reservations", (n) => `length(path) BETWEEN 1 AND ${n} AND`),
@@ -464,7 +466,7 @@ describe("the owner's frozen bounds", () => {
       }
     }
     // Every place of every bound, the products of two counted with each.
-    expect(places).toBe(671);
+    expect(places).toBe(672);
   });
 
   it("see a bound changed without its SQL, a place more or less, or a number left over", () => {
