@@ -2589,6 +2589,44 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "DELETE FROM file_temps",
     "DROP TABLE file_temps",
   ]),
+  // 25 (`usage.ts`, `money.ts`; `untangle-2026-11/spend-periods.md`): a spend counter is kept
+  // until every charge reserved in its period has settled, a day and a beat (`keptFrom`), so
+  // a source holds at most three days' and two months' at once and the count is five periods'
+  // (`SPEND_KEPT`). The counters past that go at the next prune, which every reservation runs
+  // before it adds one. `model_spend` is exported and a generation from before may hold more,
+  // so none is brought forward (`SPEND_PERIODS`).
+  Object.freeze([
+    "DROP TRIGGER model_spend_kept",
+    "CREATE TRIGGER model_spend_kept AFTER INSERT ON model_spend " +
+      "WHEN (SELECT COUNT(*) FROM model_spend) > 500 BEGIN " +
+      "SELECT RAISE(ABORT, 'model_spend_full: 500 spend counters are kept'); END",
+  ]),
+  // 26 (`untangle-2026-11/model-reservations.md`): the object's own model reservations go,
+  // which nothing has made since the in-object loop was deleted (#5389); the spend counters
+  // stay, every charge now a sandbox call's (`egress.ts`). The drop takes the table's index and
+  // triggers with it, the bound on its open rows and its capture among them, and moves no
+  // counter: a row's spend outlives it, as it outlived each row the prune let go.
+  // `model_reservations` was exported, so no generation from before is brought forward
+  // (`RESERVATIONS_DROPPED`).
+  Object.freeze([
+    "DROP TABLE model_reservations",
+  ]),
+  // 27 (`untangle-2026-11/control-row.md`): the tier numbers the binder handed go, folded into
+  // the control record's one kept copy (`control_kept`, migration 20), which the binding now
+  // carries whole and the tiers are read from (`admission.ts`). An object that keeps no copy
+  // yet admits no run until its next read of the record (its next bind, or its `runs` lane's
+  // next pass). The platform's, not the owner's: `platform_tiers` was not exported.
+  Object.freeze([
+    "DROP TABLE platform_tiers",
+  ]),
+  // 28 (`untangle-2026-11/owner-control-signins.md`): the switched-on sign-ins the binder and
+  // the lane handed go, folded into the same kept copy (`control_kept`), which the switches
+  // are now read from (`signins.ts`, `switchedOn`). An object that keeps no copy yet starts no
+  // sign-in until its next read of the record. The platform's, not the owner's:
+  // `platform_signins` was not exported.
+  Object.freeze([
+    "DROP TABLE platform_signins",
+  ]),
 ]);
 
 /**
@@ -2616,6 +2654,20 @@ const GRANT_AGENT = "before a restore could bring a generation forward: migratio
  */
 const TEMPS_DROPPED = "before a restore could bring a generation forward: migration 24 drops " +
   "the temporary directories' table, whose lines this schema has no table for";
+
+/**
+ * Why no generation from before migration 25 can be brought forward. Declared before the
+ * cutover, when no owner keeps a generation (`untangle-2026-11/spend-periods.md`).
+ */
+const SPEND_PERIODS = "before a restore could bring a generation forward: migration 25 keeps " +
+  "fewer spend counters than a generation's lines may hold";
+
+/**
+ * Why no generation from before migration 26 can be brought forward. Declared before the
+ * cutover, when no owner keeps a generation (`untangle-2026-11/model-reservations.md`).
+ */
+const RESERVATIONS_DROPPED = "before a restore could bring a generation forward: migration " +
+  "26 drops the model reservations' table, whose lines this schema has no table for";
 
 /**
  * How a generation of an older schema is brought forward across each migration, one entry a
@@ -2653,6 +2705,10 @@ export const FORWARD: readonly (string | null)[] = Object.freeze([
   null,  // 22
   GRANT_AGENT,  // 23
   TEMPS_DROPPED,  // 24
+  SPEND_PERIODS,  // 25
+  RESERVATIONS_DROPPED,  // 26
+  null,  // 27
+  null,  // 28
 ]);
 
 /**

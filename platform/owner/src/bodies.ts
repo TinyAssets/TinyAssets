@@ -32,7 +32,7 @@ import { FIT_SLACK, RESULT_CHARS } from "../../contract/src/encoded";
 import { Refusal } from "../../contract/src/refusal";
 import type { Files } from "./files";
 import { streamChunks } from "./segments";
-import type { OwnerStorage, Write } from "./gate";
+import { type OwnerStorage, slottedNow, type Write } from "./gate";
 import { bodyUnits, ownerSlots, WINDOW_UNITS } from "./holds";
 import { BODY_BYTES_MAX, CHUNK_BYTES, PLACE_BYTES } from "../../contract/src/limits";
 import { slotted } from "../../contract/src/slots";
@@ -396,16 +396,19 @@ export class Bodies {
   }
 
   /**
-   * The located bodies read whole, by content id (a run's mail input): their chunks read
-   * from R2 (`FILES` rechecks each hash) and decoded as the UTF-8 they were written as.
-   * Outside any unit.
+   * The located bodies read whole, by content id (a run's mail input, which only the `runs`
+   * lane reads): their chunks read from R2 (`FILES` rechecks each hash) and decoded as the
+   * UTF-8 they were written as. Outside any unit. Each step takes the pool's units now or is
+   * refused `busy` (`slottedNow`), which holds the lane: inside the alarm a lane never waits
+   * on the pool (`unitsNow`).
    */
   async fetch(located: Located): Promise<Map<string, string>> {
     const bodies = new Map<string, string>();
     for (const [contentId, { chunks }] of located) {
       // A body of at most two chunks (`BODY_BYTES_MAX`), its bytes and its text held in a
       // step weighted by its chunks (`bodyUnits`, `holds.ts`).
-      bodies.set(contentId, await slotted(ownerSlots(), bodyUnits(chunks.length), async () => {
+      bodies.set(contentId, await slottedNow(ownerSlots(), bodyUnits(chunks.length),
+                                             async () => {
         const decoder = utf8Decoder("keep");
         const parts = await this.#files.fetch(chunks.map((sha256) => ({ sha256 })));
         let text = "";

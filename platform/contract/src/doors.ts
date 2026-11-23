@@ -9,7 +9,11 @@
  *   no binding (`UNBOUND_DOORS`) has none;
  * - its `capability`, held where the caller acts;
  * - its request (`args`): exactly the required fields and any of the optional ones, none
- *   `undefined`, else refused with the row's words.
+ *   `undefined`, else refused with the row's words; and any it lists as dropped, which the
+ *   doors' version before may still hand, taken and left out (`requestFields`).
+ *
+ * A door the doors call no more is marked `dropped`: the object still takes it, for the
+ * doors' version before, and `OwnerDoors` lacks it (`deploy/handed.ts`).
  *
  * How the object takes a call, its runner's steps (who it takes, the checks after, where its
  * capability is held, the order of its scope and fields, its handler's module and its gate),
@@ -18,6 +22,10 @@
  * A door that does one of the acts an owner's `actions` rule names says so (`act`, an act of
  * `acts.json`, and `when`, the condition under which a call is the act, every call when it
  * names none), so a rule on that act holds at that door.
+ *
+ * A door whose work runs while its caller waits (`code`'s script) says so (`stop`): the doors
+ * hand it, after its request, its caller's stop, a stream they close once that caller stops
+ * waiting (`doors/src/tools.ts` `callDoor`), and the door ends its work then.
  *
  * The outside-callable doors' rows carry their MCP tool (`tool`), which the
  * doors serve on `/mcp` and as `POST /api/tools/<name>` (`doors/src/tools.ts`): its capability
@@ -74,6 +82,12 @@ export interface Args {
   readonly undefinedAllowed?: true;
   /** No request at all is an empty one (`agents_list`). */
   readonly omitted?: true;
+  /**
+   * Fields a release before listed, which the doors hand no more and the owner still takes
+   * and drops, until the doors the stage serves list them no more
+   * (`deploy/handed.ts`).
+   */
+  readonly dropped?: readonly string[];
 }
 
 /**
@@ -103,9 +117,17 @@ export interface DoorRow {
   readonly act?: { readonly name: string; readonly when?: Condition };
   readonly args: DoorArgs;
   readonly tool?: ToolInfo;
+  /** Its work runs while its caller waits: it takes the caller's stop after its request. */
+  readonly stop?: true;
+  /**
+   * The doors call it no more (no tool, and no method of `OwnerDoors`); the owner still takes
+   * it, until the doors the stage serves call it no more (`deploy/handed.ts`).
+   */
+  readonly dropped?: true;
 }
 
-const ROW_KEYS = Object.freeze(["door", "class", "capability", "act", "args", "tool"]);
+const ROW_KEYS = Object.freeze(["door", "class", "capability", "act", "args", "tool", "stop",
+                                "dropped"]);
 const TOOL_KEYS = Object.freeze(["name", "title", "description", "destructiveHint",
   "idempotentHint", "openWorldHint", "readOnlyHint"]);
 
@@ -136,8 +158,15 @@ function argsProblems(value: unknown): string[] {
       && Object.keys(value["required"]).some((key) => key in (value["optional"] as object))) {
     problems.push("a field both required and optional");
   }
+  const dropped = value["dropped"];
+  if (dropped !== undefined && (!Array.isArray(dropped) || dropped.some((key) =>
+    typeof key !== "string" || [value["required"], value["optional"]].some((fields) =>
+      object(fields) && key in fields)))) {
+    problems.push("dropped fields that are not a list of the fields it lists no more");
+  }
   for (const key of Object.keys(value)) {
-    if (!["refused", "required", "optional", "undefinedAllowed", "omitted"].includes(key)
+    if (!["refused", "required", "optional", "undefinedAllowed", "omitted", "dropped"]
+          .includes(key)
         || (["undefinedAllowed", "omitted"].includes(key) && value[key] !== true)) {
       problems.push(`an argument key ${key}`);
     }
@@ -187,6 +216,13 @@ export function doorProblems(rows: unknown): string[] {
         || !Object.keys(act).every((key) => key === "name" || key === "when")
         || ("when" in act && !isCondition(act["when"])))) {
       say("an act is one of acts.json's, and when, one of its conditions");
+    }
+    if ("stop" in row && (row["stop"] !== true || UNBOUND_DOORS.includes(row["door"] as string)
+                          || row["args"] === "none")) {
+      say("a stop is true, on a door that takes a binding and a request");
+    }
+    if ("dropped" in row && (row["dropped"] !== true || "tool" in row)) {
+      say("a dropped door is marked true, and has no tool");
     }
     if (!("args" in row)) {
       say("no argument schema");
@@ -278,6 +314,11 @@ export function takesRequest(row: DoorRow): boolean {
   return row.args !== "none";
 }
 
+/** Whether a door takes its caller's stop after its request (`stop`). */
+export function takesStop(row: DoorRow): boolean {
+  return row.stop === true;
+}
+
 /** A profile's name: what a caller is served (`profiles.json`). */
 export type ProfileName = "directory" | "custom" | "run";
 /** The profiles an outside client's grant may name; `run` is a run's own door's. */
@@ -317,4 +358,18 @@ export function fields(request: unknown, required: readonly string[], optional: 
     throw new Refusal("invalid", refusal);
   }
   return request as Record<string, unknown>;
+}
+
+/**
+ * A door's request held to its arguments (`fields`): none at all an empty one where it may be
+ * `omitted`, and its dropped fields taken and left out.
+ */
+export function requestFields(args: Args, request: unknown): Record<string, unknown> {
+  const { dropped = [] } = args;
+  const asked = args.omitted === true && (request === undefined || request === null) ? {}
+    : request;
+  const r = fields(asked, Object.keys(args.required), [...Object.keys(args.optional), ...dropped],
+                   args.refused, args.undefinedAllowed === true);
+  return dropped.some((key) => key in r)
+    ? Object.fromEntries(Object.entries(r).filter(([key]) => !dropped.includes(key))) : r;
 }

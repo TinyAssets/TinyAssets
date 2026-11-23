@@ -35,6 +35,17 @@ export const OPEN_GATES = Object.freeze({ outside: "on", ordinary: "all", canary
 export const OPEN = Object.freeze({ ...OPEN_GATES, tiers: TIERS });
 
 /**
+ * The text of a control record with every door open and `tiers` (none when undefined), as
+ * the doors hand the record read fresh in a binding (`Binding.control`).
+ */
+export function openRecord(tiers?: unknown): string {
+  return JSON.stringify({ ...OPEN_GATES, tiers });
+}
+
+/** `OPEN`'s text, as a binding hands it. */
+export const OPEN_RECORD = JSON.stringify(OPEN);
+
+/**
  * The control record written to its namespace (`store`), as the founder writes it: a string
  * as it is (a value that is no JSON), anything else as JSON; null removes it.
  */

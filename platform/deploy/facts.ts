@@ -123,6 +123,62 @@ export function retiredWorkers(retired: readonly string[],
  */
 export const RETIRED = retiredWorkers(platform.retired.workers, NAMES);
 
+/**
+ * Each Worker's count of `changes` naming it, by folder (`platform.json` `forward`): what its
+ * version's tag carries as `-f<n>`, which a rollback below it cannot follow. Each change names
+ * Workers `names` holds, each once, and why; anything else throws.
+ */
+export function forwardCounts(changes: readonly unknown[],
+                              names: Readonly<Record<string, string>>):
+    Readonly<Record<string, number>> {
+  const counts = Object.fromEntries(Object.keys(names).map((worker) => [worker, 0]));
+  for (const [at, change] of changes.entries()) {
+    const { workers, why } = (change ?? {}) as { workers?: unknown; why?: unknown };
+    if (!Array.isArray(workers) || workers.length === 0 || new Set(workers).size !== workers.length
+        || !workers.every((worker) => typeof worker === "string" && Object.hasOwn(counts, worker))
+        || typeof why !== "string" || why.trim() === "") {
+      throw new Error(`platform.json's forward change ${at + 1} names no Worker of this tree, ` +
+                      "each once, with why");
+    }
+    for (const worker of workers as string[]) {
+      counts[worker]! += 1;
+    }
+  }
+  return Object.freeze(counts);
+}
+
+/** Each Worker's forward count, by folder (`forwardCounts`). */
+export const FORWARD = forwardCounts(platform.forward.changes, NAMES);
+
+/** The stages a deploy takes each Worker through (`platform.json` `stages`). */
+export interface Stages {
+  /** The shares of traffic its new version serves in turn, rising, the last 100. */
+  readonly shares: readonly number[];
+  /** How long the doors' share below 100 is held before its smoke. */
+  readonly soakMs: number;
+}
+
+/**
+ * `stages`, as `platform.json` writes them, read: shares rising from 0 or more, the last 100,
+ * and a soak of whole seconds above 0. Anything else throws.
+ */
+export function stagesOf(stages: { readonly shares?: unknown; readonly soak_s?: unknown }):
+    Stages {
+  const { shares, soak_s: soak } = stages;
+  if (!Array.isArray(shares) || shares.at(-1) !== 100
+      || !shares.every((share, at) => typeof share === "number" && share >= 0
+        && (at === 0 || share > shares[at - 1]))
+      || !Number.isInteger(soak) || Number(soak) <= 0) {
+    throw new Error("platform.json's stages are no shares rising from 0 up to 100 with a soak " +
+                    "of whole seconds above 0");
+  }
+  return Object.freeze({ shares: Object.freeze([...shares as number[]]),
+                         soakMs: Number(soak) * 1000 });
+}
+
+/** The deploy's stages (`stagesOf`). */
+export const STAGES = stagesOf(platform.stages);
+
 /** The R2 buckets the kit makes: the ones the Workers bind, then the unbound (`platform.json`). */
 export const BUCKETS: readonly string[] = Object.freeze([...new Set([
   ...named((config) =>

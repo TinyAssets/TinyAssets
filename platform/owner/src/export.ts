@@ -186,9 +186,6 @@ export function exported(): Readonly<Record<string, ExportTable>> {
     ledger_ids: t("only id_key", "only"),
     // Spend.
     model_spend: t("period source cost", "period source"),
-    model_reservations: t("seq id run connection_id source model state rule max_output_tokens " +
-                          "est_tokens est_cost tokens cost policy_generation day month " +
-                          "created_at settled_at", "seq"),
     egress_reservations: t("id lease_id epoch run source charge rule max_output_tokens " +
                            "est_tokens est_cost tokens cost day month served connection_id " +
                            "version method path generation bytes_hint opened_at beat_at state " +
@@ -237,7 +234,6 @@ export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
     "telemetry, not the owner's data",
   wake_callbacks: "sealed doorbell tokens (ADR-039 decision 2.12: credentials are never exported)",
   grant_fences: "the grants' revoke fence, an internal mark",
-  platform_tiers: "the platform's tier numbers as last read, not the owner's",
   control_kept: "the platform's control record as last read, not the owner's",
   owner_erasure: "an erasure in progress",
   schema_digests: "the applied migrations' digests, the start's own check",
@@ -253,7 +249,6 @@ export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
   change_log: "row images not yet shipped to R2, which a generation carries",
   log_staged: "the keys a generation's log stages and their lines' bytes, a count of it",
   sandbox_signins: "a vendor sign-in in progress: its lease and the vendor's one-time prompt",
-  platform_signins: "the platform's served sign-in records as last read, not the owner's",
   owner_restore: "a restore under way, or the record of the one that made this object",
   restore_rows: "a restore's staged rows, the generation's own, deleted once loaded",
   restore_filter: "a restore's filter of its chunk rows' names, deleted once swept",

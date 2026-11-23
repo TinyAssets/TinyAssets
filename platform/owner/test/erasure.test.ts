@@ -35,7 +35,9 @@ import {
 } from "./erasure-support";
 import { MCP, MUSE, rig as ledgerRig, signedIn, dm } from "./ledger-support";
 import { later, recorder } from "./runs-support";
-import { admittedOwner, alarmOf, failure, gateFor, spaceOf, storesOn, TIERS } from "./support";
+import {
+  admittedOwner, alarmOf, failure, gateFor, OPEN_RECORD, spaceOf, storesOn,
+} from "./support";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -49,7 +51,7 @@ async function rig() {
   const stub = (): DurableObjectStub<OwnerDO> => env.OWNER.getByName(owner);
   const at = signedIn();
   const bind = (origin: typeof MUSE | null, extra: Partial<Binding> = {}): Binding =>
-    ({ owner, caller: owner, origin, tiers: TIERS,
+    ({ owner, caller: owner, origin, control: OPEN_RECORD,
        ...(origin === null ? {} : { source: MCP, authenticated_at: at }), ...extra });
   const { session: cookie } = await stub().sessionOpen(bind(null, { authenticated_at: at }));
   const session = (): Binding => bind(null, { session: cookie });

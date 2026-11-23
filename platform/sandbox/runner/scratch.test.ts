@@ -1,17 +1,17 @@
 /**
  * The scratch area and the runner's room on the disk (`scratch.ts`), on real disks (a tmpfs
  * each, in the suite's own mount namespace: `statfs` reads it exactly, and a write past it
- * meets a real `ENOSPC`): old scratch goes by the retention, then least recently used while
- * the disk is low, never a live run's agent; what went is told plainly, never with an
+ * meets a real `ENOSPC`): old scratch goes least recently used while the disk is low, never
+ * by age alone and never a live run's agent; what went is told plainly, never with an
  * upgrade; a full disk never leaves the runner's state unwritten while its reserve can go.
  */
-import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { keepReserve, markUsed, pruneScratch, readIndex, RESERVE_BYTES, scratchCleared,
-         scratchEnv, writeOrRelease } from "./scratch";
+import { diskLow, diskOf, keepReserve, letGoSessions, markUsed, pruneScratch, readIndex,
+         RESERVE_BYTES, scratchCleared, scratchEnv, writeOrRelease } from "./scratch";
 import { disk } from "./test/harness";
 
 const DAY = 86_400_000;
@@ -47,22 +47,11 @@ function used(index: ReturnType<typeof readIndex>, at: Readonly<Record<string, n
 }
 
 describe("old scratch let go", () => {
-  it("deletes what went unused past the retention, whatever the disk holds", () => {
-    const { dir, index } = area({ old: 1, recent: 1 });
-    used(index, { old: NOW - 31 * DAY, recent: NOW - 10 * DAY });
-    const pruned = pruneScratch(dir, index, NOW, 30, new Set());
-    expect(pruned.expired).toEqual(["old"]);
-    expect(pruned.evicted).toEqual([]);
-    expect(readdirSync(dir)).toEqual(["recent"]);
-    expect(Object.keys(index.used)).toEqual(["recent"]);
-    expect(readdirSync(index.dir)).toEqual(["recent"]);  // its stamp gone with it
-  });
-
-  it("keeps everything by age when the record names no retention", () => {
+  it("keeps scratch of any age while the disk has room", () => {
     const { dir, index } = area({ old: 1 });
     used(index, { old: NOW - 3650 * DAY });
-    const pruned = pruneScratch(dir, index, NOW, null, new Set());
-    expect([pruned.expired, readdirSync(dir)]).toEqual([[], ["old"]]);
+    const pruned = pruneScratch(dir, index, NOW, new Set());
+    expect([pruned.evicted, readdirSync(dir)]).toEqual([[], ["old"]]);
   });
 
   it("frees the least recently used while the disk is low, never a live run's agent", () => {
@@ -72,32 +61,66 @@ describe("old scratch let go", () => {
     const { root, dir, index } = area({ a: 77, b: 77, c: 77, d: 77 });
     writeFileSync(join(root, "other"), Buffer.alloc(1650 * PAGE, 2));
     used(index, { a: NOW - 1, b: NOW - 4, c: NOW - 3, d: NOW - 2 });
-    const pruned = pruneScratch(dir, index, NOW, 30, new Set(["b"]));
+    const pruned = pruneScratch(dir, index, NOW, new Set(["b"]));
     // b is the oldest but live: c goes, then d.
     expect(pruned.evicted).toEqual(["c", "d"]);
     expect(readdirSync(dir).sort()).toEqual(["a", "b"]);
+    expect(readdirSync(index.dir).sort()).toEqual(["a", "b"]);  // their stamps gone with them
     expect(pruned.freed_bytes).toBe(2 * 77 * PAGE);
     expect(pruned.disk.total_bytes).toBe(2048 * PAGE);
   });
 
   it("counts an agent the index never saw as used now", () => {
     const { dir, index } = area({ new: 1 });
-    pruneScratch(dir, index, NOW, 30, new Set());
+    pruneScratch(dir, index, NOW, new Set());
     expect(index.used).toEqual({ new: NOW });
     expect(statSync(join(index.dir, "new")).mtimeMs).toBe(NOW);
+  });
+});
+
+describe("store copies let go", () => {
+  /** Four held copies of 77 pages beside a file, leaving 90 pages free, as above. */
+  function held() {
+    const { root } = area({});
+    writeFileSync(join(root, "other"), Buffer.alloc(1650 * PAGE, 2));
+    const copies = ([["old", 1], ["older", 0], ["new", 2], ["newer", 3]] as const).map(([name, mtime]) => {
+      const local = join(root, name);
+      writeFileSync(local, Buffer.alloc(77 * PAGE, 3));
+      return { local, size: 77 * PAGE, mtime_ms: mtime };
+    });
+    return { root, copies };
+  }
+
+  it("lets the least recently changed go while the disk is low, and stops once it is not", () => {
+    const { root, copies } = held();
+    expect(letGoSessions(root, copies)).toBe(2 * 77 * PAGE);
+    expect(copies.map((copy) => existsSync(copy.local))).toEqual([false, false, true, true]);
+    expect(diskLow(0, diskOf(root))).toBeNull();
+  });
+
+  it("lets none go while the disk has room, and says a disk still low with the store's bytes",
+     () => {
+    const { root, copies } = held();
+    expect(letGoSessions(root, [])).toBe(0);
+    expect(diskLow(9, diskOf(root))).toEqual({ type: "ta.disk_low", store_bytes: 9,
+                                               free_bytes: diskOf(root).free_bytes,
+                                               total_bytes: 2048 * PAGE });
+    rmSync(join(root, "other"));
+    expect(letGoSessions(root, copies)).toBe(0);
+    expect(copies.every((copy) => existsSync(copy.local))).toBe(true);
   });
 });
 
 describe("what the agent and the user are told", () => {
   // Its facts alone: the app says them in words (`doors/guards/app-words.test.ts`).
   it("names what went and the disk after, and nothing when none went", () => {
-    expect(scratchCleared({ expired: ["old"], evicted: ["builder"], freed_bytes: 3_100_000_000,
+    expect(scratchCleared({ evicted: ["builder"], freed_bytes: 3_100_000_000,
                             disk: { free_bytes: 4_000_000_000, total_bytes: 15_000_000_000,
                                     free_inodes: 1, total_inodes: 1 } }))
-      .toEqual({ type: "ta.scratch_cleared", evicted: ["builder"], expired: ["old"],
+      .toEqual({ type: "ta.scratch_cleared", evicted: ["builder"],
                  freed_bytes: 3_100_000_000, free_bytes: 4_000_000_000,
                  total_bytes: 15_000_000_000 });
-    expect(scratchCleared({ expired: [], evicted: [], freed_bytes: 0,
+    expect(scratchCleared({ evicted: [], freed_bytes: 0,
                             disk: { free_bytes: 1, total_bytes: 1, free_inodes: 1,
                                     total_inodes: 1 } })).toBeNull();
   });

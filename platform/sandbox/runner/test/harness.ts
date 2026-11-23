@@ -413,8 +413,9 @@ export interface FakeCli {
                                  /** Made only when one of its arguments holds this. */
                                  readonly if?: string }[];
   /**
-   * A file (`~/...`, under one of the record's session paths) its prompts are kept in, as a
-   * CLI keeps its conversation: `{history}` in a request is what it held before this run.
+   * A file (`~/...`, one a resume of its session reads, the record's `resume_paths`) its
+   * prompts are kept in, as a CLI keeps its conversation: `{history}` in a request is what it
+   * held before this run.
    */
   readonly history?: string;
   /**
@@ -620,6 +621,8 @@ export class Doors {
   ended = false;
   /** Upload intents begun, and the chunks they received, by intent id. */
   readonly uploads = new Map<string, { size: number; chunks: string[]; got: string[] }>();
+  /** What happens as a read of `path` is answered (another run's write meanwhile). */
+  onRead: (path: string) => void = () => undefined;
   /** A commit op the object refuses, by its path: its reason, or null to commit it. */
   refuse: (path: string) => string | null = () => null;
   /**
@@ -694,6 +697,7 @@ export class Doors {
                              reset: false });
         }
         if (path === "/sync/read") {
+          this.onRead(body["path"] as string);
           const file = this.files.get(body["path"] as string);
           if (file === undefined) {
             return json(404, { error: { code: "not_found" } });

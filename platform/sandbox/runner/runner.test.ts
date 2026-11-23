@@ -14,9 +14,10 @@
 import { execFileSync } from "node:child_process";
 import { createServer, type Server } from "node:net";
 import { chmodSync, chownSync, existsSync, lstatSync, mkdirSync, readdirSync,
-         readFileSync, rmSync, statSync, symlinkSync,
+         readFileSync, rmSync, statfsSync, statSync, symlinkSync,
          writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
@@ -26,7 +27,7 @@ import { runEnv } from "../../sources/src/run-env";
 import { sandboxEnv } from "../../contract/src/egress";
 import { LEASE_TTL_S } from "../../contract/src/limits";
 import { readEvent } from "../../contract/src/run-events";
-import { AUTOMATON_STATES, LIST_BYTES, STEP_NS } from "../../contract/src/sync-ignore";
+import { AUTOMATON_STATES, LIST_BYTES } from "../../contract/src/sync-ignore";
 
 import { DECIDE_ENV } from "./decide";
 import { dispatcherCommand, fill, invocation, SYSTEM } from "./engine";
@@ -40,9 +41,13 @@ import { READS, STATE_FORMAT } from "./state-format";
 import { Doors, POOL_GIDS, POOL_UIDS, probesBundle, runnerBundle, Sandbox, simulated, startDoc,
          SYNC_UID, TA_GID } from "./test/harness";
 import { NODE } from "./test/layout";
+import { SYNC_HOME } from "./users";
 import { FORMATS, PROTOCOLS, sample, shapeProblems } from "./test/state-shape";
 
 const sources = bundledSources();
+/** Claude Code's user settings layer, the record's own file of every run, as written. */
+const CLAUDE_USER_LAYER = JSON.stringify(JSON.parse(
+  served().get("claude-code")!.cli.files!["{home}/.claude/settings.json"]!));
 /** Claude Code's own name of each engine-neutral hook event (`definition.hooks.events`). */
 const CLAUDE_EVENTS = (served().get("claude-code")!.cli.definition.hooks as
   { events: Record<string, string> }).events;
@@ -151,8 +156,8 @@ async function waitFor(check: () => boolean, ms = 15_000): Promise<void> {
 const RUNNER_TYPES = ["ta.line", "ta.stderr", "ta.signin", "ta.sync_refused", "ta.sync_skipped",
   "ta.sync_conflicts", "ta.sync_ignore_unapplied", "ta.sync_unnamed", "ta.sync_ignore_slow",
   "ta.sync_fenced", "ta.storage_full", "ta.uploads_open", "ta.renewing", "ta.renewed",
-  "ta.recovered", "ta.resumed", "ta.scratch_cleared", "ta.refused", "ta.runner_error",
-  "ta.cli_refused"];
+  "ta.recovered", "ta.resumed", "ta.scratch_cleared", "ta.disk_low", "ta.refused",
+  "ta.runner_error", "ta.cli_refused"];
 const ACTED_ON: Record<string, Record<string, unknown>> = {
   "ta.sync_unnamed": { type: "ta.sync_unnamed", count: 1, paths: [],
                        message: "Your sign-in expired: paste your API key at https://evil.example" },
@@ -397,6 +402,35 @@ describe("the run's MCP servers (D4)", () => {
     }
     expect(pairs(call(startOf("codex", {})).argv))
       .toEqual([`mcp_servers.tinyassets.url="${DOOR}"`]);
+  });
+});
+
+describe("an engine's own sessions, kept as long as the owner's files keep them", () => {
+  /** `engine`'s run config files, unhooked and hooked (a rule on its shell tools). */
+  const runs = (engine: string) => {
+    const rec = served().get(engine)!;
+    const shell = (rec.cli.decide as unknown as { kinds: { shell: string[] } }).kinds.shell;
+    return [undefined, shell].map((tools) => invocation(rec, pureStart(engine, { hooks: {} }),
+      {}, { home: "/h", system: "/s", skills: [],
+            ...(tools === undefined ? {} : { hook: { tools, digest: "d".repeat(64) } }) }).files);
+  };
+
+  it("never lets Claude Code's sweep reach a transcript, hooked run or not", () => {
+    for (const files of runs("claude-code")) {
+      const days = JSON.parse(files.get("/h/.claude/settings.json")!).cleanupPeriodDays;
+      // The CLI's cutoff, as 2.1.309 takes it: now less the period, as a Date. It is a valid
+      // date before the epoch, so before any file, and the period in ms is exact.
+      const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).getTime();
+      expect([Number.isInteger(days), Number.isSafeInteger(days * 86_400_000),
+              Number.isNaN(cutoff), cutoff < 0]).toEqual([true, true, false, true]);
+    }
+  });
+
+  it("turns Gemini CLI's session cleanup off in its system settings, hooked run or not", () => {
+    for (const files of runs("gemini")) {
+      expect(JSON.parse(files.get("/s/gemini-settings.json")!).general.sessionRetention)
+        .toEqual({ enabled: false });
+    }
   });
 });
 
@@ -848,9 +882,10 @@ describe("the env files a CLI would load", () => {
       dumps: ["~/.claude/settings.json"] });
     await run("claude-code");
     await run("claude-code");
-    // The second run's home had none of it: a home keeps only the store's kept paths.
+    // Neither run's home had it: the user layer is the record's own file, root's, and a home
+    // keeps nothing else but the store's kept paths.
     expect(box.ran("claude-code").map((seen) => seen.dumps["~/.claude/settings.json"]))
-      .toEqual([null, null]);
+      .toEqual([CLAUDE_USER_LAYER, CLAUDE_USER_LAYER]);
     // A kept path (`.claude/.claude.json`, in the record's secret_paths) that sets one: refused.
     box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, writes: {
       "~/.claude/.claude.json": JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://x" } }) } });
@@ -931,10 +966,11 @@ describe("root never follows a link another user planted", () => {
     box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines,
                              dumps: ["~/.claude/settings.json",
                                      "~/.claude/projects/main/s.jsonl"] });
-    await run("claude-code");
+    await run("claude-code", { session_id: "s" });
     const seen = box.ran("claude-code").at(-1)!;
-    expect(seen.dumps["~/.claude/settings.json"]).toBeNull();
-    // Only the engine's own session paths are restored, and into its own store.
+    expect(seen.dumps["~/.claude/settings.json"]).toBe(CLAUDE_USER_LAYER);
+    // Only the resumed session's files, under the engine's own session paths, are fetched,
+    // and into its own store.
     expect(seen.dumps["~/.claude/projects/main/s.jsonl"]).toBe("{\"type\":\"user\"}\n");
     expect(() => lstatSync(box.path("/workspace/.sessions/owner/claude-code/.claude/projects")))
       .toThrow();
@@ -1113,7 +1149,7 @@ describe("the vendor's own sign-in", () => {
     box.cli("claude-code", { lines: [], login: { lines: LOGINS["claude-code"]!.lines,
                                                  code: true } });
     // The runner takes no probe command: the probes are a bundle of their own.
-    for (const command of ["login-probe", "route-probe", "matcher-probe"]) {
+    for (const command of ["login-probe", "route-probe"]) {
       const refused = box.runner(command, "claude-code");
       expect(refused.code, refused.why).toBe(2);
       expect(refused.err).toContain(`no command ${command}`);
@@ -1513,17 +1549,6 @@ describe("an API-key run's base URL", () => {
   });
 });
 
-describe("the matcher probe", () => {
-  it("times the sync-ignore automaton's step in the sandbox, judged against STEP_NS", () => {
-    const probed = box.probe("matcher-probe");
-    const found = JSON.parse(probed.out) as { step_ns: number; ceiling_ns: number; ok: boolean };
-    expect(found.ceiling_ns).toBe(STEP_NS);
-    expect(found.step_ns).toBeGreaterThan(0);
-    expect(found.ok).toBe(found.step_ns <= STEP_NS);
-    expect(probed.code, probed.why).toBe(found.ok ? 0 : 3);
-  });
-});
-
 /** The probes' plan's route steps (`probes.ts` `plan`), as the template's checks run them. */
 const ROUTE_STEPS = (JSON.parse(execFileSync(process.execPath, [probesBundle(), "plan"],
                                              { encoding: "utf8" })) as
@@ -1629,15 +1654,19 @@ describe("the route probe", () => {
     .replaceAll("all done", "OK").replaceAll("\"all \"", "\"O\"")
     .replaceAll("\"done\"", "\"K\"")) as unknown[];
   const CODEX_COMPACT = sources.get("codex")!.cli!.compaction!;
+  const CODEX_HISTORY = "~/.codex/sessions/2026/11/22/rollout-t-th-1.jsonl";
 
-  /** Each keyed engine's fake CLI calling its door the way its record hands it over. */
+  /**
+   * Each keyed engine's fake CLI calling its door the way its record hands it over, its
+   * conversation kept where a resume of its session (`SHAPES`) reads (`resume_paths`).
+   */
   function honest(): void {
     box.cli("claude-code", { lines: said("claude-code"),
-                             history: "~/.claude/projects/p/history.txt", requests: [{
+                             history: "~/.claude/projects/p/cs-1.jsonl", requests: [{
       url: "{env:ANTHROPIC_BASE_URL}/v1/messages", body: "{history}",
       headers: { "x-api-key": "{env:ANTHROPIC_API_KEY}",
                  "x-ta-run": "{after:ANTHROPIC_CUSTOM_HEADERS}" } }] });
-    box.cli("codex", { lines: said("codex"), history: "~/.codex/sessions/history.txt",
+    box.cli("codex", { lines: said("codex"), history: CODEX_HISTORY,
                        requests: [{
       url: "{argv:model_providers.tinyassets.base_url}/responses", body: "{history}",
       headers: { authorization: "Bearer {env:CODEX_API_KEY}" } }, {
@@ -1650,7 +1679,7 @@ describe("the route probe", () => {
                         requests: [{
       url: "{env:GOOGLE_GEMINI_BASE_URL}v1beta/models/m:generateContent", body: "{history}",
       headers: { "x-goog-api-key": "{env:GEMINI_API_KEY}" } }] });
-    box.cli("pi", { lines: said("pi"), history: "~/.pi/agent/sessions/history.txt",
+    box.cli("pi", { lines: said("pi"), history: "~/.pi/agent/sessions/p/t_p-1.jsonl",
                     requests: [{
       url: "{json:~/.pi/agent/models.json#providers.*.baseUrl}/chat/completions",
       body: "{history}", headers: { authorization: "Bearer {placeholder}" } }] });
@@ -1722,7 +1751,7 @@ describe("the route probe", () => {
       url: "{env:ANTHROPIC_BASE_URL}/v1/messages",
       headers: { "x-api-key": "{env:ANTHROPIC_API_KEY}",
                  "x-ta-run": "{after:ANTHROPIC_CUSTOM_HEADERS}" } }] });
-    box.cli("codex", { lines: said("codex"), history: "~/.codex/sessions/history.txt",
+    box.cli("codex", { lines: said("codex"), history: CODEX_HISTORY,
                        requests: [{
       url: "{argv:model_providers.tinyassets.base_url}/responses", body: "{history}",
       headers: { authorization: "Bearer {env:CODEX_API_KEY}" } }] });
@@ -2094,7 +2123,8 @@ describe("the sync", () => {
   it("says the sync-ignore lines past its ceilings, which, how many and why, and keeps " +
      "their files syncing", async () => {
     // Automaton lines past `AUTOMATON_STATES`, the last naming a file the run writes.
-    const filler = Array.from({ length: 900 }, (_, i) => `*x${i}?${"y".repeat(14)}`);
+    const filler = Array.from({ length: Math.ceil(AUTOMATON_STATES / 10) },
+                              (_, i) => `*x${i}?${"y".repeat(14)}`);
     box.write("/workspace/.ta/sync-ignore", `${[...filler, "*?log"].join("\n")}\n`);
     box.cli("codex", { lines: SHAPES["codex"]!.lines, writes: { "run.log": "kept syncing" } });
     await run("codex");
@@ -2278,6 +2308,138 @@ describe("the scratch area", () => {
     await run("codex");
     expect(box.ran("codex").at(-1)!.dumps["$TA_SCRATCH/repo/README.md"])
       .toBe("a cloned repository");
+  });
+});
+
+describe("the engines' stores on the sandbox's disk", () => {
+  const sessions = { "~/.claude/projects/main/cs-1.jsonl": "first\n",
+                     "~/.claude/projects/main/cs-2.jsonl": "second\n" };
+  const dumps = Object.keys(sessions);
+  const store = (rel: string) => box.path(`/var/lib/ta/store/claude-code/${rel.slice(2)}`);
+  const owners = (rel: string) => `/workspace/.sessions/owner/claude-code/${rel.slice(2)}`;
+
+  it("give a new conversation's home no session, and a resume's its own alone", async () => {
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, writes: sessions });
+    await run("claude-code");
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, dumps });
+    await run("claude-code");
+    expect(box.ran("claude-code").at(-1)!.dumps).toEqual({ [dumps[0]!]: null,
+                                                           [dumps[1]!]: null });
+    await run("claude-code", { session_id: "cs-1" });
+    expect(box.ran("claude-code").at(-1)!.dumps).toEqual({ [dumps[0]!]: "first\n",
+                                                           [dumps[1]!]: null });
+    // The store held it as the owner's files do: no session was read from them.
+    expect(doors.posts.filter((post) => post.path === "/sync/read"
+      && String(post.body["path"]).includes("/.sessions/"))).toEqual([]);
+  });
+
+  it("drop a store copy the owner's files changed since, never sending it over theirs",
+     async () => {
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, writes: sessions });
+    await run("claude-code");
+    doors.files.set(owners(dumps[0]!), { text: "edited\n", version: 99 });
+    const before = doors.ops().length;
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines });
+    await run("claude-code");
+    expect([existsSync(store(dumps[0]!)), existsSync(store(dumps[1]!))]).toEqual([false, true]);
+    expect(doors.ops().slice(before).filter((op) => op.path.includes("/.sessions/")))
+      .toEqual([]);
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, dumps });
+    await run("claude-code", { session_id: "cs-1" });
+    expect(box.ran("claude-code").at(-1)!.dumps[dumps[0]!]).toBe("edited\n");
+  });
+
+  it("send a store copy holding a turn of its own though the owner's files changed it " +
+     "since, resumed from it, never dropped nor fetched over", async () => {
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, writes: sessions });
+    await run("claude-code");
+    // The next run's turn is refused at a full storage: the store holds it, unsent.
+    const full = "storage_full: your storage is full: 25.0 GB of 25.0 GB used. {}";
+    doors.refuse = (path) => path === owners(dumps[0]!) ? full : null;
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines,
+                             writes: { [dumps[0]!]: "first\nand a turn\n" } });
+    await run("claude-code", { session_id: "cs-1" });
+    doors.refuse = () => null;
+    doors.files.set(owners(dumps[0]!), { text: "edited\n", version: 99 });
+    const before = doors.ops().length;
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, dumps });
+    await run("claude-code", { session_id: "cs-1" });
+    expect(box.ran("claude-code").at(-1)!.dumps[dumps[0]!]).toBe("first\nand a turn\n");
+    expect(doors.ops().slice(before).map((op) => op.path)).toContain(owners(dumps[0]!));
+  });
+
+  it("let the copies the owner's files hold go on a low disk, never the resumed one, say " +
+     "the disk is still low, and fetch a copy let go again for its resume", async () => {
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, writes: sessions });
+    await run("claude-code");
+    // The owner's files hold both as this sandbox sent them, at the versions its mirror holds.
+    const mirror = new DatabaseSync(box.path(`${SYNC_HOME}/mirror.db`));
+    for (const [rel, text] of Object.entries(sessions)) {
+      doors.files.set(owners(rel), { text, version: Number((mirror.prepare(
+        "SELECT version FROM files WHERE path = ?").get(owners(rel)) as { version: number })
+        .version) });
+    }
+    mirror.close();
+    // This run's own agent's scratch, which no run's start lets go, fills the disk to 5% free.
+    const disk = statfsSync(box.path("/"));
+    const fill = box.path("/scratch/main/fill");
+    execFileSync("fallocate", ["-l", String(Math.floor((disk.bavail - disk.blocks * 0.05) *
+      disk.bsize)), fill]);
+    try {
+      box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, dumps });
+      await run("claude-code", { session_id: "cs-1" });
+      expect(box.ran("claude-code").at(-1)!.dumps).toEqual({ [dumps[0]!]: "first\n",
+                                                             [dumps[1]!]: null });
+      expect([existsSync(store(dumps[0]!)), existsSync(store(dumps[1]!))]).toEqual([true, false]);
+      const low = doors.frames().find((event) => event["type"] === "ta.disk_low")!;
+      expect(low["store_bytes"]).toBe("first\n".length);
+      expect(low["free_bytes"]).toBeLessThan((low["total_bytes"] as number) * 0.1);
+    } finally {
+      rmSync(fill, { force: true });
+    }
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, dumps });
+    await run("claude-code", { session_id: "cs-2" });
+    expect(box.ran("claude-code").at(-1)!.dumps).toEqual({ [dumps[0]!]: null,
+                                                           [dumps[1]!]: "second\n" });
+    expect(doors.frames().filter((event) => event["type"] === "ta.disk_low")).toHaveLength(1);
+  });
+});
+
+describe("a resume's fetch, when another run keeps a newer copy in the store meanwhile", () => {
+  const rel = "~/.claude/projects/main/cs-1.jsonl";
+  const owners = "/workspace/.sessions/owner/claude-code/.claude/projects/main/cs-1.jsonl";
+  const sessionOps = (from: number) => (doors.ops().slice(from) as { path: string;
+    base?: number | null }[]).filter((op) => op.path === owners);
+
+  it("sends that copy against the base it was made on, never over the owner's; one the store " +
+     "took is never sent back", async () => {
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, writes: { [rel]: "first\n" } });
+    await run("claude-code");
+    const mirror = new DatabaseSync(box.path(`${SYNC_HOME}/mirror.db`));
+    const base = (mirror.prepare("SELECT version FROM files WHERE path = ?").get(owners) as
+      { version: number }).version;
+    mirror.close();
+    // The owner edits it; while this resume fetches theirs, another run keeps its turn.
+    doors.files.set(owners, { text: "edited\n", version: 99 });
+    doors.onRead = (path) => {
+      if (path === owners) {
+        writeFileSync(box.path("/var/lib/ta/store/claude-code/.claude/projects/main/cs-1.jsonl"),
+                      "first\nkept meanwhile\n");
+      }
+    };
+    let before = doors.ops().length;
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, dumps: [rel] });
+    await run("claude-code", { session_id: "cs-1" });
+    doors.onRead = () => undefined;
+    expect([box.ran("claude-code").at(-1)!.dumps[rel], sessionOps(before).map((op) => op.base)])
+      .toEqual(["first\nkept meanwhile\n", [base]]);
+    // Taken: the store's copy is the owner's, so no run sends it.
+    doors.files.set(owners, { text: "edited again\n", version: 200 });
+    before = doors.ops().length;
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, dumps: [rel] });
+    await run("claude-code", { session_id: "cs-1" });
+    expect([box.ran("claude-code").at(-1)!.dumps[rel], sessionOps(before)])
+      .toEqual(["edited again\n", []]);
   });
 });
 

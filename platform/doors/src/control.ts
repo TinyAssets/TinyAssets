@@ -20,7 +20,6 @@ import { Refusal } from "../../contract/src/refusal";
 import type { AccountBinding } from "../../contract/src/binding";
 import { type Bound, withAccount } from "./binder";
 import type { DoorsEnv } from "./env";
-import type { Sources } from "../../sources/src/schema";
 
 /**
  * The isolate's copy of the record last read well formed: the platform's one record, no
@@ -84,9 +83,9 @@ export async function outsideRead(env: DoorsEnv, owner: string): Promise<Control
 }
 
 /** An outside caller's binding past the outside gate, the record it was admitted on riding it. */
-export async function outsideAccount(env: DoorsEnv, bound: Bound<AccountBinding>,
-                                     sources: Sources): Promise<Bound<AccountBinding>> {
-  return withAccount(bound, await outsideRead(env, bound.binding.owner), sources);
+export async function outsideAccount(env: DoorsEnv,
+                                     bound: Bound<AccountBinding>): Promise<Bound<AccountBinding>> {
+  return withAccount(bound, await outsideRead(env, bound.binding.owner));
 }
 
 /** The maintenance gate, read once: the record it admitted the call on, or its refusal thrown. */

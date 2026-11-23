@@ -1,8 +1,8 @@
 /**
  * The platform's control record: one record, `c:control`, in a KV namespace of its own
  * (`CONTROL`), which the founder edits with no deploy. The doors read it on every outside and
- * owner call, and hand its tier numbers and switched-on sign-ins in the binding
- * (`doors/src/binder.ts`, `withAccount`); the owner's object at a code-mode script's tool
+ * owner call, and hand the record read fresh in the binding (`doors/src/binder.ts`,
+ * `withAccount`); the owner's object at a code-mode script's tool
  * calls and its lanes' passes (`owner/src/control-gate.ts`); the sandbox Worker once per start
  * and once per look (`sandbox/src/control.ts`); and a first deploy writes it closed
  * (`deploy/deploy.ts`). Each reads it here, by this module's key, parse and gates, and
@@ -20,11 +20,11 @@
  *   serves nothing unless it is on);
  * - **the tier numbers** (`tiers`, ADR-034 decision 8);
  * - **each source's vendor sign-in switch** (`signins`);
- * - **the sandbox's platform numbers** and **its scratch retention**.
+ * - **the sandbox's platform numbers**.
  *
  * Every field but the gates is optional, and a record any part of which is malformed is
- * malformed whole: never a guess. A flip reaches every location within KV's 60 s; no revoke
- * depends on it.
+ * malformed whole: never a guess, and never a key dropped unread. A flip reaches every
+ * location within KV's 60 s; no revoke depends on it.
  */
 
 import { keyed, object, whole } from "./checks.ts";
@@ -105,13 +105,6 @@ export interface Control {
    */
   readonly sandbox: SandboxCeilings | null;
   /**
-   * How many days an agent's sandbox scratch may go unused before it is deleted
-   * (`scratch_retention_days`; `sandbox/runner/scratch.ts`): a chosen retention, refusing
-   * nothing, which the sandbox Worker hands each run's runner. Null when the record names
-   * none: then only the disk's own pressure lets scratch go.
-   */
-  readonly scratch_retention_days: number | null;
-  /**
    * Each source's vendor sign-in, on or off, by source id: a source the record
    * does not name takes its record's verdict on the vendor's terms for hosted use
    * (`sources/src/signin.ts`, `signinsOn`). Null when the record names none.
@@ -120,13 +113,14 @@ export interface Control {
 }
 
 /**
- * The record as read: there and well formed; kept (the namespace could not be read, and the
- * reader's keeper held the copy last read well formed, first read at `read_at`, ms); missing;
+ * The record as read: there and well formed, with the text it was read from; kept (the
+ * namespace could not be read, and the reader's keeper held the copy last read well formed,
+ * first read at `read_at`, ms); missing;
  * malformed (an operator's bad write: not JSON, too long, or out of shape); or unreadable (an
  * outage, with no copy kept). The gates tell them apart; the last three are reported.
  */
 export type ControlRead =
-  | { readonly kind: "read"; readonly control: Control }
+  | { readonly kind: "read"; readonly control: Control; readonly text: string }
   | { readonly kind: "kept"; readonly control: Control; readonly read_at: number }
   | { readonly kind: "missing" }
   | { readonly kind: "malformed" }
@@ -185,13 +179,17 @@ export class SqlKeeper implements ControlKeeper {
   }
 
   keep(text: string | null, at: number): void {
+    // Read first: an owner unit that runs any write is marked changed (`owner/src/gate.ts`).
+    if ((this.kept()?.text ?? null) === text) {
+      return;
+    }
     if (text === null) {
       this.#sql.exec("DELETE FROM control_kept");
       return;
     }
     this.#sql.exec("INSERT INTO control_kept (only, text, read_at) VALUES (1, ?, ?) " +
-                     "ON CONFLICT (only) DO UPDATE SET text = excluded.text, read_at = " +
-                     "excluded.read_at WHERE control_kept.text IS NOT excluded.text", text, at);
+                     "ON CONFLICT (only) DO UPDATE SET text = excluded.text, " +
+                     "read_at = excluded.read_at", text, at);
   }
 }
 
@@ -200,8 +198,7 @@ export class SqlKeeper implements ControlKeeper {
  * something that outlasts the outage, on a record that may have changed since the copy (a
  * switch just turned off), so it waits for the record read fresh. Writing the record's own
  * numbers into lasting state is the other such act: a read that is not fresh hands none
- * (`tiersOf`, `sources/src/signin.ts` `signinsRead`), so no reader rewrites what it keeps.
- * Everything else runs on the copy.
+ * (`freshRecord`), so no reader rewrites what it keeps. Everything else runs on the copy.
  */
 export const FRESH_ONLY = Object.freeze({
   /** An outside client's new authorization (`doors/src/authorize.ts`). */
@@ -235,7 +232,7 @@ const CONTROL_KEYS: readonly string[] = Object.freeze(["canary", "inbound", "ord
                                                        "outside"]);
 const CONTROL_OPTIONAL: readonly string[] = Object.freeze([
   "tiers", "sandbox_runtime_ceiling_s", "sandbox_concurrency_ceiling",
-  "sandbox_renewal_window_s", "scratch_retention_days", "signins"]);
+  "sandbox_renewal_window_s", "signins"]);
 
 /** The tier numbers exactly, or `invalid`. */
 export function parseTiers(value: unknown): Tiers {
@@ -278,9 +275,7 @@ export function parseControl(value: unknown): Control | null {
     return null;
   }
   const sandbox = SANDBOX_KEYS.map((key) => value[key]);
-  const retention = value["scratch_retention_days"];
-  if ((retention !== undefined && !whole(retention, 1))
-      || (outside !== "on" && outside !== "off")
+  if ((outside !== "on" && outside !== "off")
       || (ordinary !== "all" && ordinary !== "canary" && ordinary !== "none")
       || typeof inbound !== "boolean" || !Array.isArray(canary) || canary.length > MAX_CANARY
       || !(sandbox.every((part) => part === undefined)
@@ -293,8 +288,7 @@ export function parseControl(value: unknown): Control | null {
              signins: signins === undefined ? null
                : Object.freeze({ ...(signins as Record<string, boolean>) }),
              sandbox: sandbox[0] === undefined ? null
-               : sandboxCeilings(sandbox[0], sandbox[1], sandbox[2]),
-             scratch_retention_days: retention === undefined ? null : retention };
+               : sandboxCeilings(sandbox[0], sandbox[1], sandbox[2]) };
   } catch {
     return null;
   }
@@ -339,8 +333,8 @@ export async function readControl(store: ControlStore,
   } catch (error) {
     console.error("the control record's last good copy could not be kept", error);
   }
-  return control !== null ? { kind: "read", control }
-    : text === null ? { kind: "missing" } : { kind: "malformed" };
+  return text === null ? { kind: "missing" }
+    : control !== null ? { kind: "read", control, text } : { kind: "malformed" };
 }
 
 /** The read an outage gives: the copy `keeper` holds, or `unreadable`. */
@@ -418,11 +412,13 @@ export function inboundGate(read: ControlRead): Control | "off" | "unavailable" 
 }
 
 /**
- * The tier numbers a read hands the owner's object to keep: the record's, or null when it holds
- * none or is malformed (the object then drops the numbers it kept, and refuses every run);
- * none (`undefined`) when it was not read fresh, so the object keeps its own (`FRESH_ONLY`).
+ * The record a read hands the owner's object to keep as its one copy (`Binding.control`, its
+ * `SqlKeeper`), which its tier numbers and sign-in switches are read from: the text when it
+ * read well formed; null when it found none or a malformed one (the object then drops its
+ * copy, refuses every run for want of numbers and starts no sign-in); none (`undefined`) when
+ * it was not read fresh, so the object keeps its own (`FRESH_ONLY`).
  */
-export function tiersOf(read: ControlRead): Tiers | null | undefined {
+export function freshRecord(read: ControlRead): string | null | undefined {
   return read.kind === "kept" || read.kind === "unreadable" ? undefined
-    : read.kind === "read" ? read.control.tiers : null;
+    : read.kind === "read" ? read.text : null;
 }

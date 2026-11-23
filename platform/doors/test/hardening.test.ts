@@ -13,18 +13,18 @@ import { mcpClient } from "../src/binder";
 import { ACCESS_TOKEN_TTL_S, now, REFRESH_TOKEN_TTL_S } from "../src/config";
 import type { DoorsEnv } from "../src/env";
 import {
-  APP_RESOURCE, MCP_RESOURCE, ORIGIN, WEB_CLIENT, WEB_REDIRECT,
+  APP_RESOURCE, MCP_RESOURCE, ORIGIN, VERSION_HEADER, WEB_CLIENT, WEB_REDIRECT,
 } from "../../contract/src/identity";
 import { ours } from "../src/authorize";
 import { authorizationServer } from "../src/oauth";
-import { VERSION_HEADER } from "../src/doors";
 import { revokeClient } from "../src/revoke";
 import { profileNames } from "../../contract/src/doors";
 import { mintKeyFor } from "./keys";
 import {
   appPost, authorizeMcp, authorizeUrl, call, connect, consent, decide, doorsEnv, handleOf, Jar, legacyPost,
-  NAVIGATE, OPEN, pkce, reached, unseen, refresh, registerClient, rpcBody, serveDocument,
+  OPEN, pkce, reached, unseen, refresh, registerClient, rpcBody, serveDocument,
   serveFirstPartyDocument, setControl, signInApp, tokenCall, upstreamReturns, url, admitOwner } from "./support";
+import { NAVIGATE } from "../../contract/src/navigation";
 
 function owner(): string {
   return `user_${crypto.randomUUID().replace(/-/g, "")}`;

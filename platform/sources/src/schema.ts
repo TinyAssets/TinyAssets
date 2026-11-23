@@ -332,9 +332,9 @@ export interface LoginSpec {
  *   the variable it is in (`http`); `{decide}` the helper's command line, `{decide_argv}` its
  *   argv as JSON. Each is filled as its quoted value.
  * - `argv`: what a hooked run adds to the CLI's command line: what loads a file of the run's
- *   own, and what keeps the CLI from loading a settings layer the agent can write.
- * - `pins`: the CLI's own settings files in the run's home a hooked run writes, root-owned and
- *   not replaceable by the run's user, so the layer they are is never the agent's.
+ *   own, and what keeps the CLI from loading a settings layer the agent can write. A layer it
+ *   still loads in the home is one of the record's `files`, root's in every run and never
+ *   replaceable by the run's user, so it is never the agent's (Claude Code's user layer).
  * - `kinds`: the CLI's own names of the tools that are each kind (`acts.json` `kinds`); a kind
  *   it lacks, no rule holds at its hook.
  * - `mcp`: how it names an MCP server's tool: `prefix`, the server, `join`, the tool.
@@ -352,7 +352,6 @@ export type HookRuns =
 export type Decide =
   | { readonly file: string; readonly template: string; readonly argv?: readonly string[];
       readonly runs: HookRuns;
-      readonly pins?: Readonly<Record<string, string>>;
       readonly kinds: Readonly<Partial<Record<HookKind, readonly string[]>>>;
       readonly mcp: { readonly prefix: string; readonly join: string };
       readonly fails: "open" | "closed"; readonly alterable?: string;
@@ -394,6 +393,13 @@ export interface CliSpec {
     | { readonly reason: string };
   readonly secret_paths: readonly string[];
   readonly session_paths: readonly string[];
+  /**
+   * The files of its sessions a resume of `{sid}` reads, each under one of its
+   * `session_paths` (a `*` any run of characters within a segment, a trailing `/` a tree):
+   * all a resumed run's home holds of its store, fetched from the owner's files first where
+   * the store lacks them.
+   */
+  readonly resume_paths: readonly string[];
   readonly hosts: Readonly<Record<"registry" | "login" | "provider", readonly string[]>>;
 }
 

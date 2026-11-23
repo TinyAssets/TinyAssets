@@ -17,6 +17,7 @@ import {
 } from "@modelcontextprotocol/server";
 
 import { keyed, whole } from "../../contract/src/checks";
+import { taken } from "../../contract/src/handed";
 import {
   callAgain, type FaultCode, type Refusal, refusalOf, told,
 } from "../../contract/src/refusal";
@@ -136,7 +137,7 @@ export const asEvent: Surface<never> = (refusal) => {
   }
   if (refusal.code === "subscription_limit") {
     const facts = refusal.facts;
-    if (!keyed(facts, ["limit", "max"]) || typeof facts["limit"] !== "string"
+    if (!keyed(facts, ...taken("subscription_limit")) || typeof facts["limit"] !== "string"
         || !whole(facts["max"], 0)) {
       throw new Error("a subscription_limit refusal carries no {limit, max}");
     }

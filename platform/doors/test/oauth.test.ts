@@ -13,10 +13,11 @@ import {
 import { authorizationServer } from "../src/oauth";
 import {
   appPost, authorizeMcp, authorizeUrl, call, connect, consent, crossed, DARK, decide, doorsEnv,
-  handleOf, Jar, legacyPost, legacyTool, NAVIGATE, OPEN, pkce, refresh, refuseOnce,
+  handleOf, Jar, legacyPost, legacyTool, OPEN, pkce, refresh, refuseOnce,
   registerClient, serveFirstPartyDocument, setControl, signInApp, type ToolResult,
   upstreamReturns, url,
 } from "./support";
+import { NAVIGATE } from "../../contract/src/navigation";
 import { Refusal } from "../../contract/src/refusal";
 
 function owner(): string {

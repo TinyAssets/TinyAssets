@@ -19,21 +19,25 @@
  *   absent, the WorkOS redirect URI and E2B's lifecycle webhook (disabled), then the handles
  *   canary.
  * - `routes`: on a host under the zone, its DNS record; then `dark`, then the doors' routes
- *   handed over one at a time, on whatever host the identity names, the egress custom domain,
+ *   handed over one at a time, on whatever host the identity names, the egress custom domain
+ *   (waited on until the egress door answers on it),
  *   and the webhook enabled at the identity's URL. Before any change it keeps a record of each
- *   of those as they stood (`RouteRecord`), and the job summary names its id.
- * - `handback`: the record `--record` names, handed back (the cutover's rollback): the webhook
+ *   of those as they stood (`RouteRecord`), or, while the host's handover has one, keeps that
+ *   (`keepRecord`), and the plan names its id.
+ * - `handback`: the record `--record` names, the host's oldest, handed back (the cutover's
+ *   rollback): the webhook
  *   disabled and the egress custom domain detached unless the record has them so before, then
  *   the zone's routes put back as the record has them, only what the handover changed, one at
  *   a time, then the host's DNS record deleted if `routes` made it; each read back and held to
- *   the record. Each is held to the record before any
+ *   the record, then the host's route records deleted. Each is held to the record before any
  *   change too: anything changed since `routes` stops it, named. The handles canary follows
  *   the old stack's restart, so the run ends saying where it runs.
  * - `rollback`: the rollout record `--record` names, which `dark` and `routes` keep before
  *   their first Worker deploy (`RolloutRecord`): the run's Workers taken back to the versions
  *   they served before it, callers first, each read back, stopping at the first the run made
- *   forward-only (`forwardOnly`); each held to the record before any change. Its routes are
- *   `handback`'s.
+ *   forward-only (`forwardOnly`); the record held whole to Cloudflare before any change, and
+ *   refused there for a version no later plan could read (`servedHold`). Its
+ *   routes are `handback`'s.
  * - `h2`: H2's probes alone, once a probe owner exists.
  * - `pair`: the pinned template with the runner this checkout ships and the probes beside
  *   it, checked together on throwaway sandboxes unless E2B already holds their pair's tag
@@ -82,7 +86,10 @@
  * The apply job runs the plan it was approved on (`Plan`). The plan job writes its plan to
  * the file `--plan` names, which the workflow hands the apply job as the run's artifact. Before
  * any change, the apply job makes the plan job's plan again from the live state and stops,
- * naming each difference, unless it is that file's plan, of this same run.
+ * naming each difference, unless it is that file's plan, of this same run. Then its own steps,
+ * which the plan job could not run without the production secrets, are held to that plan line
+ * by line as they say each line (`holding`): a line the plan job left to the apply job
+ * (`checked`) takes its answer, and any other difference stops the run there.
  *
  * Every lookup is checked: a failed listing or read stops the kit loudly, never reads as
  * "absent". So:
@@ -107,16 +114,21 @@
  * - E2B's lifecycle webhook is listed and checked before any change, found by its name,
  *   registered disabled only when E2B's listing lacks it, its URL set to the identity's when
  *   it differs, its secret changed only with the doors' copy, and enabled only by `routes`
- *   after the handover; the run that registers it sets the doors' copy too;
+ *   after the handover; a run that registers it while the doors hold their copy goes on only
+ *   with `--rotate` naming it, which sets both;
  * - the doors' host's DNS record is made only for a host under the zone whose listing
  *   answered and holds none, and a host holding any address record but the placeholder
  *   (`PLACEHOLDER`) stops `routes` before any change;
  * - nothing is deployed unless every migration lock (`owner/migrations.json`, and the sandbox
  *   Worker's `sandbox/migrations/<class>.json`) marks the first deploy and pins every
  *   migration the code ships, in order (`lockCounts`, by `ci/kit/locks.ts`);
- * - a Worker's first deploy is `wrangler deploy`; later ones upload a version, then deploy it,
- *   which never touches a route; `--migrate` names a Worker with a pending Durable Object
- *   migration to deploy whole; each version is tagged with the commit and its locks' counts;
+ * - a Worker's first deploy is `wrangler deploy`; later ones upload a version, then deploy it
+ *   through the stages (`platform.json` `stages`: at 0% beside the version before, then at
+ *   100%), which never touches a route, each deployment read back, and the doors smoked at 0%
+ *   once they hold their routes (`workers`); one that cannot serve beside its version before
+ *   goes to 100% at once (`atOnce`); `--migrate` names a Worker with a pending Durable Object
+ *   migration to deploy whole; each version is tagged with the commit, its locks' counts and
+ *   its forward count (`platform.json` `forward`);
  *   nothing is deployed, and no secret set by `retire`, on a Worker serving two versions (a
  *   split), and a deploy records the one each serves first (`rollout`);
  * - a retired Worker (`platform.json`) is deleted, with its Durable Objects, only after every
@@ -143,6 +155,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { fileAt } from "../ci/history.ts";
 import { PLATFORM, REPO } from "../ci/paths.ts";
 import { migrated } from "../ci/kit/locks.ts";
 import { WRANGLER } from "../ci/wrangler.ts";
@@ -155,7 +168,8 @@ import {
   KEY_BYTES, newestKid, parseRing, type Ring, ringText, ringWith,
 } from "../contract/src/envelope.ts";
 import {
-  APP_RESOURCE, E2B_HOOK_EVENTS, HOST, UPSTREAM_CALLBACK, WEB_CLIENT, WEB_REDIRECT, ZONE,
+  APP_RESOURCE, E2B_HOOK_EVENTS, HOST, UPSTREAM_CALLBACK, VERSION_HEADER, WEB_CLIENT, WEB_REDIRECT,
+  ZONE,
 } from "../contract/src/identity.ts";
 import { IMPORT_KEY } from "../contract/src/import-message.ts";
 import {
@@ -183,11 +197,12 @@ import {
   type LockRule, type Moved, narrower, type Route, type RouteChange, type Serving, unlike,
 } from "./cloudflare.ts";
 import {
-  AUTHORIZE, BUCKET_LOCKS, BUCKETS, CONFIGS, DOORS, E2B_HOOK_URL, FILES_BUCKET,
+  AUTHORIZE, BUCKET_LOCKS, BUCKETS, CONFIGS, DOORS, E2B_HOOK_URL, FILES_BUCKET, FORWARD,
   IDENTITY, KEYRINGS, MIGRATES, NAMES, NAMESPACES, OPTIONAL, QUEUES,
-  RETIRED, RETIRES, ROTATED, ROUTES, SANDBOXED, SECRET_INPUTS, SECRETS, SHARED, WORKER_FACTS,
-  WORKERS,
+  RETIRED, RETIRES, ROTATED, ROUTES, SANDBOXED, SECRET_INPUTS, SECRETS, SHARED, STAGES,
+  WORKER_FACTS, WORKERS,
 } from "./facts.ts";
+import { type Before, handedProblems, sideAt, TREE } from "./handed.ts";
 import { INPUTS as H2_INPUTS } from "./h2-probes.ts";
 import {
   BACK_INPUTS, backFrom, type Begin, copyBack, firstNightAfter, KEEP_DAYS, readableAt, recover,
@@ -221,6 +236,30 @@ export const E2B_HOOK = Object.freeze({
 /** What the plan job says of a check that needs a production secret. */
 const LATER = "checked by the apply job before any change";
 
+/**
+ * A line whose end only the apply job can read: `subject`, then `outcome`, or in the plan job
+ * (`outcome` null) `LATER`. The apply job holds its line to the plan job's by everything
+ * before that end (`resolves`).
+ */
+function checked(subject: string, outcome: string | null): string {
+  return `${subject}: ${outcome ?? LATER}`;
+}
+
+/**
+ * Whether `said`, a line of the apply job, is the plan's `approved` line: the same, or the
+ * same subject with the outcome the plan job left to the apply job (`checked`), which the apply
+ * job always reads.
+ */
+function resolves(approved: string, said: string): boolean {
+  const later = `: ${LATER}`;
+  if (said.endsWith(later)) {
+    return false;
+  }
+  const subject = approved.slice(0, -LATER.length);
+  return said === approved || (approved.endsWith(later) && said.length > subject.length
+    && said.startsWith(subject));
+}
+
 // --- The run ----------------------------------------------------------------------------
 
 /** The outside world the kit acts on: replaced whole by the tests. */
@@ -233,6 +272,11 @@ export interface Io {
   readonly treeImage: () => string;
   /** The commit the checkout is at, which each Worker's version is tagged with. */
   readonly commit: () => string;
+  /**
+   * The text of a repo-relative file at an earlier commit, or null when its tree lacks it; an
+   * unknown commit throws (`ci/history.ts` `fileAt`: the plan and apply jobs fetch history).
+   */
+  readonly fileAt: (commit: string, path: string) => string | null;
   readonly log: (line: string) => void;
   /** The clock: a route record's time, and how long the operator's answer is waited for. */
   readonly now: () => Date;
@@ -248,6 +292,7 @@ export const IO: Io = Object.freeze({
   treeImage,
   commit: () => execFileSync("git", ["rev-parse", "HEAD"], { cwd: PLATFORM, encoding: "utf8" })
     .trim(),
+  fileAt: (commit: string, path: string) => fileAt(commit, path),
   log: (line: string) => console.log(line),
   now: () => new Date(),
   sleep: (ms: number) => new Promise<void>((done) => { setTimeout(done, ms); }),
@@ -326,6 +371,11 @@ export interface Values {
   readonly table: readonly Route[];
   /** The route changes the run's handover makes, from those. */
   readonly changes: readonly RouteChange[];
+  /**
+   * Whether the doors hold every route of theirs before any change: a handover of the zone's
+   * routes would change nothing.
+   */
+  readonly routed: boolean;
   /** The doors' host's DNS records before any change (`placedBefore`): null for the zone. */
   readonly placed: readonly DnsRecord[] | null;
   /** The route record `routes` keeps, and its key: null on a run that changes nothing. */
@@ -336,13 +386,20 @@ export interface Values {
   readonly stage: Stage;
   /** The account's Workers, by name, as its listing answered before any deploy. */
   readonly deployed: readonly string[];
-  /** The secrets the run sets, each on its Worker, with the version the run deploys. */
-  readonly setting: readonly { worker: string; name: string }[];
+  /** The secrets the run's plan sets, each on its Worker, with the version the run deploys. */
+  readonly setting: readonly Setting[];
   /** Each migrated Worker's locks' counts, by lock path (`lockCounts`). */
   readonly migrations: Readonly<Record<string, Readonly<Record<string, number>>>>;
+  /**
+   * Each Worker as the rollout step read it before any deploy, in deploy order (`WORKERS`):
+   * the version it serves, and what the run's version carries (`Rolled`).
+   */
+  readonly rolled: readonly Rolled[];
   /** The route record `handback` reads, and its handback on the zone as it stands. */
   readonly record: RouteRecord;
   readonly back: readonly RouteChange[];
+  /** The host's route records the handback ends, in the order it deletes them (`recordRead`). */
+  readonly ending: readonly KeptRecord[];
   /** The doors' custom domains on the egress host the handback detaches. */
   readonly detach: readonly { id: string; service: string }[];
 }
@@ -352,8 +409,16 @@ export interface Values {
  * `actions.ts`, which holds what is GitHub's.
  */
 export interface Reporter {
-  /** Adds lines to the run's plan. */
+  /**
+   * Adds lines to the run's plan, each said before the change it names: on the apply job each
+   * is held to the approved plan's as it is said (`holding`).
+   */
   readonly say: (...lines: string[]) => void;
+  /**
+   * Adds lines of what a change showed once made, which no plan can hold (a line naming the
+   * run's own record, or what Cloudflare made): reported with the plan, never held to it.
+   */
+  readonly did: (...lines: string[]) => void;
   /**
    * Masks `value` in the job's log from here on: not a credential, but once a secret, and a
    * wrangler error the kit quotes names `/accounts/<id>/...` in a public log.
@@ -409,10 +474,52 @@ function input(run: Run, name: string): string | undefined {
   return set(run.env, name);
 }
 
-/** The reporter of `run`, its plan's lines gathered in `plan`. */
-function reporterOf(run: Run, plan: string[]): Reporter {
+/**
+ * The apply job's hold on its own plan: each line its steps say, as it is said and so before
+ * the change it names, is the approved plan's next line, or that line with the outcome the plan
+ * job left to the apply job (`resolves`); once every approved line is said, what the run says
+ * after it is what it did (an operator mode's answers, a handback's read-back). Any other line
+ * stops the run there, and a run that ends before the approved plan's last line stops loudly.
+ */
+export interface Hold {
+  readonly next: (line: string) => void;
+  readonly done: () => void;
+}
+
+export function holding(approved: readonly string[]): Hold {
+  let at = 0;
   return Object.freeze({
-    say: (...lines: string[]) => { plan.push(...lines); },
+    next: (line: string) => {
+      if (at === approved.length) {
+        return;
+      }
+      if (!resolves(approved[at]!, line)) {
+        throw new Error(`this job's line ${at + 1} is not the approved plan's, so it stops before ` +
+                        `that change${at === 0 ? "" : ", having made no change but what the " +
+                          "approved lines before it name"}: ` +
+                        `approved "${approved[at]}", and this job's "${line}"`);
+      }
+      at += 1;
+    },
+    done: () => {
+      if (at < approved.length) {
+        throw new Error(`this job ended before the approved plan's line ${at + 1} ("${
+          approved[at]}"): what it applied is not the plan approved`);
+      }
+    },
+  });
+}
+
+/** The reporter of `run`, its plan's lines gathered in `plan`, each held by `hold` when given. */
+function reporterOf(run: Run, plan: string[], hold: Hold | null = null): Reporter {
+  return Object.freeze({
+    say: (...lines: string[]) => {
+      for (const line of lines) {
+        hold?.next(line);
+        plan.push(line);
+      }
+    },
+    did: (...lines: string[]) => { plan.push(...lines); },
     mask: (value: string) => {
       const line = maskLine(run.env, value);
       if (line !== null) {
@@ -462,13 +569,15 @@ export function lockCounts(worker: string, run: Run): Record<string, number> {
 /**
  * A version's tag and message (`wrangler versions upload`, `wrangler deploy`): the tag, the
  * commit's first 12 digits and, for a Worker with migration locks, `-m` and each lock's
- * count in its path's order (`-m3`, `-m2.1`), which a rollback below it would strand; the
- * message, the whole commit.
+ * count in its path's order (`-m3`, `-m2.1`), which a rollback below it would strand, then,
+ * when the Worker's forward count (`FORWARD`) is above 0, `-f` and that count, which a
+ * rollback below it could not follow; the message, the whole commit.
  */
-function versionFlags(commit: string, counts: Readonly<Record<string, number>>): string[] {
+export function versionFlags(commit: string, counts: Readonly<Record<string, number>>,
+                             forward: number): string[] {
   const pinned = pinnedCounts(counts);
-  return ["--tag", `${tagCommit(commit)}${pinned.length === 0 ? "" : `-m${pinned.join(".")}`}`,
-          "--message", commit];
+  return ["--tag", `${tagCommit(commit)}${pinned.length === 0 ? "" : `-m${pinned.join(".")}`}${
+    forward === 0 ? "" : `-f${forward}`}`, "--message", commit];
 }
 
 /** The part of `commit` a version's tag names it by: its first 12 digits. */
@@ -482,13 +591,17 @@ function pinnedCounts(counts: Readonly<Record<string, number>>): number[] {
 }
 
 /**
- * A version's tag as `versionFlags` writes it, read back: the commit's digits it names, and
- * the counts after its `-m` (null when it names none). Null for a tag it did not write.
+ * A version's tag as `versionFlags` writes it, read back: the commit's digits it names, the
+ * counts after its `-m` (null when it names none), and its forward count (0 when it names
+ * none). Null for a tag it did not write.
  */
-function taggedAs(tag: string | null): { commit: string; counts: number[] | null } | null {
-  const parts = tag === null ? null : /^([0-9a-f]{12})(?:-m(\d+(?:\.\d+)*))?$/.exec(tag);
+function taggedAs(tag: string | null):
+    { commit: string; counts: number[] | null; forward: number } | null {
+  const parts = tag === null ? null
+    : /^([0-9a-f]{12})(?:-m(\d+(?:\.\d+)*))?(?:-f([1-9]\d*))?$/.exec(tag);
   return parts === null ? null
-    : { commit: parts[1]!, counts: parts[2] === undefined ? null : parts[2].split(".").map(Number) };
+    : { commit: parts[1]!, counts: parts[2] === undefined ? null : parts[2].split(".").map(Number),
+        forward: Number(parts[3] ?? 0) };
 }
 
 // --- WorkOS and the owner issuer --------------------------------------------------------
@@ -559,7 +672,8 @@ const REDIRECT_UNLISTED = "https://error.workos.com/redirect-uri-invalid";
  *
  * `unlisted`: `UPSTREAM_CALLBACK` is not known to be on the client's list yet (the plan job cannot
  * list it, and a run without `--yes` leaves it missing), so a `redirect-uri-invalid` answer
- * is reported as `dark`'s to register, not a stop; every other refusal still stops.
+ * is left to the apply job (`checked`), which registers it and then checks again, not a stop;
+ * every other refusal still stops.
  */
 export async function authorizeCheck(upstream: UpstreamValues, unlisted: boolean,
                                      fetcher: Fetch): Promise<string> {
@@ -579,17 +693,16 @@ export async function authorizeCheck(upstream: UpstreamValues, unlisted: boolean
     throw new Error("WorkOS's authorize redirected to no URL");
   }
   const host = new URL(upstream.issuer).host;
+  const subject = `WorkOS's authorize of the doors' client and ${UPSTREAM_CALLBACK}`;
   if (unlisted && `${to.origin}${to.pathname}` === REDIRECT_UNLISTED) {
-    return `WorkOS's authorize does not take ${UPSTREAM_CALLBACK} yet: dark registers it, ` +
-           "then checks the client and it again";
+    return checked(subject, null);
   }
   if (to.protocol !== "https:" || to.host !== host || to.searchParams.has("error")
       || /error/i.test(to.pathname)) {
     throw new Error(`WorkOS's authorize refused the doors' client or ${UPSTREAM_CALLBACK}: it ` +
                     `sent the browser to ${to.origin}${to.pathname}, not ${host}'s sign-in`);
   }
-  return `WorkOS's authorize takes the doors' client and ${UPSTREAM_CALLBACK}: it sent the ` +
-         `browser to ${host}'s sign-in`;
+  return checked(subject, `it takes them, sending the browser to ${host}'s sign-in`);
 }
 
 /**
@@ -634,11 +747,10 @@ function shippedPair(io: Io): string {
 
 /**
  * Whether this run sets E2B's copy of the webhook secret: only when it sets the doors' copy
- * (missing on the doors, named in `--rotate`, or the hook missing at E2B), so the two never
- * drift apart.
+ * (missing on the doors, or named in `--rotate`), so the two never drift apart.
  */
-export function hookSetsSecret(setting: readonly { worker: string; name: string }[]): boolean {
-  return setting.some((each) => each.name === E2B_HOOK.secret);
+export function hookSetsSecret(setting: readonly Setting[]): boolean {
+  return setting.some((each) => each.name === E2B_HOOK.secret && each.sets === true);
 }
 
 /**
@@ -782,11 +894,18 @@ export function wranglerFor(run: Run, account: string): Wrangler {
   };
 }
 
-/** The version id `wrangler versions upload` prints, or a throw. */
-export function versionOf(output: string): string {
-  const id = /Worker Version ID:\s*([0-9a-f-]{36})/.exec(output)?.[1];
+/**
+ * What wrangler 4.154 prints before the id of the version each command makes, `versions
+ * upload`'s and `deploy`'s (`deploy-helpers`' `versions-upload.ts` and `deploy.ts`).
+ */
+const PRINTS = Object.freeze({ "versions upload": "Worker Version ID",
+                               deploy: "Current Version ID" });
+
+/** The version id `made` printed (`PRINTS`), or a throw. */
+export function versionOf(output: string, made: keyof typeof PRINTS): string {
+  const id = new RegExp(`${PRINTS[made]}:\\s*([0-9a-f-]{36})`).exec(output)?.[1];
   if (id === undefined) {
-    throw new Error("wrangler versions upload printed no Worker Version ID");
+    throw new Error(`wrangler ${made} printed no ${PRINTS[made]}`);
   }
   return id;
 }
@@ -916,7 +1035,9 @@ export function throwaway(): { state: string; challenge: string } {
  * kit's own record store (the control record is written there): the kit writes it itself, before its first change, over the client and token it
  * already holds, so a refused write stops the run before anything is changed, and `handback`
  * reads it with that same token, with no host and no GitHub API in between. Its key is the
- * run's id (`actions.ts` `runOf`), which a re-run attempt keeps, and the job summary names it.
+ * run's id (`actions.ts` `runOf`), and the job summary names it. It is the handover's: every
+ * later routes run on the host, a re-run attempt or not, keeps it while it stands
+ * (`keepRecord`), and the handback that names it deletes it (`recordsEnded`).
  */
 export interface RouteRecord {
   readonly kind: typeof RECORD_KIND;
@@ -1099,10 +1220,11 @@ async function placedBefore({ cloudflare, zone: id }: Pick<Values, "cloudflare" 
  * can take the run's Workers back: each Worker in the run's deploy order with the version it
  * served before (none for a first deploy) and that version's tag, and what the run's version
  * of it carries that a version before cannot take back (`forwardOnly`): its locks' counts, a
- * whole deploy (`--migrate`), and the names of the secrets the run sets on it. The run's own
- * versions are known by their tag, the run's commit (`versionFlags`). It holds no secret and
- * not the account id, beside the route record in the control namespace, under the run's id,
- * which a re-run attempt keeps; the job summary names it.
+ * whole deploy (`--migrate`), the names of the secrets the run sets on it, and its forward
+ * count (`platform.json` `forward`). The run's own versions are known by their tag, the run's
+ * commit (`versionFlags`). It holds no secret and not the account id, beside the route record
+ * in the control namespace, under the run's id, which a re-run attempt keeps; the job summary
+ * names it.
  */
 export interface RolloutRecord {
   readonly kind: typeof ROLLOUT_KIND;
@@ -1125,6 +1247,8 @@ export interface Rolled {
   readonly whole: boolean;
   /** The secrets the run set on it, by name. */
   readonly secrets: readonly string[];
+  /** The run's version's forward count (`FORWARD`). */
+  readonly forward: number;
 }
 
 const ROLLOUT_KIND = "tinyassets-rollout";
@@ -1132,15 +1256,18 @@ const ROLLOUT_KIND = "tinyassets-rollout";
 const ROLLOUT_PREFIX = "deploy:rollout:";
 
 /**
- * Why a rollback may not take `rolled` back to the version it served before the run, or null
- * when it may: the version before is none (a first deploy); the run deployed it whole (a
- * Durable Object class change, which Cloudflare rolls back across never); the run set its
- * secrets, which the version before holds otherwise (Cloudflare refuses that deployment, 10220,
- * and the kit never forces one); or the run's locks pin more migrations than the version
- * before's tag names, so every object the newer one migrated would refuse to start on it
- * (`contract/src/migrate.ts`), or its tag names none to hold them to: unknown.
+ * Why `rolled` goes to 100% at once, its stages below it skipped (`STAGES`), or null when it
+ * takes them: why its version before can neither serve beside the run's in a split nor be
+ * gone back to, which ending a split asks. The version before is none (a first deploy); the
+ * run deployed it whole (a Durable Object class change, which Cloudflare uploads as no version
+ * and rolls back across never); the run set its secrets, which the version before holds
+ * otherwise (each version serves with its own, and Cloudflare refuses that deployment, 10220,
+ * which the kit never forces); or the run's forward count is above the version before's
+ * tag's, so it writes, or is called, in a way the version before cannot follow
+ * (`platform.json` `forward`). A tag that names no count to hold the run's to is unknown, and
+ * goes at once too.
  */
-export function forwardOnly(rolled: Rolled): string | null {
+export function atOnce(rolled: Rolled): string | null {
   if (rolled.before === null) {
     return "the run deployed it first: no version comes before it";
   }
@@ -1152,29 +1279,94 @@ export function forwardOnly(rolled: Rolled): string | null {
     return `the run set ${rolled.secrets.join(", ")} on it, which its version before holds ` +
            "otherwise (Cloudflare refuses that rollback, and the kit never forces one)";
   }
+  const tagged = taggedAs(rolled.before.tag);
+  const tag = rolled.before.tag ?? "with nothing";
+  if (rolled.forward > 0 && (tagged === null || rolled.forward > tagged.forward)) {
+    return tagged === null
+      ? `its version before is tagged ${tag}, which names no forward count to hold the run's ` +
+        `-f${rolled.forward} to: unknown`
+      : `the run's version is marked -f${rolled.forward} and its version before ${
+        tagged.forward === 0 ? "with none" : `-f${tagged.forward}`}: it writes, or is called, ` +
+        "in a way its version before cannot follow (platform.json forward)";
+  }
+  return null;
+}
+
+/**
+ * Why a rollback may not take `rolled` back to the version it served before the run, or null
+ * when it may: what sends it to 100% at once (`atOnce`), or the run's locks pinning more
+ * migrations than the version before's tag names, so every object the newer one migrated
+ * would refuse to start on it (`contract/src/migrate.ts`); a tag naming no counts to hold the
+ * run's to is unknown, and stops it too.
+ */
+export function forwardOnly(rolled: Rolled): string | null {
+  const alone = atOnce(rolled);
+  if (alone !== null) {
+    return alone;
+  }
+  const tagged = taggedAs(rolled.before!.tag);
+  const tag = rolled.before!.tag ?? "with nothing";
   const pinned = pinnedCounts(rolled.counts);
   if (pinned.length === 0) {
     return null;
   }
-  const tagged = taggedAs(rolled.before.tag)?.counts ?? null;
-  if (tagged === null || tagged.length !== pinned.length) {
-    return `its version before is tagged ${rolled.before.tag ?? "with nothing"}, which names no ` +
-           `migration counts to hold the run's -m${pinned.join(".")} to: unknown`;
+  const counts = tagged?.counts ?? null;
+  if (counts === null || counts.length !== pinned.length) {
+    return `its version before is tagged ${tag}, which names no migration counts to hold the ` +
+           `run's -m${pinned.join(".")} to: unknown`;
   }
-  return pinned.some((count, at) => count > tagged[at]!)
+  return pinned.some((count, at) => count > counts[at]!)
     ? `the run's version pins -m${pinned.join(".")} and its version before -m${
-      tagged.join(".")}: every object the newer one migrated would refuse to start on it`
+      counts.join(".")}: every object the newer one migrated would refuse to start on it`
     : null;
 }
 
-/** What `rolled`'s line of a deploy's plan says: where it stands, and where a rollback stops. */
-function rolledLine(rolled: Rolled): string {
+/** What a plan line says of a rule's answer (`decided`). */
+interface Says {
+  /** The line when the rule answers null. */
+  readonly otherwise: string;
+  /** The line when it answers `reason`. */
+  readonly then: (reason: string) => string;
+  /** What follows when the run sets an optional secret that decides it. */
+  readonly so: string;
+}
+
+/**
+ * `rule`'s answer for `rolled` (`atOnce`, `forwardOnly`) as a plan line says it, `setting`
+ * the plan's secrets on it. When only optional ones the plan job cannot tell of (`Setting`)
+ * could change the answer, the line ends in what the apply job reads (`checked`).
+ */
+function decided(rolled: Rolled, setting: readonly Setting[],
+                 rule: (rolled: Rolled) => string | null, says: Says): string {
+  const unsure = setting.filter((each) => OPTIONAL.includes(each.name));
+  const reason = rule({ ...rolled, secrets: setting.filter((each) =>
+    !OPTIONAL.includes(each.name)).map((each) => each.name) });
+  if (reason !== null) {
+    return says.then(reason);
+  }
+  if (unsure.length === 0) {
+    return says.otherwise;
+  }
+  const set = unsure.filter((each) => each.sets === true).map((each) => each.name);
+  return checked(`${says.otherwise} unless the run sets ${unsure.map((each) =>
+    each.name).join(", ")} on it`, unsure.some((each) => each.sets === null) ? null
+    : set.length === 0 ? "it sets none of them" : `it sets ${set.join(", ")}, so ${says.so}: ${
+      rule(rolled)}`);
+}
+
+/**
+ * What `rolled`'s line of a deploy's plan says: where it stands, and where a rollback stops,
+ * `setting` the plan's secrets on it (`decided`).
+ */
+function rolledLine(rolled: Rolled, setting: readonly Setting[]): string {
   if (rolled.before === null) {
     return `${rolled.name}: deployed by this run first, so a rollback stops at it`;
   }
-  const reason = forwardOnly(rolled);
-  return `${rolled.name}: serving ${rolled.before.version} (${rolled.before.tag ?? "untagged"}); ` +
-         `a rollback ${reason === null ? "takes it back there" : `stops at it: ${reason}`}`;
+  const at = `${rolled.name}: serving ${rolled.before.version} (${rolled.before.tag ??
+    "untagged"}); a rollback`;
+  return decided(rolled, setting, forwardOnly, {
+    otherwise: `${at} takes it back there`, then: (reason) => `${at} stops at it: ${reason}`,
+    so: "it stops at it" });
 }
 
 /** Whether `value` is a list of strings, each once. */
@@ -1203,6 +1395,7 @@ export function rolloutOf(value: unknown, key: string): RolloutRecord {
     const before = each?.before as Partial<Record<"version" | "tag", unknown>> | null | undefined;
     const counts = each?.counts as Record<string, unknown> | null | undefined;
     if (typeof each?.name !== "string" || typeof each.whole !== "boolean" || !onceEach(each.secrets)
+        || !Number.isInteger(each.forward) || Number(each.forward) < 0
         || !(before === null || (typeof before === "object" && typeof before.version === "string"
           && (before.tag === null || typeof before.tag === "string")))
         || typeof counts !== "object" || counts === null
@@ -1272,21 +1465,26 @@ const templateReady = step<"e2b">(async (ctx, { e2b: admin }) => {
   if (!await admin.ready(pin)) {
     throw new Error(`E2B has no ready build of ${pin}: build it (sandbox-template.yml)`);
   }
+  ctx.say(checked(`E2B's ready build of ${pin}`, "present"));
 });
 
 /** The plan job's: the pinned template is this tree's image; its build is the apply job's. */
 const templateLater = step((ctx) => {
-  ctx.say(`E2B's ready build of ${pinnedTree(ctx)}: ${LATER}`);
+  ctx.say(checked(`E2B's ready build of ${pinnedTree(ctx)}`, null));
 });
+
+/** What a plan says of the pair's standing checks in the deploy's E2B team. */
+const pairLine = (pair: string, outcome: string | null) =>
+  checked(`the pair ${pair}'s standing checks in this E2B team`, outcome);
 
 /** The pair this deploy makes (`shippedPair`), passed. */
 const pairReady = step<"e2b">(async ({ run, say }, { e2b: admin }) => {
   const pair = shippedPair(run.io);
   if (await admin.ready(pair)) {
-    say(`the pair ${pair} passed its standing checks in this E2B team`);
+    say(pairLine(pair, "passed"));
   } else if (!run.apply) {
-    say(`the pair ${pair} has not passed in this E2B team: the pair job runs its check ` +
-        "(--mode pair) before the apply job");
+    say(pairLine(pair, "not passed yet: the pair job runs its check (--mode pair) before the " +
+                       "apply job"));
   } else {
     throw new Error(`the pair ${pair} has not passed its standing checks in this E2B team: ` +
                     "run the pair job (--mode pair) first; nothing is deployed");
@@ -1294,7 +1492,7 @@ const pairReady = step<"e2b">(async ({ run, say }, { e2b: admin }) => {
 });
 
 const pairLater = step(({ run, say }) => {
-  say(`the pair ${shippedPair(run.io)} passed its standing checks: ${LATER}`);
+  say(pairLine(shippedPair(run.io), null));
 });
 
 /** E2B's lifecycle webhook, listed and checked before anything is changed. */
@@ -1307,12 +1505,12 @@ const hookListed = step<"e2b", "hook">(async (_ctx, { e2b: admin }) => ({
  */
 const redirect = step<never, "listed">(async ({ run, say }) => {
   const state = await registerRedirect(input(run, "WORKOS_API_KEY")!, run.apply, run.io.fetch);
-  say(`WorkOS redirect URI ${UPSTREAM_CALLBACK}: ${state}`);
+  say(checked(`WorkOS redirect URI ${UPSTREAM_CALLBACK}`, state));
   return { listed: state !== "missing" };
 });
 
 const redirectLater = step<never, "listed">(({ say }) => {
-  say(`WorkOS redirect URI ${UPSTREAM_CALLBACK}: ${LATER}`);
+  say(checked(`WorkOS redirect URI ${UPSTREAM_CALLBACK}`, null));
   return { listed: false };
 });
 
@@ -1325,11 +1523,16 @@ const authorize = step<"upstream" | "listed">(async ({ run, say }, got) => {
 });
 
 /** The doors' routes' handover, from the zone's routes as they stand, and the host's record. */
-const routePlan = step<"cloudflare" | "zone", "table" | "changes" | "placed">(
+const routePlan = step<"cloudflare" | "zone", "table" | "changes" | "placed" | "routed">(
   async (_ctx, got) => {
     const table = await got.cloudflare.routes(got.zone);
-    return { table, changes: handover(table, DOORS, ROUTES), placed: await placedBefore(got) };
+    const changes = handover(table, DOORS, ROUTES);
+    return { table, changes, placed: await placedBefore(got), routed: changes.length === 0 };
   });
+
+/** Whether the doors hold their routes (`routed`), from the zone's routes as they stand. */
+const routedNow = step<"cloudflare" | "zone", "routed">(async (_ctx, got) => ({
+  routed: handover(await got.cloudflare.routes(got.zone), DOORS, ROUTES).length === 0 }));
 
 /** The control namespace's id, or undefined while no dark run has made it. */
 async function controlNamespace(cloudflare: Cloudflare, account: string):
@@ -1347,11 +1550,44 @@ export interface KeptRecord {
 type Recording = "cloudflare" | "zone" | "account" | "table" | "changes" | "placed";
 
 /**
- * The route record (`RouteRecord`), kept before any change: written when the handover moves
- * a route and the run's record is not there yet, and kept as it is when it is (a re-run
- * attempt keeps the table its first attempt read). A record that cannot be written stops the
- * run, nothing changed. `hook` is E2B's listing of the lifecycle hook, or undefined in the plan
- * job, which cannot list it and never writes.
+ * The route records of the doors' host (`HOST`) in the control namespace, oldest first (by
+ * `at`): each the state before the handover a routes run began on the host, held until a
+ * handback ends it (`recordsEnded`). A routes run keeps the oldest and writes none while one
+ * is held (`keepRecord`), so a later one is a kit's from before that rule: kept while the
+ * oldest stood, it holds the handover's own state as its before. A record naming another host
+ * is that host's handover; a listed key whose value is gone was deleted since the listing (KV
+ * lists eventually); any other value out of shape throws (`recordOf`). The run's own key
+ * (`own`) is read whether listed or not: a listing just after a write can lack it, and a
+ * re-run attempt that missed its first attempt's record would write over it.
+ */
+async function hostRecords({ cloudflare, account, zone: id }:
+                             Pick<Values, "cloudflare" | "account" | "zone">,
+                           namespace: string, own: string): Promise<KeptRecord[]> {
+  const held: KeptRecord[] = [];
+  for (const key of new Set([...await cloudflare.keys(account, namespace, RECORD_PREFIX), own])) {
+    const value = await cloudflare.value(account, namespace, key);
+    const host = (value as { host?: { name?: unknown } } | null | undefined)?.host?.name;
+    if (value === undefined || (typeof host === "string" && host !== HOST)) {
+      continue;
+    }
+    held.push({ record: recordOf(value, key, id), namespace, key });
+  }
+  return held.sort((a, b) => a.record.at < b.record.at ? -1 : a.record.at > b.record.at ? 1 : 0);
+}
+
+/** How a plan names a held route record: its run, attempt and time. */
+function heldLine({ record }: KeptRecord): string {
+  return `run ${record.run}'s (attempt ${record.attempt ?? "-"}, ${record.at})`;
+}
+
+/**
+ * The route record (`RouteRecord`), kept before any change. The host's handover has one
+ * record, the state before its first routes run: while the control namespace holds one of
+ * the host (`hostRecords`), every routes run keeps the oldest as it is (a re-run attempt its
+ * own first attempt's, a later run the record of the run that began the handover), and it is
+ * the one a handback names. Only with none held is this run's written. A record that cannot
+ * be written stops the run, nothing changed. `hook` is E2B's listing of the lifecycle hook, or
+ * undefined in the plan job, which cannot list it and never writes.
  */
 async function keepRecord({ run, say, summarize: add }: Context, got: Pick<Values, Recording>,
                           hook: Json | null | undefined): Promise<Pick<Values, "kept">> {
@@ -1368,27 +1604,20 @@ async function keepRecord({ run, say, summarize: add }: Context, got: Pick<Value
         "apply job stops until a dark run makes it");
     return { kept: null };
   }
-  const held = await got.cloudflare.value(got.account, namespace, key);
-  if (held !== undefined) {
-    const record = recordOf(held, key, got.zone);
-    say(`keep this run's route record as attempt ${record.attempt ?? "-"} wrote it at ` +
-        `${record.at}, before its first change: hand back with --mode handback --record ` +
-        "<this run's id>");
-    return { kept: { record, namespace, key } };
+  const [first, ...later] = await hostRecords(got, namespace, key);
+  if (first !== undefined) {
+    say(`keep the route record ${first.key}, ${heldLine(first)}, the state before the first ` +
+        `routes run on ${HOST}, as it is, and write none${later.length === 0 ? ""
+          : ` (${later.map((each) => each.key).join(", ")}, kept while it stood, hold the ` +
+            "handover's own state; a handback of it ends them too)"}: hand back with --mode ` +
+        `handback --record ${first.record.run}`);
+    return { kept: first };
   }
-  // Doors on their routes already: an earlier routes run moved them.
-  const earlier = got.table.filter((route) => route.script === DOORS
-    && ROUTES.includes(route.pattern))
-    .map((route) => route.pattern);
-  const word = hook === undefined ? LATER : hook === null ? "absent"
-    : hook["enabled"] === true ? "enabled" : "disabled";
-  say(`record the zone's ${got.table.length} routes and the handover's ${got.changes.length} ` +
-      `changes, the egress domain (${domain ?? "none"}) and E2B's lifecycle webhook (${word}) ` +
-      `as this run's route record in ${title}, before any change: hand back with --mode ` +
-      `handback --record <this run's id>${
-        earlier.length === 0 ? "" : `; ${DOORS} holds ${earlier.join(", ")} already: the ` +
-        "record of the routes run that moved them is the one to hand back, and it covers this " +
-        "run's changes too"}`);
+  say(checked(`record the zone's ${got.table.length} routes and the handover's ${
+    got.changes.length} changes, the egress domain (${domain ?? "none"}) and E2B's lifecycle ` +
+    `webhook as this run's route record in ${title}, before any change: hand back with --mode ` +
+    "handback --record <this run's id>; the webhook it records", hook === undefined ? null
+    : hook === null ? "absent" : hook["enabled"] === true ? "enabled" : "disabled"));
   // The plan job (no listing of the hook) never applies.
   if (!run.apply || hook === undefined) {
     return { kept: null };
@@ -1417,21 +1646,22 @@ function named(records: readonly Omit<DnsRecord, "id">[], name: string): string 
  * a Worker route on a subdomain takes nothing without a proxied record (Cloudflare's routes
  * page). Made once the route record is kept and before anything is deployed, then written
  * into it, so a handback deletes exactly it; a refused make (the token's DNS Edit) stops the
- * run with only the route record written. The route record it makes is the run's from here.
+ * run with only the route record written. The record it makes is the handover's from here.
  */
 const hostRecord = step<"cloudflare" | "zone" | "account" | "placed" | "kept", "kept">(
-  async ({ run, say }, got) => {
+  async ({ run, say, did }, got) => {
     if (got.placed === null) {
       return { kept: got.kept };
     }
     // A route record that has the host holding none before routes makes a placeholder on it
-    // now this run's: an earlier attempt's, made before it was written in, or the one added by
-    // hand after that attempt's refused make (the checklist's fallback); its handback deletes it.
+    // now the handover's: one an earlier run or attempt made before it was written in, or the
+    // one added by hand after a refused make (the checklist's fallback), or a new one made when
+    // the one it made is gone since (deleted by hand); its handback deletes it.
     const bare = got.kept !== null && !got.kept.record.host.held
-      && got.kept.record.host.made === null;
+      && (got.kept.record.host.made === null || got.placed.length === 0);
     say(got.placed.length > 0
-      ? bare ? `${HOST} holds ${named(got.placed, HOST)}, and held none when this run's route ` +
-               "record was kept: the record keeps it as this run's, for a handback to delete"
+      ? bare ? `${HOST} holds ${named(got.placed, HOST)}, and held none when the route record ` +
+               "was kept: the record keeps it as the handover's, for a handback to delete"
         : `${HOST} holds its DNS record already, ${named(got.placed, HOST)}: none is made`
       : `make the DNS record ${named([PLACEHOLDER], HOST)}, proxied, for the ` +
         "doors' routes on it, before anything is deployed: the route record keeps it, for a " +
@@ -1454,7 +1684,7 @@ const hostRecord = step<"cloudflare" | "zone" | "account" | "placed" | "kept", "
       throw new Error(`writing the DNS record made on ${HOST} into ${key} failed (${status}): ` +
                       "run routes again, which reads and writes it once more");
     }
-    say(`record in ${key} the DNS record made on ${HOST}: ${named(made, HOST)}`);
+    did(`record in ${key} the DNS record made on ${HOST}: ${named(made, HOST)}`);
     return { kept: { record: written, namespace, key } };
   });
 
@@ -1542,15 +1772,42 @@ const staged = step<"ids" | "upstream", "stage">((ctx, got) => ({
 type Secrets = "cloudflare" | "account";
 
 /**
+ * A secret the run's plan sets on a Worker. Whether it does is known to both jobs, from the
+ * Workers' listings and `--rotate`, except for an optional one (`OPTIONAL`: a shared app's,
+ * the canary clock's), which it sets only when the run is given it: only the apply job holds
+ * the values, so the plan job plans it as the apply job's to tell (`sets` null).
+ */
+export interface Setting {
+  readonly worker: string;
+  readonly name: string;
+  /** Whether the run sets it: null in the plan job for an optional secret. */
+  readonly sets: boolean | null;
+}
+
+/** What a plan says of `each`: an optional secret's line ends in what only the apply job reads. */
+function settingLine(each: Setting): string {
+  const line = `set the secret ${each.name} on ${NAMES[each.worker]} with its version`;
+  return OPTIONAL.includes(each.name)
+    ? checked(`${line} if the run is given it`, each.sets === null ? null
+      : each.sets ? "it is" : "it is not, so it stays unset")
+    : line;
+}
+
+/**
  * Each Worker's missing secrets (and the rotated), which ride the version the run deploys
  * (`workers`): `secrets.required` refuses a deploy without them. Whether a Worker exists is
  * the account's Workers listing's word: a missing one holds none. `values` is the run's
- * secrets, or null in the plan job, which holds none: an optional secret (a shared app's, the
- * canary clock's) the run is not given is left unset.
+ * secrets, or null in the plan job, which holds none. A held secret is never set again unless
+ * `--rotate` names it, so a run sets only what it planned from the listings.
+ *
+ * `hook` is E2B's listing of the lifecycle hook, or undefined in the plan job. With none at
+ * E2B the run registers one with production's E2B_WEBHOOK_SECRET, which a held copy on the
+ * doors may not be: that run goes on only with `--rotate` naming it, which sets both, so
+ * nothing the plan job cannot list decides what the run sets.
  */
-async function setSecrets({ say }: Context, got: Pick<Values, Secrets>,
+async function setSecrets({ run, say }: Context, got: Pick<Values, Secrets>,
                           values: ((name: string) => string | undefined) | null,
-                          rotate: ReadonlySet<string>):
+                          hook: Json | null | undefined):
     Promise<Pick<Values, "deployed" | "setting">> {
   const deployed = await got.cloudflare.workers(got.account);
   const held: Record<string, string[]> = {};
@@ -1558,36 +1815,44 @@ async function setSecrets({ say }: Context, got: Pick<Values, Secrets>,
     held[worker] = deployed.includes(NAMES[worker]!)
       ? await got.cloudflare.secrets(got.account, NAMES[worker]!) : [];
   }
-  const setting = secretPlan(held, rotate, values)
-    .filter(({ name }) => values === null || values(name) !== undefined);
-  for (const { worker, name } of setting) {
-    say(`set the secret ${name} on ${NAMES[worker]} with its version${values !== null ? ""
-      : ` (its value, or its absence if optional: ${LATER})`}`);
+  const holders = Object.keys(held).filter((worker) => held[worker]!.includes(E2B_HOOK.secret));
+  if (hook === null && holders.length > 0 && !run.rotate.has(E2B_HOOK.secret)) {
+    throw new Error(`E2B holds no lifecycle webhook, and ${holders.map((worker) =>
+      NAMES[worker]).join(" and ")} ${holders.length === 1 ? "holds" : "hold"} ${
+      E2B_HOOK.secret}, which the webhook this run registers must match: dispatch again with ` +
+      `--rotate ${E2B_HOOK.secret} to set both; no secret is set and no Worker deployed`);
   }
+  const setting = secretPlan(held, run.rotate, values).map(({ worker, name }): Setting => ({
+    worker, name, sets: !OPTIONAL.includes(name) || (values === null ? null
+      : values(name) !== undefined) }));
+  say(...setting.map(settingLine));
   return { deployed, setting };
 }
 
-/** The secrets, the hook's with them when E2B holds no hook: its register takes production's. */
 const secrets = step<Secrets | "hook", "deployed" | "setting">((ctx, got) =>
-  setSecrets(ctx, got, (name) => input(ctx.run, name), got.hook === null
-    ? new Set([...ctx.run.rotate, E2B_HOOK.secret]) : ctx.run.rotate));
+  setSecrets(ctx, got, (name) => input(ctx.run, name), got.hook));
 const secretsLater = step<Secrets, "deployed" | "setting">((ctx, got) =>
-  setSecrets(ctx, got, null, ctx.run.rotate));
+  setSecrets(ctx, got, null, undefined));
 
 /**
  * The rollout record (`RolloutRecord`), kept before the first Worker deploy: each Worker the
  * account's Workers listing holds read as the one version it serves, and that version's tag.
  * A Worker that serves two (a split) stops the run before any deploy (`Cloudflare.serving`).
- * Written on an applied run when the run's record is not there yet, and kept as it is when it
- * is (a re-run attempt keeps the versions its first attempt read); a refused write stops the
- * run before any deploy. The plan names, Worker by Worker, where a rollback of the run stops.
+ * The run's Workers are held to what those versions hand and take (`servedHold`), before the
+ * record and on every attempt. Written on an applied run when the run's record is not there
+ * yet, and kept as it is when it is (a re-run attempt keeps the versions its first attempt
+ * read); a refused write stops the run before any deploy. The plan names, Worker by Worker,
+ * where a rollback of the run stops.
+ * The Workers as read now are what the deploy goes on from (`workers`).
  */
-const rollout = step<"cloudflare" | "account" | "ids" | "deployed" | "setting" | "migrations">(
+const rollout = step<"cloudflare" | "account" | "ids" | "deployed" | "setting" | "migrations",
+                     "rolled">(
   async ({ run, say, summarize: add }, got) => {
     const title = NAMESPACES["CONTROL"]!;
     const key = `${ROLLOUT_PREFIX}${run.job.id}`;
     const namespace = got.ids["CONTROL"];
     const workers: Rolled[] = [];
+    const lines: string[] = [];
     for (const worker of WORKERS) {
       const name = NAMES[worker]!;
       let before: Rolled["before"] = null;
@@ -1595,11 +1860,16 @@ const rollout = step<"cloudflare" | "account" | "ids" | "deployed" | "setting" |
         const version = await got.cloudflare.serving(got.account, name);
         before = { version, tag: await got.cloudflare.tag(got.account, name, version) };
       }
-      workers.push({ name, before, counts: got.migrations[worker] ?? {},
-                     whole: run.migrate.has(worker),
-                     secrets: got.setting.filter((each) => each.worker === worker)
-                       .map((each) => each.name) });
+      const setting = got.setting.filter((each) => each.worker === worker);
+      const rolled: Rolled = { name, before, counts: got.migrations[worker] ?? {},
+                               whole: run.migrate.has(worker),
+                               secrets: setting.filter((each) => each.sets === true)
+                                 .map((each) => each.name),
+                               forward: FORWARD[worker]! };
+      workers.push(rolled);
+      lines.push(rolledLine(rolled, setting));
     }
+    say(await servedHold(got, run, workers));
     // Read after the split check, so a re-run attempt stops on a split as its first would.
     const held = namespace === undefined ? undefined
       : await got.cloudflare.value(got.account, namespace, key);
@@ -1608,49 +1878,252 @@ const rollout = step<"cloudflare" | "account" | "ids" | "deployed" | "setting" |
       say(`keep this run's rollout record as attempt ${record.attempt ?? "-"} wrote it at ` +
           `${record.at}, before its first deploy: roll back with --mode rollback --record ` +
           "<this run's id>");
-      return;
+      return { rolled: workers };
     }
     say(`record each Worker's version as this run's rollout record in ${title}, before its ` +
-        "first deploy: roll back with --mode rollback --record <this run's id>",
-        ...workers.map(rolledLine));
+        "first deploy: roll back with --mode rollback --record <this run's id>", ...lines);
     if (!run.apply) {
-      return;
+      return { rolled: workers };
     }
     const record: RolloutRecord = { kind: ROLLOUT_KIND, run: run.job.id, attempt: run.job.attempt,
                                     at: run.io.now().toISOString(), commit: run.io.commit(),
                                     workers };
     await putOrStop(got, namespace!, key, JSON.stringify(record));
     add(`Rollout record ${key}:\n\n\`\`\`json\n${JSON.stringify(record, null, 2)}\n\`\`\`\n\n`);
+    return { rolled: workers };
   });
 
 /**
- * Each Worker deployed, bound first, touching no route. A first deploy (the account's Workers
- * listing lacks it) is `wrangler deploy`; later ones are Cloudflare's staged path,
- * `versions upload` then `versions deploy` at 100%, which leaves the Worker's routes as they
- * are. Wrangler 4.154 refuses a versions upload with a pending Durable Object migration:
- * `--migrate <worker>` deploys it whole. The secrets the run sets on a Worker go up with its
- * version (`--secrets-file`; one the file omits is kept from the version before), never by
- * `wrangler secret put`, which deploys the code already there at once; each version is tagged
- * (`versionFlags`).
+ * The version whose code the Worker `name`'s serving version `version` runs, with its tag: itself
+ * when its tag names a commit (`taggedAs`); else, when Cloudflare notes it was made by a secret
+ * change (`workers/triggered_by` `secret`: `wrangler secret put`, as `retire` sets a keyring, or
+ * a secret edited in the dashboard), which makes a version of the latest one's code, refused
+ * unless that one is deployed, and deploys it at once, the version its deployments listing
+ * served alone at 100% just before it first did, and so on back. Null for any other: its code
+ * is unknown.
  */
-const workers = step<"wrangler" | "deployed" | "stage" | "setting" | "migrations">((
-    { run, say, scratch }, got) => {
+async function codeOf({ cloudflare, account }: Pick<Values, "cloudflare" | "account">,
+                      name: string, version: string):
+    Promise<{ readonly version: string; readonly tag: string } | null> {
+  let history: readonly Serving[][] | null = null;
+  let from = 0;
+  for (let at = version; ;) {
+    const { tag, trigger } = await cloudflare.annotations(account, name, at);
+    if (taggedAs(tag) !== null) {
+      return { version: at, tag: tag! };
+    }
+    if (trigger !== "secret") {
+      return null;
+    }
+    history ??= await cloudflare.deployments(account, name);
+    const alone = (each: readonly Serving[] | undefined, id?: string) => each !== undefined
+      && each.length === 1 && each[0]!.percentage === 100 && (id === undefined
+        || each[0]!.version === id);
+    const first = history.findLastIndex((each, index) => index >= from && alone(each, at));
+    const before = first < 0 ? undefined : history[first + 1];
+    if (!alone(before)) {
+      return null;
+    }
+    at = before![0]!.version;
+    from = first + 1;
+  }
+}
+
+/** What a version whose tag names no commit is, `codeOf` finding none it was made from. */
+const UNKNOWN_CODE = "which names no commit, and Cloudflare notes it as no secret change of a " +
+  "version that does: what it hands and takes is unknown";
+
+/**
+ * The run's Workers held to what the versions the stage serves hand them and take from them
+ * (`handed.ts`), each serving version read from git at the commit its code's tag names
+ * (`codeOf`): from each Worker's 100% until a later one's, that one's version before talks to it
+ * (`WORKERS`). Any refusal stops the run before any change, each named; so does a serving
+ * version whose code is unknown, or a commit this checkout lacks. A Worker no version of which
+ * serves (`rolled`'s first deploy) holds nothing. The plan's line names each commit read.
+ */
+async function servedHold(got: Pick<Values, "cloudflare" | "account">, run: Run,
+                          rolled: readonly Rolled[]): Promise<string> {
+  const commits = new Map<string, string>();
+  const read: string[] = [];
+  for (const { name, before } of rolled) {
+    if (before === null) {
+      continue;
+    }
+    const code = await codeOf(got, name, before.version);
+    if (code === null) {
+      throw new Error(`${name} serves ${before.version}, tagged ${before.tag ?? "with nothing"}, ` +
+                      `${UNKNOWN_CODE}, so nothing is ` +
+                      "changed. Upload the commit it should run as a new version tagged as this " +
+                      "kit tags it (wrangler versions upload --tag <its first 12 digits>, which " +
+                      "keeps its secrets), deploy that at 100%, then plan again: an older " +
+                      "version deployed back is refused once a secret changed since (10220)");
+    }
+    const { commit } = taggedAs(code.tag)!;
+    commits.set(name, commit);
+    read.push(`${name} at ${commit}${code.version === before.version ? ""
+      : ` (${before.version}, a secret change of ${code.version})`}`);
+  }
+  const sides = new Map<string, Before>();
+  const then = (worker: string): Before | null => {
+    const commit = commits.get(NAMES[worker]!);
+    if (commit === undefined) {
+      return null;
+    }
+    if (!sides.has(commit)) {
+      sides.set(commit, sideAt(commit, run.io.fileAt));
+    }
+    return sides.get(commit)!;
+  };
+  const problems = handedProblems(then, TREE);
+  if (problems.length > 0) {
+    throw new Error(`the run's Workers and the versions the stage serves refuse what the other ` +
+                    `hands across the deploy, so nothing is changed: ${problems.join("; ")}`);
+  }
+  return "hold the run's Workers to what the serving versions hand and take " +
+    `(contract/handed.json, contract/doors.json), read from git: ${read.length === 0
+      ? "none serves yet" : read.join(", ")}: none refuses the other`;
+}
+
+/** The doors' smoke at a share below 100 (`canary.ts --smoke`), as a plan names it. */
+const SMOKE = "the canary's doors checks, each request with Cloudflare's version override for " +
+  `it and each answer held to name it in ${VERSION_HEADER}`;
+
+/**
+ * Who reaches a Worker's version at a share below 100, and so whether it is smoked there: the
+ * doors once they hold their routes (`smoked`); the doors before (`unrouted`), when no
+ * request reaches them; any other Worker (`bound`), which only RPC reaches, where no version
+ * override does.
+ */
+type Reach = "smoked" | "unrouted" | "bound";
+
+const REACH: Readonly<Record<Reach, string>> = Object.freeze({
+  smoked: `held ${STAGES.soakMs / 1000} s and smoked there (${SMOKE})`,
+  unrouted: "not smoked: the doors do not hold their routes yet, so no request reaches them",
+  bound: "not smoked: only RPC reaches it, and no version override reaches RPC",
+});
+
+/** A deployment's versions, as a line says them: each id and its share, in order. */
+function sharesLine(serving: readonly Serving[]): string {
+  return serving.map((each) => `${each.version} at ${each.percentage}%`).join(" and ") || "none";
+}
+
+/** Whether `now`, a deployment as Cloudflare lists it, serves `want`, in its order. */
+function servesAs(now: readonly Serving[], want: readonly Serving[]): boolean {
+  return now.length === want.length && now.every((each, at) =>
+    each.version === want[at]!.version && each.percentage === want[at]!.percentage);
+}
+
+/**
+ * How long a deployment just made is read back for, and how often. Cloudflare's deployments
+ * listing answered the gateway's deployment at 100%, which wrangler had just made, with the
+ * deployment before it (run 45065434026, 2026-11-22), and listed it by the next run's plan;
+ * its docs give the listing no read-after-write, only that a deployment "takes up to a few
+ * seconds" to reach every location (`version-skew.mdx`).
+ */
+const READ_BACK_MS = 60_000;
+const READ_BACK_EVERY_MS = 2_000;
+
+/**
+ * The Worker `name`'s deployment read (`Cloudflare.deployment`) until Cloudflare lists it
+ * serving exactly `want`, in its order, every `READ_BACK_EVERY_MS`; past `READ_BACK_MS` a
+ * throw naming the last read-back, `stop` after it. It reads only: nothing is deployed again.
+ */
+async function readBack(run: Run, { cloudflare, account }: Pick<Values, "cloudflare" | "account">,
+                        name: string, want: readonly Serving[], stop: string): Promise<void> {
+  const until = run.io.now().getTime() + READ_BACK_MS;
+  for (;;) {
+    const now = await cloudflare.deployment(account, name);
+    if (servesAs(now, want)) {
+      return;
+    }
+    if (run.io.now().getTime() >= until) {
+      throw new Error(`${name}'s deployment read back as ${sharesLine(now)}, not ${
+        sharesLine(want)}, ${READ_BACK_MS / 1000} s after it was made${stop}`);
+    }
+    await run.io.sleep(READ_BACK_EVERY_MS);
+  }
+}
+
+/**
+ * What a deploy's plan says of `rolled` (`decided`, `setting` the plan's secrets on it): its
+ * stages (`STAGES`), with `reach` saying whether its shares below 100 are smoked, or 100% at
+ * once and why (`atOnce`).
+ */
+function deployLine(rolled: Rolled, setting: readonly Setting[], reach: Reach): string {
+  const whole = rolled.before === null || rolled.whole;
+  const below = STAGES.shares.slice(0, -1).map((share) => `${share}%`).join(", then ");
+  return decided(rolled, setting, atOnce, {
+    otherwise: `upload a version of ${rolled.name} and deploy it at ${below}, listed first ` +
+      `beside its version before, ${REACH[reach]}, then at 100%, each read back, touching no ` +
+      "route",
+    then: (reason) => `${whole ? `deploy ${rolled.name}` : `upload a version of ${
+      rolled.name} and deploy it`} at 100% at once, read back, touching no route, since ${
+      reason}`,
+    so: "it goes to 100% at once" });
+}
+
+/**
+ * Each Worker deployed, bound first, touching no route, each deployment read back
+ * (`readBack`) before anything follows it. A first deploy (the account's Workers
+ * listing lacked it: `rolled`) is `wrangler deploy`; later ones upload a version, then deploy
+ * it through the stages (`platform.json` `stages`): at each share below 100 beside the version
+ * it serves (`rolled`), the new one listed first, so a Durable Object assigned it keeps it as
+ * the share rises; then at 100%. Each is `wrangler versions deploy`, which leaves the Worker's
+ * routes as they are and syncs the settings its config gives that no version carries
+ * (logpush, tail consumers, observability). At each share below 100 the doors, once they hold
+ * their routes (`routed`), are held `soak_s`, then smoked (`canary.ts --smoke`); a failed
+ * smoke stops the run there, every request but an override's still served by their version
+ * before, which a rollback takes them back to. Worker by Worker, so each is uploaded only once
+ * the Workers it binds serve their new versions. A Worker that cannot serve beside its version
+ * before goes to 100% at once (`atOnce`), in its place in the order. Wrangler 4.154 refuses a versions upload with a pending Durable Object
+ * migration: `--migrate <worker>` deploys it whole. The secrets the run sets on a Worker go up
+ * with its version (`--secrets-file`; one the file omits is kept from the version before),
+ * never by `wrangler secret put`, which deploys the code already there at once; each version
+ * is tagged (`versionFlags`).
+ */
+const workers = step<"cloudflare" | "account" | "wrangler" | "stage" | "setting" | "migrations"
+                     | "rolled" | "routed">(async ({ run, say, did, scratch }, got) => {
   const commit = run.io.commit();
-  for (const worker of WORKERS) {
-    const whole = !got.deployed.includes(NAMES[worker]!) || run.migrate.has(worker);
-    say(`${whole ? "deploy" : "upload and deploy a version of"} ${NAMES[worker]}, touching no ` +
-        "route");
-    if (run.apply) {
-      const config = got.stage.config(worker);
-      const flags = ["--config", config, ...versionFlags(commit, got.migrations[worker] ?? {}),
-                     ...secretsFile(run, scratch, worker, got.setting)];
-      if (whole) {
-        got.wrangler(["deploy", ...flags]);
-      } else {
-        const id = versionOf(got.wrangler(["versions", "upload", ...flags]));
-        got.wrangler(["versions", "deploy", `${id}@100`, "--yes", "--config", config]);
+  const stop = `: the run stops here (--mode rollback --record ${run.job.id} takes it back)`;
+  for (const [at, worker] of WORKERS.entries()) {
+    const rolled = got.rolled[at]!;
+    const reach: Reach = worker !== IDENTITY ? "bound" : got.routed ? "smoked" : "unrouted";
+    say(deployLine(rolled, got.setting.filter((each) => each.worker === worker), reach));
+    if (!run.apply) {
+      continue;
+    }
+    const config = got.stage.config(worker);
+    const flags = ["--config", config,
+                   ...versionFlags(commit, got.migrations[worker] ?? {}, FORWARD[worker]!),
+                   ...secretsFile(run, scratch, worker, got.setting)];
+    const landed = async (want: Serving[]) => {
+      await readBack(run, got, rolled.name, want, stop);
+      did(`${rolled.name} serves ${sharesLine(want)}, read back`);
+    };
+    if (rolled.before === null || rolled.whole) {
+      const id = versionOf(got.wrangler(["deploy", ...flags]), "deploy");
+      await landed([{ version: id, percentage: 100 }]);
+      continue;
+    }
+    const id = versionOf(got.wrangler(["versions", "upload", ...flags]), "versions upload");
+    const deploy = async (want: Serving[]) => {
+      got.wrangler(["versions", "deploy", ...want.map((each) =>
+        `${each.version}@${each.percentage}`), "--yes", "--config", config]);
+      await landed(want);
+    };
+    for (const share of atOnce(rolled) === null ? STAGES.shares.slice(0, -1) : []) {
+      await deploy([{ version: id, percentage: share },
+                    { version: rolled.before.version, percentage: 100 - share }]);
+      if (reach === "smoked") {
+        await run.io.sleep(STAGES.soakMs);
+        const exit = canaryExit(run, ["--smoke", id]);
+        if (exit !== 0) {
+          throw new Error(`the doors' smoke of ${id} at ${share}% failed (exit ${exit})${stop}`);
+        }
+        did(`the doors' smoke of ${id} at ${share}% passed`);
       }
     }
+    await deploy([{ version: id, percentage: 100 }]);
   }
 });
 
@@ -1662,7 +2135,8 @@ const workers = step<"wrangler" | "deployed" | "stage" | "setting" | "migrations
  */
 function secretsFile(run: Run, scratch: () => string, worker: string,
                      setting: Values["setting"]): string[] {
-  const names = setting.filter((each) => each.worker === worker).map((each) => each.name);
+  const names = setting.filter((each) => each.worker === worker && each.sets === true)
+    .map((each) => each.name);
   if (names.length === 0) {
     return [];
   }
@@ -1700,15 +2174,24 @@ async function putOrStop({ cloudflare, account }: Pick<Values, "cloudflare" | "a
   }
 }
 
-/** The control record, written closed only when the API answered there is none. */
+/**
+ * The control record, written closed only when the API answered there is none. One there that
+ * no reader takes (`controlOf`: an operator's bad write, or a key the readers no longer hold)
+ * stops the run loudly, since every gate reads it closed until `control --replace` mends it.
+ */
 const control = step<"cloudflare" | "account" | "ids">(async ({ run, say }, got) => {
   const id = got.ids["CONTROL"];
-  if (id === undefined || await got.cloudflare.value(got.account, id, CONTROL_KEY) === undefined) {
+  const held = id === undefined ? undefined
+    : await got.cloudflare.text(got.account, id, CONTROL_KEY);
+  if (held === undefined) {
     say("write the control record closed (outside off, canary none, inbound off, the " +
         "founder's tier numbers): the API answered there is none");
     if (run.apply) {
       await putOrStop(got, id!, CONTROL_KEY, JSON.stringify(DARK_CONTROL));
     }
+  } else if (controlOf(held) === null) {
+    throw new Error(`the control record is one no reader takes: ${held}; every gate reads it ` +
+                    "closed until the control mode's --replace gives the whole record");
   }
 });
 
@@ -2449,14 +2932,16 @@ function hook(enable: boolean, where: string): Step<"e2b" | "setting", never> {
     const result = await lifecycleHook(got.e2b, {
       secret: input(run, E2B_HOOK.secret)!, setSecret: hookSetsSecret(got.setting), enable,
     }, run.apply);
-    say(`E2B lifecycle webhook ${E2B_HOOK.url}${where}: ${result}`);
+    say(checked(`E2B lifecycle webhook ${E2B_HOOK.url}${where}`, result));
   });
 }
 
-/** The plan job's word on E2B's lifecycle webhook, which it cannot reach. */
-const hookLater = step(({ say }) => {
-  say(`E2B lifecycle webhook ${E2B_HOOK.url}: ${LATER}`);
-});
+/** The plan job's word on E2B's lifecycle webhook, which it cannot reach, where `hook` says it. */
+function hookLater(where: string): Step<never, never> {
+  return step(({ say }) => {
+    say(checked(`E2B lifecycle webhook ${E2B_HOOK.url}${where}`, null));
+  });
+}
 
 /** The doors' routes handed over one at a time, no path ever served by nothing. */
 const handOver = step<"cloudflare" | "zone" | "changes">(async ({ run, say }, got) => {
@@ -2466,10 +2951,24 @@ const handOver = step<"cloudflare" | "zone" | "changes">(async ({ run, say }, go
   }
 });
 
-/** The sandbox's egress host, the doors' custom domain (`wrangler triggers deploy`). */
+/**
+ * How long the kit waits for the egress door to answer on its host after the attach, how often
+ * it asks, and each request's limit: the stage's host had its own certificate about two
+ * minutes after the attach (2026-11-22).
+ */
+const ANSWER_MS = 10 * 60_000;
+const ANSWER_EVERY_MS = 15_000;
+const ANSWER_REQUEST_MS = 30_000;
+
+/**
+ * The sandbox's egress host, the doors' custom domain (`wrangler triggers deploy`), then the
+ * host's own answer waited on (`answering`): wrangler's deploy returns without waiting, and
+ * the host had no TLS for its name for about two minutes after the stage's attach.
+ */
 const customDomain = step<"cloudflare" | "zone" | "account" | "wrangler" | "stage" | "kept">(
-  async ({ run, say }, got) => {
-    say(`add the custom domain ${EGRESS_HOST} for ${DOORS} (wrangler triggers deploy)`);
+  async ({ run, say, did }, got) => {
+    say(`add the custom domain ${EGRESS_HOST} for ${DOORS} (wrangler triggers deploy), then ` +
+        `wait up to ${ANSWER_MS / 60_000} minutes for the egress door's refusal on it`);
     if (!run.apply) {
       return;
     }
@@ -2488,29 +2987,97 @@ const customDomain = step<"cloudflare" | "zone" | "account" | "wrangler" | "stag
         throw new Error(`writing the custom domain's DNS records into ${key} failed (${
           status}): run routes again, which reads and writes them once more`);
       }
-      say(`record in ${key} the DNS records the custom domain made: ${
+      did(`record in ${key} the DNS records the custom domain made: ${
         created.length === 0 ? "none" : created.map((each) => each.type).join(", ")}`);
     }
+    did(await answering(run));
   });
 
 /**
- * Fact 11: after a deploy or a route change, the platform's canary (`canary.ts`), reading
- * its own keys. With no side it holds whichever serves `/mcp`: before `routes` the old stack,
- * where it checks that the old stack still answers and the doors' checks wait. `routes` asks
- * for `--side doors --unkeyed`: the doors must answer `/mcp` and its resource document, and
- * the old stack must not, while the keyed checks wait, since no canary owner's key can be
- * minted before the doors serve `/app/api`, and the dark control record admits no one.
+ * A failed request's words: Node's fetch says only "fetch failed", and its cause which of
+ * DNS, the connection or TLS failed. The kit's wait and the canary both name a failure so.
  */
-function canary(...args: [] | ["--side", "doors", "--unkeyed"]): Step<never, never> {
-  return step(({ run }) => {
-    const ran = run.io.spawn(process.execPath, ["--experimental-strip-types",
-                                                join(PLATFORM, "deploy", "canary.ts"), ...args],
-                             { stdio: "inherit", cwd: REPO });
-    if (ran.status !== 0) {
-      throw new Error(`the platform canary${args.length === 0 ? "" : ` (${args.join(" ")})`} ` +
-                      `failed (exit ${ran.status})`);
+export function fetchFailure(error: unknown): string {
+  const { message, cause } = error as Error;
+  return `${message}${cause instanceof Error ? ` (${cause.message})` : ""}`;
+}
+
+/**
+ * Whether `answer` is the egress door's own refusal, a `404` naming its code: the doors serve
+ * the host, not a Cloudflare error page (a `522`, a challenge). The kit's wait and the
+ * canary's egress check both read it.
+ */
+export async function egressRefusal(answer: Response): Promise<boolean> {
+  if (answer.status !== 404) {
+    await answer.body?.cancel();
+    return false;
+  }
+  const body = await answer.json().catch(() => null) as { error?: { code?: unknown } } | null;
+  return typeof body?.error?.code === "string";
+}
+
+/**
+ * The egress door's refusal on its host, asked every `ANSWER_EVERY_MS` until it answers, or a
+ * throw past `ANSWER_MS` naming the last failure. fetch checks the certificate for the host;
+ * `Connection: close` makes each attempt a fresh connection, its name resolved again (undici
+ * keeps an answered socket for the next request otherwise), as the canary's process is.
+ */
+async function answering(run: Run): Promise<string> {
+  const url = `https://${EGRESS_HOST}/`;
+  const until = run.io.now().getTime() + ANSWER_MS;
+  for (;;) {
+    let failed: string;
+    try {
+      const answer = await run.io.fetch(url, { redirect: "manual", headers: { Connection: "close" },
+                                               signal: AbortSignal.timeout(ANSWER_REQUEST_MS) });
+      if (await egressRefusal(answer)) {
+        return `${url} answers with the egress door's refusal`;
+      }
+      failed = `HTTP ${answer.status}, not the egress door's refusal`;
+    } catch (error) {
+      failed = fetchFailure(error);
     }
-  });
+    if (run.io.now().getTime() >= until) {
+      throw new Error(`${url} did not answer with the egress door's refusal within ${
+        ANSWER_MS / 60_000} minutes of the custom domain's attach: ${failed}. Run routes ` +
+        "again once it does");
+    }
+    await run.io.sleep(ANSWER_EVERY_MS);
+  }
+}
+
+/**
+ * Fact 11: after a deploy, a route change, a rollback or a retire, the platform's canary
+ * (`canary.ts`), reading its own keys. With no side it holds whichever serves `/mcp`: before
+ * `routes` the old stack, where it checks that the old stack still answers and the doors'
+ * checks wait. `routes` asks for the doors' side: the doors must answer `/mcp` and its
+ * resource document, and the old stack must not.
+ *
+ * Its keyed checks follow the control record as it stands, in every mode: while a record read
+ * well formed admits no owner (`closedToAll`, as the dark record), no canary owner can sign in
+ * or pass the doors' gate, so they wait (`--closed`); otherwise a canary owner is owed, and a
+ * missing key fails.
+ */
+function canary(...side: [] | ["--side", "doors"]): readonly Held[] {
+  return Steps.none.then(zone).then(step<"cloudflare" | "account">(async ({ run }, got) => {
+    const namespace = await controlNamespace(got.cloudflare, got.account);
+    const held = namespace === undefined ? undefined
+      : await got.cloudflare.text(got.account, namespace, CONTROL_KEY);
+    const control = held === undefined ? null : controlOf(held);
+    const args = [...side, ...control !== null && closedToAll(control) ? ["--closed"] : []];
+    const exit = canaryExit(run, args);
+    if (exit !== 0) {
+      throw new Error(`the platform canary${args.length === 0 ? "" : ` (${args.join(" ")})`} ` +
+                      `failed (exit ${exit})`);
+    }
+  })).list;
+}
+
+/** The platform canary (`canary.ts`) run with `args`, its output the job's: its exit. */
+function canaryExit(run: Run, args: readonly string[]): number | null {
+  return run.io.spawn(process.execPath, ["--experimental-strip-types",
+                                         join(PLATFORM, "deploy", "canary.ts"), ...args],
+                      { stdio: "inherit", cwd: REPO }).status;
 }
 
 /** H2's probes alone: they change nothing, and need a routed door and a probe owner. */
@@ -2544,21 +3111,62 @@ const pairCheck = step<"e2b">(async ({ run }, { e2b: admin }) => {
 
 type Handing = "cloudflare" | "zone" | "account" | "record";
 
-/** The route record `--record` names, read and held to its shape; missing or bad stops it. */
-const recordRead = step<"cloudflare" | "zone" | "account", "record">(async ({ run, say }, got) => {
-  const key = `${RECORD_PREFIX}${run.record}`;
-  const namespace = await controlNamespace(got.cloudflare, got.account);
-  const value = namespace === undefined ? undefined
-    : await got.cloudflare.value(got.account, namespace, key);
-  if (value === undefined) {
-    throw new Error(`there is no route record ${key} in ${NAMESPACES["CONTROL"]}: name the ` +
-                    "id a routes run's job summary gives; nothing is changed");
-  }
-  const record = recordOf(value, key, got.zone);
-  say(`the route record ${key}: the zone's ${record.routes.length} routes as run ${record.run} ` +
-      `read them at ${record.at}, and the handover's ${record.moved.length} changes`);
-  return { record };
-});
+/**
+ * The route record `--record` names, read and held to its shape; missing or bad stops it. It
+ * must be the host's oldest (`hostRecords`), the state before the handover's first routes run:
+ * one kept after it holds the handover's own state, and its handback would leave the host
+ * served, so naming it stops the run, naming the oldest. The handback ends the handover: once
+ * it reads back as the record has it, every record of the host is deleted (`recordsEnded`).
+ */
+const recordRead = step<"cloudflare" | "zone" | "account", "record" | "ending">(
+  async ({ run, say }, got) => {
+    const key = `${RECORD_PREFIX}${run.record}`;
+    const namespace = await controlNamespace(got.cloudflare, got.account);
+    const value = namespace === undefined ? undefined
+      : await got.cloudflare.value(got.account, namespace, key);
+    if (namespace === undefined || value === undefined) {
+      throw new Error(`there is no route record ${key} in ${NAMESPACES["CONTROL"]}: name the ` +
+                      "id a routes plan gives (a handback that read back deletes its records, " +
+                      "copied into its job summary); nothing is changed");
+    }
+    const record = recordOf(value, key, got.zone);
+    const held = await hostRecords(got, namespace, key);
+    const first = held[0];
+    if (first !== undefined && first.record.at < record.at) {
+      throw new Error(`the record ${key} was kept at ${record.at}, after the route record ${
+        first.key}, ${heldLine(first)}, the state before the first routes run on ${HOST}: it ` +
+        "holds the handover's own state, and its handback would leave the host served. Hand " +
+        `back with --record ${first.record.run}; nothing is changed`);
+    }
+    // Later ones first, so a handback stopped among the deletes leaves the one it names.
+    const ending = [...held.filter((each) => each.key !== key).reverse(),
+                    { record, namespace, key }];
+    say(`the route record ${key}: the zone's ${record.routes.length} routes as run ${
+      record.run} read them at ${record.at}, and the handover's ${record.moved.length} changes`,
+        `once the handback reads back as the record has it, delete ${ending.map((each) =>
+          each.key).join(", then ")} from ${NAMESPACES["CONTROL"]}: the handback ends the ` +
+        `handover ${ending.length === 1 ? "it records" : "they record"} (each copied into ` +
+        "this run's job summary first)");
+    return { record, ending };
+  });
+
+/**
+ * The route records the handback ends (`ending`), deleted once it has read back as its record
+ * has it: so the next routes run on the host keeps none and records the host as it stands. A
+ * copy of each goes in the job summary first.
+ */
+const recordsEnded = step<"cloudflare" | "account" | "ending">(
+  async ({ run, did, summarize: add }, got) => {
+    if (!run.apply) {
+      return;
+    }
+    for (const { record, namespace, key } of got.ending) {
+      add(`Route record ${key}, ended by this handback:\n\n\`\`\`json\n${
+        JSON.stringify(record, null, 2)}\n\`\`\`\n\n`);
+      await got.cloudflare.deleteKeys(got.account, namespace, [key]);
+    }
+    did(`deleted ${got.ending.map((each) => each.key).join(", ")}`);
+  });
 
 /**
  * The record's handback on the zone and the egress domain as they stand: the doors' custom
@@ -2597,17 +3205,17 @@ const hookBack = step<"e2b" | "hook" | "record">(async ({ run, say }, got) => {
   const before = got.record.hook;
   const url = before.url;
   const disable = !before.enabled && got.hook?.["enabled"] === true ? String(got.hook["id"]) : null;
-  say(before.enabled ? `E2B lifecycle webhook ${url}: enabled before routes, left`
-    : disable === null ? `E2B lifecycle webhook ${url}: not enabled already`
-    : `disable E2B lifecycle webhook ${url}, as it was ${before.present ? "before routes"
-      : "absent before routes (a disabled hook sends nothing)"}`);
+  say(checked(`E2B lifecycle webhook ${url}`, before.enabled ? "enabled before routes, left"
+    : disable === null ? "not enabled already"
+    : `disable it, as it was ${before.present ? "before routes"
+      : "absent before routes (a disabled hook sends nothing)"}`));
   if (run.apply && disable !== null) {
     await got.e2b.changeWebhook(disable, { enabled: false });
   }
 });
 
 const hookBackLater = step<"record">(({ say }, got) => {
-  say(`E2B lifecycle webhook ${got.record.hook.url}: ${LATER}`);
+  say(checked(`E2B lifecycle webhook ${got.record.hook.url}`, null));
 });
 
 /**
@@ -2763,16 +3371,52 @@ function versionLine(serving: readonly (Serving & { readonly tag: string | null 
 }
 
 /**
+ * Whether the Worker `name` served `before` just before a run of commit `ours` deployed it, by
+ * Cloudflare's deployments listing (newest first): a deployment of `before` alone, at 100%,
+ * followed by one serving a version tagged with that commit. A record naming an older real
+ * version as the one before, with its real tag, names none such, unless a run of the same
+ * commit followed it too; deployments made since (another run, and its rollback) leave it
+ * found. `tagOf` reads a version's tag.
+ */
+async function servedBefore({ cloudflare, account }: Pick<Values, "cloudflare" | "account">,
+                            name: string, ours: string, before: string,
+                            tagOf: (version: string) => Promise<string | null>):
+    Promise<boolean> {
+  const history = await cloudflare.deployments(account, name);
+  for (const [at, older] of history.entries()) {
+    if (at === 0 || older.length !== 1 || older[0]!.version !== before
+        || older[0]!.percentage !== 100) {
+      continue;
+    }
+    for (const each of history[at - 1]!) {
+      if (each.version !== before && taggedAs(await tagOf(each.version))?.commit === ours) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
  * Mode `rollback`: the rollout record `--record` names (`RolloutRecord`), its run's Workers
  * taken back to the versions they served before it, in the reverse of its deploy order, each
  * a deployment of that version alone (`Cloudflare.deploy`), read back. So, as in the middle of
  * every deploy, the Workers a caller binds are never older than it. It stops at the first
  * Worker the run made forward-only (`forwardOnly`): that one and every Worker before it stay
  * on the run's versions, each named, and with none to take back the run stops before any
- * change. Each is held to the record first: every version it serves is the one before or one
+ * change. A Worker the run left at 0% beside its version before, which already serves all its
+ * traffic, is taken back whatever its version carries. Each is held to the record first:
+ * every version it serves is the one before or one
  * tagged with the run's commit (a split of the two, which a run stopped mid-rollout leaves,
  * included), and anything else (a deploy since) stops it, named, with nothing changed; so
- * does a record whose tag before or counts are not Cloudflare's tags.
+ * does a record that is not Cloudflare's word: its Workers not this tree's, in its deploy
+ * order; its tag before, counts or forward count not Cloudflare's tags; or, for a Worker it
+ * takes back, its version before one Cloudflare's deployments listing never has it serving
+ * just before a run of the commit (`servedBefore`). So does a version it takes a Worker back
+ * to whose code is unknown (`codeOf`) or whose commit's side is (`sideAt`): every later plan
+ * reads it (`servedHold`), and none could deploy forward from it. The record's namespace is bound,
+ * writable, by the doors, owner and sandbox; tags and deployments only the deploy's token
+ * writes.
  */
 const rollbackAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
   const title = NAMESPACES["CONTROL"]!;
@@ -2786,15 +3430,27 @@ const rollbackAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => 
   }
   const record = rolloutOf(value, key);
   const ours = tagCommit(record.commit);
+  const names = WORKERS.map((worker) => NAMES[worker]!);
+  if (record.workers.map((each) => each.name).join(", ") !== names.join(", ")) {
+    throw new Error(`the record ${key} names the Workers ${record.workers.map((each) =>
+      each.name).join(", ")}, and this tree deploys ${names.join(", ")}, in that order: nothing ` +
+      "is changed (a rollback by hand follows checklist.md)");
+  }
   const back: Rolled[] = [];
   const lines: string[] = [];
   const drifted: string[] = [];
   let stop: { name: string; reason: string } | null = null;
   for (const rolled of [...record.workers].reverse()) {
+    const tags = new Map<string, string | null>();
+    const tagOf = async (version: string): Promise<string | null> => {
+      if (!tags.has(version)) {
+        tags.set(version, await got.cloudflare.tag(got.account, rolled.name, version));
+      }
+      return tags.get(version)!;
+    };
     const serving = [];
     for (const each of await got.cloudflare.deployment(got.account, rolled.name)) {
-      serving.push({ ...each, tag: await got.cloudflare.tag(got.account, rolled.name,
-                                                            each.version) });
+      serving.push({ ...each, tag: await tagOf(each.version) });
     }
     const unknown = serving.filter((each) => each.version !== rolled.before?.version
       && taggedAs(each.tag)?.commit !== ours);
@@ -2803,37 +3459,50 @@ const rollbackAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => 
         : versionLine(serving)}, neither its version before the run nor one of commit ${ours}`);
       continue;
     }
-    // What `forwardOnly` reads, held to Cloudflare's tags, which only the deploy's token
-    // writes: the record's namespace is bound, writable, by the doors, owner and sandbox.
+    // What `forwardOnly` reads, held to Cloudflare's tags.
     const pinned = pinnedCounts(rolled.counts).join(".");
-    const tagBefore = rolled.before === null ? null
-      : serving.find((each) => each.version === rolled.before!.version)?.tag
-        ?? await got.cloudflare.tag(got.account, rolled.name, rolled.before.version);
+    const tagBefore = rolled.before === null ? null : await tagOf(rolled.before.version);
     if (tagBefore !== (rolled.before?.tag ?? null) || serving.some((each) =>
       each.version !== rolled.before?.version
-        && (taggedAs(each.tag)?.counts ?? []).join(".") !== pinned)) {
+        && ((taggedAs(each.tag)?.counts ?? []).join(".") !== pinned
+          || taggedAs(each.tag)?.forward !== rolled.forward))) {
       throw new Error(`the record ${key} holds ${rolled.name} as before ${
-        rolled.before?.tag ?? "untagged"}, counts -m${pinned}, and Cloudflare tags its version ` +
-        `before ${tagBefore ?? "untagged"} and serves ${versionLine(serving)}: nothing is changed`);
+        rolled.before?.tag ?? "untagged"}, counts -m${pinned}, forward count ${rolled.forward
+        }, and Cloudflare tags its version before ${tagBefore ?? "untagged"} and serves ${
+        versionLine(serving)}: nothing is changed`);
     }
     if (serving.length === 1 && serving[0]!.version === rolled.before?.version) {
       lines.push(`${rolled.name} serves its version before the run already, ${
         versionLine(serving)}`);
       continue;
     }
-    if (stop === null) {
+    // A run stopped at a share of 0% leaves its version beside the one before, serving only a
+    // request with an override for it, which no RPC call carries. Cloudflare assigns each
+    // Durable Object a version by the shares, so none ran this one's migrations, and the
+    // stages took it there only with no forward change (`atOnce`): the way back is open. In
+    // whichever order Cloudflare lists the two: the shares, not the order, say who serves.
+    const unserved = serving.length === 2 && serving.every((each) =>
+      each.percentage === (each.version === rolled.before?.version ? 100 : 0));
+    if (stop === null && !unserved) {
       const reason = forwardOnly(rolled);
       stop = reason === null ? null : { name: rolled.name, reason };
     }
-    if (stop !== null) {
+    if (stop !== null && !unserved) {
       lines.push(`leave ${rolled.name} on ${versionLine(serving)}: ${rolled.name === stop.name
         ? stop.reason : `it comes before ${stop.name} in the deploy order, and ${stop.name} ` +
           "stays on the run's version"}`);
       continue;
     }
+    if (!await servedBefore(got, rolled.name, ours, rolled.before!.version, tagOf)) {
+      throw new Error(`the record ${key} holds ${rolled.name} as serving ${
+        rolled.before!.version} before the run, and Cloudflare's deployments listing has no ` +
+        `deployment of it alone followed by one of commit ${ours}: nothing is changed (a ` +
+        "rollback by hand follows checklist.md)");
+    }
     back.push(rolled);
     lines.push(`roll ${rolled.name} back to ${rolled.before!.version} (${
-      rolled.before!.tag ?? "untagged"}) at 100%, from ${versionLine(serving)}`);
+      rolled.before!.tag ?? "untagged"}) at 100%, from ${versionLine(serving)}${unserved
+      ? ": its run's version at 0% served no request but an override's" : ""}`);
   }
   if (drifted.length > 0) {
     throw new Error(`deployed since run ${record.run}, so nothing is rolled back: ${
@@ -2846,18 +3515,33 @@ const rollbackAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => 
                     `version (${stop.reason}). Roll forward with a fix, or close the control ` +
                     "record's gates (--mode control); nothing is changed");
   }
+  for (const { name, before } of back) {
+    const code = await codeOf(got, name, before!.version);
+    let unknown: string | null = UNKNOWN_CODE;
+    if (code !== null) {
+      try {
+        sideAt(taggedAs(code.tag)!.commit, run.io.fileAt);
+        unknown = null;
+      } catch (error) {
+        unknown = (error as Error).message;
+      }
+    }
+    if (unknown !== null) {
+      throw new Error(`${name}'s version before run ${record.run} is ${before!.version}, tagged ${
+        before!.tag ?? "with nothing"}, ${unknown}; every plan after a rollback to it would ` +
+        "stop there, so nothing is rolled back. Roll forward with a fix, or close the control " +
+        "record's gates (--mode control); a rollback by hand (wrangler versions deploy " +
+        `${before!.version}@100% --name ${name}, checklist.md) leaves the kit planning nothing until that ` +
+        "Worker serves a version this kit tagged of a commit holding contract/handed.json");
+    }
+  }
   if (!run.apply) {
     return;
   }
   for (const rolled of back) {
     await got.cloudflare.deploy(got.account, rolled.name, rolled.before!.version);
-    const now = await got.cloudflare.deployment(got.account, rolled.name);
-    if (now.length !== 1 || now[0]!.version !== rolled.before!.version
-        || now[0]!.percentage !== 100) {
-      throw new Error(`${rolled.name}'s deployment read back as ${now.map((each) =>
-        `${each.version} at ${each.percentage}%`).join(" and ") || "none"}, not ${
-        rolled.before!.version} at 100%: the rollback stops here`);
-    }
+    await readBack(run, got, rolled.name, [{ version: rolled.before!.version, percentage: 100 }],
+                   ": the rollback stops here");
   }
   say(back.length === 0 ? "every Worker serves its version before the run already"
     : `read each Worker's deployment back: ${back.map((each) => each.name).join(", ")} ` +
@@ -2907,31 +3591,35 @@ const READS = Steps.none.then(locks).then(zone).then(upstream).then(e2b).then(te
  * the control record.
  */
 const DARK_LATER = READS_LATER.then(redirectLater).then(authorize).then(namespaces).then(buckets)
-  .then(bucketLocks).then(queues).then(staged).then(secretsLater).then(rollout).then(workers)
-  .then(retired).then(control).then(hookLater);
+  .then(bucketLocks).then(queues).then(staged).then(secretsLater).then(rollout).then(routedNow)
+  .then(workers).then(retired).then(control).then(hookLater(""));
 const DARK = READS.then(redirect).then(authorize).then(namespaces).then(buckets)
-  .then(bucketLocks).then(queues).then(staged).then(secrets).then(rollout).then(workers)
-  .then(retired).then(control).then(hook(false, ""));
+  .then(bucketLocks).then(queues).then(staged).then(secrets).then(rollout).then(routedNow)
+  .then(workers).then(retired).then(control).then(hook(false, ""));
 
 /**
  * A routes run: the route plan read and its record kept before the first change, then the
  * host's DNS record and WorkOS's redirect, then a dark run's, then the handover, the custom
  * domain and the hook enabled.
  */
+const ROUTED_HOOK = ", after the routes";
 const ROUTES_LATER = READS_LATER.then(routePlan).then(recordedLater).then(hostRecord)
   .then(redirectLater).then(authorize).then(namespaces).then(buckets).then(bucketLocks)
   .then(queues).then(staged).then(secretsLater).then(rollout).then(workers).then(retired)
-  .then(control).then(hookLater).then(handOver).then(customDomain);
+  .then(control).then(handOver).then(customDomain).then(hookLater(ROUTED_HOOK));
 const ROUTED = READS.then(routePlan).then(recorded).then(hostRecord).then(redirect)
   .then(authorize).then(namespaces).then(buckets).then(bucketLocks).then(queues).then(staged)
   .then(secrets).then(rollout).then(workers).then(retired).then(control).then(handOver)
-  .then(customDomain).then(hook(true, ", after the routes"));
+  .then(customDomain).then(hook(true, ROUTED_HOOK));
 
-/** A handback: a routes run's record read, held to the zone, handed back and read back. */
+/**
+ * A handback: a routes run's record read, held to the zone, handed back and read back, then
+ * the host's records ended.
+ */
 const HANDBACK_LATER = Steps.none.then(zone).then(recordRead).then(backPlan).then(hookBackLater)
   .then(handBack);
 const HANDBACK = Steps.none.then(zone).then(recordRead).then(e2b).then(hookListed).then(backPlan)
-  .then(hookBack).then(handBack).then(handedBack);
+  .then(hookBack).then(handBack).then(handedBack).then(recordsEnded);
 
 /** The operator path's modes: the same steps for the plan job, which applies nothing. */
 const CONTROL = Steps.none.then(zone).then(controlEdit).list;
@@ -2961,12 +3649,12 @@ export const MODES: Readonly<Record<Mode, Row>> = Object.freeze({
   dark: {
     inputs: DEPLOY_INPUTS, deploys: true, applies: true, own: [],
     steps: { public: DARK_LATER.list, secrets: DARK.list },
-    report: { unchanged: NOTHING, after: [canary()] },
+    report: { unchanged: NOTHING, after: canary() },
   },
   routes: {
     inputs: DEPLOY_INPUTS, deploys: true, applies: true, own: [],
     steps: { public: ROUTES_LATER.list, secrets: ROUTED.list },
-    report: { unchanged: NOTHING, after: [canary("--side", "doors", "--unkeyed")] },
+    report: { unchanged: NOTHING, after: canary("--side", "doors") },
   },
   // H2's probes read their own keys (`h2-probes.ts`), the revoke probe's two only if given.
   h2: {
@@ -2992,7 +3680,7 @@ export const MODES: Readonly<Record<Mode, Row>> = Object.freeze({
     inputs: { public: ["CLOUDFLARE_API_TOKEN"], secret: [], optional: [] },
     deploys: false, applies: true, own: ["--record"],
     steps: { public: ROLLBACK, secrets: ROLLBACK },
-    report: { unchanged: NOTHING, after: [canary()] },
+    report: { unchanged: NOTHING, after: canary() },
   },
   // The control record, read and written with the Cloudflare token alone: the plan job reads
   // it too.
@@ -3042,7 +3730,7 @@ export const MODES: Readonly<Record<Mode, Row>> = Object.freeze({
     inputs: { public: ["CLOUDFLARE_API_TOKEN"], secret: [...RETIRES, "E2B_API_KEY", TOKEN],
               optional: [] },
     deploys: false, applies: true, own: ["--keyring", "--confirm"],
-    steps: { public: RETIRE, secrets: RETIRE }, report: { unchanged: NOTHING, after: [canary()] },
+    steps: { public: RETIRE, secrets: RETIRE }, report: { unchanged: NOTHING, after: canary() },
   },
 });
 
@@ -3129,11 +3817,13 @@ function planFile(file: string): PlanFile {
 /**
  * The apply job's hold, before any change: the plan job's plan, made again from the live
  * state, is the one the plan job of this same run wrote to `run.plan`. Anything else stops it,
- * each difference named.
+ * each difference named. Its lines, which this job's own steps are then held to as they say
+ * each (`holding`): the plan job runs other steps, without the production secrets.
  */
-async function approved(row: Row, run: Run, ctx: Context): Promise<void> {
+async function approved(row: Row, run: Run, ctx: Context): Promise<readonly string[]> {
   const planJob: Run = Object.freeze({ ...run, reach: "public", apply: false });
-  const live: Plan = { asked: askedOf(run), lines: await stepsOf(row, planJob, ctx.scratch) };
+  const live: Plan = { asked: askedOf(run),
+                       lines: await stepsOf(row, planJob, ctx.scratch, null) };
   const file = planFile(run.plan!);
   if (file.run !== run.job.id) {
     throw new Error(`the plan at ${run.plan} is run ${file.run}'s, not this run's (${
@@ -3144,7 +3834,9 @@ async function approved(row: Row, run: Run, ctx: Context): Promise<void> {
     throw new Error(`the live state no longer plans what was approved, so nothing is changed: ${
       differences.join("; ")}. Dispatch the mode again for a new plan`);
   }
-  ctx.say("the plan job's plan, made again from the live state, is the one approved");
+  ctx.say("the plan job's plan, made again from the live state, is the one approved, and each " +
+          "line below is held to its line there as it is said");
+  return file.plan.lines;
 }
 
 // --- The keyring tools ------------------------------------------------------------------
@@ -3405,15 +4097,25 @@ function given({ inputs }: Row, run: Run): void {
   }
 }
 
-/** The lines `row`'s steps for `run` report, run in order, each given what the ones before made. */
-async function stepsOf(row: Row, run: Run, scratch: () => string): Promise<string[]> {
+/**
+ * The lines `row`'s steps for `run` report, run in order, each given what the ones before made;
+ * on the apply job each held to the `approved` plan as it is said (`holding`).
+ */
+async function stepsOf(row: Row, run: Run, scratch: () => string,
+                       approved: readonly string[] | null): Promise<string[]> {
   const lines: string[] = [];
-  const ctx: Context = { ...reporterOf(run, lines), run, scratch };
+  const hold = approved === null ? null : holding(approved);
+  await chained(row.steps[run.reach], { ...reporterOf(run, lines, hold), run, scratch });
+  hold?.done();
+  return lines;
+}
+
+/** `steps` run in order, each given what the ones before made (`Steps`). */
+async function chained(steps: readonly Held[], ctx: Context): Promise<void> {
   const values: Partial<Values> = {};
-  for (const each of row.steps[run.reach]) {
+  for (const each of steps) {
     Object.assign(values, await each.run(ctx, values as Pick<Values, never>));
   }
-  return lines;
 }
 
 /**
@@ -3431,10 +4133,8 @@ export async function perform(run: Run): Promise<{ readonly plan: readonly strin
   };
   try {
     given(row, run);
-    if (run.apply) {
-      await approved(row, run, ctx);
-    }
-    plan.push(...await stepsOf(row, run, ctx.scratch));
+    const lines = run.apply ? await approved(row, run, ctx) : null;
+    plan.push(...await stepsOf(row, run, ctx.scratch, lines));
     if (!run.apply && run.plan !== null) {
       const file: PlanFile = { kind: PLAN_KIND, run: run.job.id,
                                plan: { asked: askedOf(run), lines: plan } };
@@ -3445,9 +4145,7 @@ export async function perform(run: Run): Promise<{ readonly plan: readonly strin
       if (!run.apply) {
         run.io.log(row.report.unchanged);
       }
-      for (const each of run.apply ? row.report.after : []) {
-        await each.run(ctx, {});
-      }
+      await chained(run.apply ? row.report.after : [], ctx);
     }
   } finally {
     if (scratch !== undefined) {

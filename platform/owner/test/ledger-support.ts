@@ -11,7 +11,8 @@ import type { OwnerDO, Stores } from "../src/owner-do";
 import { subscriptionId } from "../../contract/src/wake-kinds";
 import { CLOSED, runWakes, type WakeSender } from "../src/wakes";
 import {
-  admitted, alarmOf, atClock, EVERY_SIGNIN, laneAt, seeded, storesOn, type TestStores, TIERS,
+  admitted, alarmOf, atClock, EVERY_SIGNIN_RECORD, laneAt, seeded, storesOn,
+  type TestStores,
 } from "./support";
 
 /** A pair's room, as `agents_list` names it: the owner's with `a`, or `a`'s with `b`. */
@@ -155,8 +156,8 @@ export async function unseededRig() {
   const stub: DurableObjectStub<OwnerDO> = await admitted(owner);
   /** A binder's binding; an outside origin comes through an MCP client unless named. */
   const bind = (origin: Origin | null, extra: Partial<Binding> = {}): Binding =>
-    ({ owner, caller: owner, origin, ...(origin === null ? {} : { source: MCP }), tiers: TIERS,
-       ...("sandbox" in extra ? {} : { signins: EVERY_SIGNIN }), ...extra });
+    ({ owner, caller: owner, origin, ...(origin === null ? {} : { source: MCP }),
+       control: EVERY_SIGNIN_RECORD, ...extra });
   const { session: cookie } = await stub.sessionOpen(bind(null, { authenticated_at: signedIn() }));
   const session = (origin: Origin | null, source: Source = MCP): Binding =>
     bind(origin, { session: cookie, source });

@@ -9,7 +9,7 @@
    - `ci/guards/cutover.test.ts` holds this wiring, with six mutations. It is the manifest's guard and goes with the dry run.
    - The cutover deletes `ci/dry-run.ts`, so `tests.yml`'s cutover edit now names the three jobs, their `needs` and the gate step.
    - The workflow's delete entry left the manifest along with the file. The manifest's `about`, `kit/cutover.ts`, `dry-run.ts` and `tasks.md` §10 step 5 now point at `tests.yml`. `b24-dry-run.md` item 2's "not required" is corrected in place.
-2. **It runs on every event but the merge group.**
+2. **It runs on every event but the merge group.** Corrected by `dry-run-queue.md`: it runs in the merge group too, which closes the residual risk below.
    - In the queue, runners are the bottleneck. Six merge-group runs of 42 jobs each (44901260453 to 44902114587) had jobs waiting up to 410 s for a runner. Adding 15 more jobs to every queue entry would slow every merge.
    - A PR can break the tree only through its own diff, and its PR run checks that diff. The queue already gets its whole-surface Python run (`required-tests-shard`); `affected-tests` is the same shape the other way round, on the PR only.
    - Two PRs that are each green alone could still break the tree together. That is rare, and the hourly run on `main` catches it, raising `main-red`. That run replaces the old nightly one.

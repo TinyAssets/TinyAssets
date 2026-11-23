@@ -12,8 +12,10 @@
  * sealed one by the sealed auth template, and sends it to the sealed origin. The provider's
  * own answer streams back, status and body, so the client sees its own API; only the secret
  * is redacted from it, in every spelling a provider could quote it back in (`redact.ts`). A
- * call is cut at `FORWARD_DEADLINE_MS`, or once its answer is silent for `IDLE_CUT_MS`, and
- * redirects are never followed.
+ * call is cut at `FORWARD_DEADLINE_MS`, and redirects are never followed. A silent answer is
+ * its engine's to give up on: each engine's own client ends a stream that sends nothing for
+ * 300 s or less (`limits-audit.md`, "Left to the engines"), and its leaving cancels the
+ * answer here, which ends the provider's request.
  *
  * User CLIs speak their provider's wire format. An unmetered call (a read, a cited free
  * call) only moves bytes: its body streams through. A metered one is the one request the
@@ -59,16 +61,6 @@ import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S, SLOT_WAIT_MS } from "../../contract
  * object keep too. A policy write ends a stream sooner, through the caller's stop.
  */
 const FORWARD_DEADLINE_MS = EGRESS_DEADLINE_S * 1000;
-
-/**
- * How long an answer may go without a byte from the provider while the gateway waits on it:
- * then the answer is errored and the provider's request ended, so a stalled stream lets go
- * of its run's slot. The engines' own idle cut (Claude Code's byte-level and body idle
- * timeouts, Codex's `DEFAULT_STREAM_IDLE_TIMEOUT_MS`, each 300 s): a stream their own
- * clients would already have given up on. A provider's keep-alive (an SSE ping) is a byte;
- * the wait for the answer's headers is not counted.
- */
-export const IDLE_CUT_MS = 300 * 1000;
 
 /** How long the setup check waits for the provider. */
 const VERIFY_DEADLINE_MS = 15 * 1000;
@@ -521,20 +513,16 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
  * ends there: closed, not errored with the abort the stop caused. The caller already knows
  * why it stopped, and an abort error carried back over the RPC stream to a door that no
  * longer reads it is a rejection nothing can handle (workerd logs each one as uncaught). A
- * provider's own failure, the gateway's deadline, or a wait on the provider longer than
- * `IDLE_CUT_MS` still errors the answer, and cancels the provider's, which ends its request.
+ * provider's own failure or the gateway's deadline still errors the answer, and cancels the
+ * provider's, which ends its request.
  */
 function abortable(body: ReadableStream<Uint8Array>, cancelled: AbortController,
                    ended: () => void): ReadableStream<Uint8Array> {
   const reader = body.getReader();
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const silent = new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Refusal("deadline")), IDLE_CUT_MS);
-      });
       try {
-        const { done, value } = await Promise.race([reader.read(), silent]);
+        const { done, value } = await reader.read();
         if (done) {
           ended();
           controller.close();
@@ -550,8 +538,6 @@ function abortable(body: ReadableStream<Uint8Array>, cancelled: AbortController,
           // Through the fetch's signal, so a metered answer's tee (its meter's readers) ends too.
           cancelled.abort();
         }
-      } finally {
-        clearTimeout(timer);
       }
     },
     cancel(reason) {

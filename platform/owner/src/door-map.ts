@@ -171,8 +171,6 @@ export interface DoorRows {
     { readonly module: "connections"; readonly caller: "session"; readonly gate: "door" };
   readonly flowFinish:
     { readonly module: "connections"; readonly caller: "session"; readonly gate: "synced" };
-  readonly usageReceipts:
-    { readonly module: "usage"; readonly caller: "owner"; readonly gate: "door" };
   readonly noticeList:
     { readonly module: "notices"; readonly caller: "owner"; readonly gate: "door" };
   readonly starterReceipts:
@@ -290,6 +288,12 @@ export interface DoorRows {
   readonly importDiscard:
     { readonly module: "import"; readonly caller: "discard"; readonly gate: "units" };
 }
+
+/**
+ * The doors that take their caller's stop after their request (their rows' `stop`), each
+ * handler handed it as its door's `left`.
+ */
+export type StopDoors = "codeRun";
 
 /** The handler of `door` in a map of modules' handlers `H`, by its row's module. */
 type HandlerIn<H, D extends keyof DoorRows> = DoorRows[D]["module"] extends infer M
@@ -511,9 +515,10 @@ export interface DoorMethods<H> {
    * Run one JavaScript script that calls your other tools here as `await tools.<name>(args)`, each
    * held to your grant, and answer its return value and output: many tool calls in one. Its effects
    * are the effects of the tools it calls. Only while the owner's policy turns code mode on; a
-   * script past its time or compute bound is stopped.
+   * script is stopped once you stop waiting for it, or past its compute or memory bound.
    */
-  codeRun(binding: Binding, request: RequestIn<H, "codeRun">): Promise<AnswerIn<H, "codeRun">>;
+  codeRun(binding: Binding, request: RequestIn<H, "codeRun">, stop: ReadableStream<Uint8Array>):
+    Promise<AnswerIn<H, "codeRun">>;
   sessionOpen(binding: Binding): Promise<AnswerIn<H, "sessionOpen">>;
   sessionExtend(binding: Binding): Promise<AnswerIn<H, "sessionExtend">>;
   sessionClose(binding: Binding): Promise<AnswerIn<H, "sessionClose">>;
@@ -594,7 +599,6 @@ export interface DoorMethods<H> {
   connectionList(binding: Binding): Promise<AnswerIn<H, "connectionList">>;
   flowFinish(binding: Binding, request: RequestIn<H, "flowFinish">):
     Promise<AnswerIn<H, "flowFinish">>;
-  usageReceipts(binding: Binding): Promise<AnswerIn<H, "usageReceipts">>;
   noticeList(binding: Binding): Promise<AnswerIn<H, "noticeList">>;
   starterReceipts(binding: Binding): Promise<AnswerIn<H, "starterReceipts">>;
   admissionSet(binding: Binding, request: RequestIn<H, "admissionSet">):

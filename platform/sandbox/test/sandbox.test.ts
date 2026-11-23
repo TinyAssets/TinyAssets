@@ -4,11 +4,11 @@
  * on the vendor's sign-in with none there is `signin_required`; past the concurrency ceiling
  * or behind an owner that waited longer a run waits in the platform's line, never refused,
  * until a freed sandbox rings it; a release pauses an idle sandbox, and one whose pause did
- * not land is reaped by the look; the look renews a sandbox before its runtime ceiling, at a
- * quiet moment or forced at the edge, resumes one paused while a lease runs in it, and is
- * armed again on every path; an erasure kills every sandbox of the owner, paused and strays
- * included. The runner is the Worker's own, by digest: a
- * create uploads and installs it before its first command, a resume with it there sends
+ * not land, or whose released lease's jobs were still ending, is reaped by the look; the look
+ * renews a sandbox before its runtime ceiling, at a quiet moment or forced at the edge,
+ * resumes one paused while a lease runs in it, and is armed again on every path; an erasure
+ * kills every sandbox of the owner, paused and strays included. The runner is the Worker's
+ * own, by digest: a create uploads and installs it before its first command, a resume with it there sends
  * nothing more, an absent one is installed and asked again, bytes not their digest launch
  * nothing, and a sandbox on another runner keeps it while anything lives and adopts the
  * Worker's at the first start that finds nothing living, whatever protocol the other speaks;
@@ -336,6 +336,40 @@ describe("a start", () => {
     expect(Object.keys(state.files).filter((path) => path.includes(`${INBOX}/`))).toEqual([]);
   });
 
+  it("prepares a sandbox a fault left running unprepared before the next start launches in " +
+     "it, and only that once", async () => {
+    await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 0, quiet: true } });
+    const who = owner();
+    const steps = async () => (await seen()).commands.map((command) => command.argv[1])
+      .filter((command) => command === "prepare" || command === "launch");
+    // Its create's `prepare` fails: the sandbox runs on, unprepared.
+    await e2b("/script", { broken: "prepare" });
+    expect((await faulted(() => stub(who).start(start()))).got).toBe("sandbox_start_failed");
+    await e2b("/script", { broken: null });
+    const joining = (n: string) => start({ run: `run_${hex(32, n)}`, tokens: null,
+                                           network: null });
+    expect(await stub(who).start(joining("4"))).toEqual({ started: true });
+    // The start that found it running prepared it before its launch; the next one does not.
+    expect(await steps()).toEqual(["prepare", "prepare", "launch"]);
+    expect(await stub(who).start(joining("5"))).toEqual({ started: true });
+    expect(await steps()).toEqual(["prepare", "prepare", "launch", "launch"]);
+    // A resume's `prepare` fails the same way, and the next start prepares it first.
+    await e2b("/reset", {});
+    await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 0, quiet: true } });
+    const resumed = owner();
+    expect(await stub(resumed).start(start())).toEqual({ started: true });
+    expect(await stub(resumed).release({ lease_id: LEASE.lease_id })).toEqual({ paused: true });
+    await e2b("/script", { broken: "prepare" });
+    const next = { lease_id: hex(32, "f"), epoch: 2 };
+    expect((await faulted(() => stub(resumed).start(start({ run: `run_${hex(32, "6")}`,
+                                                           lease: next })))).got)
+      .toBe("sandbox_start_failed");
+    expect((await seen()).sandboxes[0]!.state).toBe("running");
+    await e2b("/script", { broken: null });
+    expect(await stub(resumed).start(joining("7"))).toEqual({ started: true });
+    expect(await steps()).toEqual(["prepare", "launch", "prepare", "prepare", "launch"]);
+  });
+
   it("leaves a fault from the launch command on a plain error: whether it launched is unknown",
      async () => {
     // Its reply lost after it ran, or its process never started: envd answers both the same.
@@ -374,39 +408,27 @@ describe("a start", () => {
     expect(state.sandboxes[0]!.network.allowOut).toEqual(["github.com", EGRESS_HOST]);
     expect(state.commands.map((command) => command.argv[1]))
       .toEqual(["install", "prepare", "launch"]);
-    // No scratch retention in the record: the runner deletes no agent's scratch by age.
-    const doc = state.files[`${state.sandboxes[0]!.id}:${inboxDoc(RUN)}`]!;
-    expect(JSON.parse(doc).scratch_retention_days).toBeNull();
-  });
-
-  it("hands the control record's scratch retention to the runner", async () => {
-    await control({ ...OPEN, ...NUMBERS, scratch_retention_days: 30 });
-    const who = owner();
-    expect(await stub(who).start(start(ON_KEY)))
-      .toEqual({ started: true });
-    const state = await seen();
-    const doc = state.files[`${state.sandboxes[0]!.id}:${inboxDoc(RUN)}`]!;
-    expect(JSON.parse(doc).scratch_retention_days).toBe(30);
   });
 
   it("starts on the copy of the record it last read, by any read, while KV can't be read",
      async () => {
-    await control({ ...OPEN, ...NUMBERS, scratch_retention_days: 30 });
-    const who = owner();
-    expect(await stub(who).start(start(ON_KEY)))
-      .toEqual({ started: true });
-    // A renewal look reads the record as it is now: that read is the copy kept.
-    await control({ ...OPEN, ...NUMBERS, scratch_retention_days: 7 });
-    await e2b("/age", { id: (await seen()).sandboxes[0]!.id, s: CEILING - WINDOW + 5 });
-    await runDurableObjectAlarm(stub(who));
-    await outage(who);
-    const second = `run_${hex(32, "2")}`;
-    expect(await stub(who).start(start({ run: second, ...ON_KEY,
-                                        tokens: null, network: null })))
-      .toEqual({ started: true });
-    const state = await seen();
-    const doc = state.files[`${state.sandboxes.at(-1)!.id}:${inboxDoc(second)}`]!;
-    expect(JSON.parse(doc).scratch_retention_days).toBe(7);
+    const [kept, looked] = [owner(), owner()];
+    for (const who of [kept, looked]) {
+      expect(await stub(who).start(start(ON_KEY))).toEqual({ started: true });
+    }
+    // A renewal look reads the record as it is now, its numbers taken out: that read is the
+    // copy `looked` keeps, while `kept` keeps its start's.
+    await control(OPEN);
+    const box = (await seen()).sandboxes.at(-1)!;
+    await e2b("/age", { id: box.id, s: CEILING - WINDOW + 5 });
+    await runDurableObjectAlarm(stub(looked));
+    const again = (who: string, n: string) => stub(who).start(start({
+      run: `run_${hex(32, n)}`, ...ON_KEY, tokens: null, network: null }));
+    for (const who of [kept, looked]) {
+      await outage(who);
+    }
+    expect(await again(kept, "2")).toEqual({ started: true });
+    expect(await again(looked, "3")).toEqual({ started: false, code: "sandbox_unconfigured" });
   });
 
   it("starts nothing while KV can't be read and no copy was ever kept", async () => {
@@ -630,20 +652,32 @@ describe("cancel and release", () => {
       .toEqual({ cancelled: false });
   });
 
-  it("pauses on release only when the runner has no live run, and only for its lease",
-     async () => {
+  it("pauses on release once the runner has no live job, only for its lease, and keeps the " +
+     "pause asked while a stopped job of the lease is still ending", async () => {
     await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 1, quiet: true } });
     const who = owner();
+    const releasing = async () => (await runInDurableObject(stub(who), (_i, state) =>
+      state.storage.sql.exec<{ releasing: number }>("SELECT releasing FROM sandboxes")
+        .toArray()))[0]!.releasing;
     await stub(who).start(start());
+    // A job of the released lease still lives (stopped, still ending): not paused now, and
+    // the pause stays asked.
     expect(await stub(who).release({ lease_id: LEASE.lease_id })).toEqual({ paused: false });
+    expect(await releasing()).toBe(1);
     expect(await stub(who).release({ lease_id: hex(32, "0") })).toEqual({ paused: false });
-    await e2b("/script", { state: { live: 0, quiet: true } });
+    // A job launched since, under a new lease, ends the ask.
     const second = { lease_id: hex(32, "e"), epoch: 2 };
     await stub(who).start(start({ run: `run_${hex(32, "6")}`, lease: second }));
-    expect(await stub(who).release({ lease_id: second.lease_id })).toEqual({ paused: true });
+    expect(await releasing()).toBe(0);
+    expect(await stub(who).release({ lease_id: second.lease_id })).toEqual({ paused: false });
+    expect(await releasing()).toBe(1);
+    // Its job ended: the look pauses it (or the runtime's own run of it did already).
+    await e2b("/script", { state: { live: 0, quiet: true } });
+    await runDurableObjectAlarm(stub(who));
     const pauses = (await seen()).calls.filter((call) => call.path.endsWith("/pause"));
     expect(pauses).toHaveLength(1);
     expect(pauses[0]!.body).toEqual({ memory: true });
+    expect((await seen()).sandboxes[0]!.state).toBe("paused");
     // Paused and idle: nothing more to look at.
     expect(await alarmOf(who)).toBeNull();
   });

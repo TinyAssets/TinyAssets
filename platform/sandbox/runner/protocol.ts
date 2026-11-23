@@ -18,14 +18,18 @@
  * protocol it speaks reads (one a newer protocol added, one it dropped), so any of their
  * runners reads it. A change ships in two deploys: the first Worker speaks both while its
  * runner speaks the old one, the second runner speaks the new one. A later Worker speaks the
- * new one alone, dropping what only the old one read.
+ * new one alone, dropping what only the old one read. The two deploys keep a run that lives
+ * across one, or across its rollback, on a Worker that speaks its runner's protocol; where no
+ * run can (no owner has a sandbox before the cutover's routes), one deploy carries all three,
+ * and a sandbox whose runner outlived it would be refused by name at its next start while
+ * anything lives on it, or for good once rebooted (`control.ts` `#speaking`).
  */
 import { LEASE_TTL_S } from "../../contract/src/limits";
 
 /** The protocol this runner speaks. */
-export const PROTOCOL = 4;
+export const PROTOCOL = 5;
 /** The runner protocols the Worker speaks: its runner's, and at most the ones either side. */
-export const SPEAKS: readonly number[] = Object.freeze([4]);
+export const SPEAKS: readonly number[] = Object.freeze([5]);
 
 /** Every command the runner takes, by its name on the command line. */
 export const COMMAND = Object.freeze({
@@ -172,9 +176,8 @@ export interface DocLease {
  * A run's start, as the runner reads it from the inbox: the run, its agent and conversation,
  * the engine's record and the credential it runs on, its input, whose sandbox it runs in and
  * under which lease, the run's config, its doors (`mcp` carries the run's own secret;
- * `mcp_bare` is the one a record sending that secret in a header takes), the control
- * record's scratch retention (null when it names none; absent, the same), the agent's own
- * MCP servers its admission kept, and its own hooks by event, an event absent holding none.
+ * `mcp_bare` is the one a record sending that secret in a header takes), the agent's own MCP
+ * servers its admission kept, and its own hooks by event, an event absent holding none.
  */
 export interface StartDoc {
   readonly run: string;
@@ -197,7 +200,6 @@ export interface StartDoc {
   };
   readonly urls: { readonly mcp: string; readonly mcp_bare: string; readonly events: string;
                    readonly signin: string };
-  readonly scratch_retention_days?: number | null;
   readonly mcp_servers: Readonly<Record<string, DocMcpServer>>;
   readonly hooks: Readonly<Record<string, readonly DocHook[]>>;
 }

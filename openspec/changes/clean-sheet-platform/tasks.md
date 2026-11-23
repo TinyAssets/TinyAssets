@@ -68,11 +68,13 @@ end.
   and `CODE_MODE_OFF`, changed together). It probes a script past its
   interrupt budget against the Worker's `cpu_ms`; 10 s of one owner's script compute against
   another owner's; whether `exchange` calls count as subrequests of the owner object or of the
-  code mode Worker; whether pi-codemode's own deadline fires in production while a script calls
-  tools back to back; and, while a script loops tool calls, whether a revoke, an owner app read
-  and the alarm reach the owner object promptly and the script's next call is refused (in
-  workerd every other call starved, other owners' objects too). Mode `h2` is cutover-only
-  (d3 §A5).
+  code mode Worker; whether a script whose caller waits runs 10 minutes of tool calls back to
+  back, no clock of ours ending it, and whether the owner object's limit on one invocation then
+  binds; whether a script whose caller leaves stops (the owner Worker's log); and, while a
+  script loops tool calls, whether a revoke, an owner app read and the alarm reach the owner object promptly and the script's next call is refused (in
+  workerd every other call starved, other owners' objects too); and eight scripts at the VM
+  memory cap at once, each ending by its own value or memory alone (`fact15-caps-2.md`).
+  Mode `h2` is cutover-only (d3 §A5).
 - [ ] 0c (live, slice L): the dark deploy. The first `dark` ran and stopped at the sandbox
   Worker; the migration lock holds its `first_deploy`. What is left is the dark redeploy of the
   untangled build (§10 step 7).
@@ -735,8 +737,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   and `owner.state` (`owner-state-op.md`).
 - [x] The manifest's dry run green (d3 §A10): every leg, the typecheck and the process leg on
   the manifest's tree (`tests.yml`'s `cutover-dry-run` jobs; `b24-dry-run.md` item 2). It
-  runs on every PR and hourly, and `required-tests` needs it, so a change that makes what
-  stays need what goes cannot merge (`dry-run-required.md`).
+  runs on every PR, in the merge queue and hourly, and `required-tests` needs it, so a change
+  that makes what stays need what goes cannot merge (`dry-run-required.md`,
+  `dry-run-queue.md`).
 - [x] The platform's canary and one alert path, as d3 §J2 and §J3 design them (R6; X5,
   `x5.md`). Live from `routes` (§9 step 13).
 - [ ] The canary's alerts for what is only log lines today (list3 P18): `sandbox_waiting`,
@@ -827,8 +830,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     derivation, and `client_share` and `owner_reserve` off by default
     (`untangle/fact15-defaults`); the 10 GB guard's shares recorded as technical ceilings and
     the held requests' lives gone (`untangle/fact15-caps`); `openPerRun`, code mode's limits
-    taken from pi's defaults and the 300 s idle cut (each engine record's data) put in one of
-    Fact 15's kinds (`untangle/fact15-caps-2`); a guard holding every
+    taken from pi's defaults and the 300 s idle cut (each engine's own) put in one of Fact 15's
+    kinds (`untangle/fact15-caps-2`, done: `fact15-caps-2.md`); a guard holding every
     cap in Worker and runner source to `limits-audit.md` (`untangle/limits-guard`).
   - [ ] 12. A run past E2B's ceiling waits with a clear message (`untangle/runs-wait-message`).
   - [ ] 13. An unreadable control record served from the last good copy, only the writes that
@@ -936,8 +939,9 @@ account, the founder's own test (§8) too.
     only; `--session {sid}`; `PI_CODING_AGENT_DIR`; `models.json` `baseUrl`; the pi-ai key
     variables; `.pi/skills` under `--approve`; `--tools`; the user-level `mcp.json` over
     streamable HTTP; the prompt on stdin;
-  - Gemini CLI's and pi's idle cuts, researched (the 300 s cut follows Claude Code's and
-    Codex's; d3 §I); each CLI's real concurrency against a run's cost cap, and whether
+  - each engine's own idle cut reaching the egress door, the gateway having none (each 300 s or
+    less, read for every engine, `fact15-caps-2.md`): a stream its provider stalls past it
+    settles `aborted` and ends the provider's request; each CLI's real concurrency against a run's cost cap, and whether
     frontier-model calls serialize under the default caps.
 - [ ] 4. The egress door's live probes (G4): E2B filters CIDRs, so 127.0.0.1, 10.0.0.1 and
   169.254.169.254 are unreachable; whether code in the sandbox can read its own transform

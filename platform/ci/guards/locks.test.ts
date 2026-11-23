@@ -9,12 +9,10 @@
  * order. A new migration is appended; nothing is edited or taken away. Each object's start
  * check (`migrate`) is the backstop in production; this is the one that stops it in review.
  *
- * The base is `MIGRATION_LOCK_BASE` when set, else the event's own (a pull request's base,
- * a merge group's base, a push's previous main, from `GITHUB_EVENT_PATH`), else
- * `origin/main`. A base this checkout does not have fails the guard: it never passes
- * without one.
+ * The base is `ci/history.ts`'s (`baseOf`), and a base this checkout does not have fails the
+ * guard: it never passes without one.
  */
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -23,6 +21,7 @@ import { describe, expect, it } from "vitest";
 import { type Migration, migrationDigest as digest } from "../../contract/src/migrate";
 import { deployAnswer, deployProblems, digests, holdLocks, type Lock, lockOf, lockProblems,
          locksOf, migrated, pin, readLock } from "../kit/locks";
+import { baseOf, fileAt } from "../history";
 import { PLATFORM, REPO } from "../paths";
 
 const MIGRATED = migrated();
@@ -44,49 +43,11 @@ export function lockGrowthProblems(base: Lock, head: Lock): string[] {
   return found;
 }
 
-/** The base this run compares against (see the header). */
-export function lockBase(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.MIGRATION_LOCK_BASE) {
-    return env.MIGRATION_LOCK_BASE;
-  }
-  if (env.GITHUB_EVENT_PATH) {
-    const event = JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, "utf8")) as {
-      pull_request?: { base?: { sha?: string } };
-      merge_group?: { base_sha?: string };
-      before?: string;
-    };
-    const sha = event.pull_request?.base?.sha ?? event.merge_group?.base_sha ?? event.before;
-    if (sha && /^[0-9a-f]{40}$/.test(sha) && !/^0+$/.test(sha)) {
-      return sha;
-    }
-  }
-  return "origin/main";
-}
-
-function git(...args: string[]): string {
-  return execFileSync("git", args, { cwd: REPO, encoding: "utf8",
-                                     stdio: ["ignore", "pipe", "pipe"] });
-}
-
-/**
- * The lock at `path` on `base`; null only when the base's tree has no such file. Throws when
- * `base` is unknown, and when the lock is in its tree but cannot be read: the legs check out
- * without file contents (`filter: blob:none`), so reading it fetches its blob, and a fetch
- * that fails is an error, never "no lock". Whether the file exists is read from the tree,
- * which is local.
- */
-export function baseLock(base: string, path: string,
-                         run: (...args: string[]) => string = git): Lock | null {
-  try {
-    run("rev-parse", "--verify", "--quiet", `${base}^{commit}`);
-  } catch {
-    throw new Error(`${base} is not in this checkout: fetch it (the guard never passes ` +
-                    "without its base)");
-  }
-  if (run("ls-tree", "--name-only", base, "--", path).trim() !== path) {
-    return null;
-  }
-  return JSON.parse(run("show", `${base}:${path}`)) as Lock;
+/** The lock at `path` on `base` (`fileAt`); null only when the base's tree has none. */
+function baseLock(base: string, path: string,
+                  run?: (...args: string[]) => string): Lock | null {
+  const text = fileAt(base, path, run);
+  return text === null ? null : JSON.parse(text) as Lock;
 }
 
 describe("the migration locks' kit", () => {
@@ -207,7 +168,7 @@ describe("the migration locks' kit", () => {
 
 describe("the migration lock against the base branch", () => {
   it.each(LOCKS)("only grows: %s", (path) => {
-    const base = baseLock(lockBase(), path) ?? { first_deploy: null, deployed: [] };
+    const base = baseLock(baseOf(), path) ?? { first_deploy: null, deployed: [] };
     const head = JSON.parse(readFileSync(join(REPO, path), "utf8")) as Lock;
     expect(lockGrowthProblems(base, head)).toEqual([]);
   });
@@ -246,8 +207,8 @@ describe("the migration lock against the base branch", () => {
   });
 
   it("reads its base from the event, and refuses one it does not have", () => {
-    expect(lockBase({ MIGRATION_LOCK_BASE: "abc" })).toBe("abc");
-    expect(lockBase({})).toBe("origin/main");
+    expect(baseOf({ GUARD_BASE: "abc" })).toBe("abc");
+    expect(baseOf({})).toBe("origin/main");
     expect(() => baseLock("0".repeat(40), LOCKS[0]!)).toThrow(/not in this checkout/);
   });
 });

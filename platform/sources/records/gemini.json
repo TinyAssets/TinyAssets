@@ -250,7 +250,7 @@
     },
     "mcp": {
       "file": "{system}/gemini-settings.json",
-      "template": "{\"context\": {\"fileName\": [\"AGENTS.md\"]}, \"telemetry\": {\"enabled\": false}, \"general\": {\"disableAutoUpdate\": true}, \"security\": {\"folderTrust\": {\"enabled\": false}}}",
+      "template": "{\"context\": {\"fileName\": [\"AGENTS.md\"]}, \"telemetry\": {\"enabled\": false}, \"general\": {\"disableAutoUpdate\": true, \"sessionRetention\": {\"enabled\": false}}, \"security\": {\"folderTrust\": {\"enabled\": false}}}",
       "servers": "mcpServers",
       "names": "mcp.allowed",
       "http": {
@@ -324,6 +324,9 @@
       "{home}/.gemini/gemini-credentials.json"
     ],
     "session_paths": [
+      "{home}/.gemini/tmp/*/chats/"
+    ],
+    "resume_paths": [
       "{home}/.gemini/tmp/*/chats/"
     ],
     "hosts": {

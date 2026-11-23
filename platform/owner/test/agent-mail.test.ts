@@ -22,15 +22,18 @@ import type { Binding } from "../../contract/src/binding";
 import { mailConversation, type RunReceipt, UNATTENDED_REFUSED } from "../src/runs";
 import { gated, type Gated } from "./gateway-support";
 import { MCP, MUSE, registerOn, rig, signedIn, dm } from "./ledger-support";
-import { ALL_SCOPES, defineAgent, ownerRun, recorder, runBinding, runnerBinding, startOf,
-         TIERS, whileOut } from "./runs-support";
+import {
+  ALL_SCOPES, defineAgent, OPEN_RECORD, ownerRun, recorder, runBinding, runnerBinding, startOf,
+  whileOut,
+} from "./runs-support";
 import { clock } from "../src/clock";
-import { LANE_PASS_S } from "../src/schedule";
-import { PLACE_BYTES, QUEUE_ROWS } from "../../contract/src/limits";
-import { OWNER_WAITERS, ownerSlots } from "../src/holds";
-import { writeControl } from "../../ci/fixtures";
+import { LANE_PASS_S, LANE_RETRY_S } from "../src/schedule";
+import { PLACE_BYTES, QUEUE_ROWS, SLOT_WAIT_MS } from "../../contract/src/limits";
+import { slotBusy } from "../../contract/src/slots";
+import { ownerSlots } from "../src/holds";
+import { OPEN, writeControl } from "../../ci/fixtures";
 import { sqlIn } from "../../ci/workerd";
-import { clockAt, drainDue, failure, starterSeed } from "./support";
+import { clockAt, drainDue, failure, laneAt, starterSeed } from "./support";
 import type { SandboxStart } from "../../contract/src/sandbox";
 
 /** Claude Code on the owner's own sign-in, which its record allows unattended. */
@@ -55,7 +58,7 @@ let sent = 0;
 
 /** The owner's mail in `room`, with the tier numbers the binder hands. */
 function ownerMail(r: Gated, room: string, body: string, parent: string | null = null) {
-  return r.stub.roomPost(r.bind({ tiers: TIERS }), {
+  return r.stub.roomPost(r.bind({ control: OPEN_RECORD }), {
     room_id: room, client_message_id: `m-${++sent}`, body, parent_id: parent });
 }
 
@@ -127,7 +130,7 @@ async function muse(r: Gated, grant: { mode: "full" | "scoped";
     recipe_id: null });
   const agent = await r.stub.registerAgent(r.session(), { card_id, digest });
   return { client: r.bind({ origin: MUSE, source: MCP, authenticated_at: signedIn(),
-                            tiers: TIERS }), agent: agent.agent_id };
+                            control: OPEN_RECORD }), agent: agent.agent_id };
 }
 
 describe("an agent's identity", () => {
@@ -362,7 +365,8 @@ describe("mail to an agent", () => {
   });
 
   it("waits on through a full slot pool: a long mail's waiting run, its body's read refused " +
-     "busy at its turn, keeps waiting and starts once the pool frees", async () => {
+     "busy at its turn, never waiting on the pool, keeps waiting and starts once the pool " +
+     "frees", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
     const main = await identity(r, "main");
@@ -372,24 +376,28 @@ describe("mail to an agent", () => {
     const long = "w".repeat(5 * 1024 * 1024) + "!";
     await ownerMail(r, dm(main.agent_id), long);
     await drainDue(r.stub);
-    // The isolate's pool full in its larger class, and its queue at its waiters: the body's
-    // read at the run's turn is refused `busy` at once, a transient refusal.
+    // The isolate's pool full in its larger class, and no call waiting for it: the body's
+    // read at the run's turn takes its units now or is refused `busy` (a transient refusal).
     const pool = ownerSlots();
     const held = await pool.acquire(pool.capacity - pool.reserve, "", undefined, true);
-    const stop = new AbortController();
-    const queued = Array.from({ length: OWNER_WAITERS }, () =>
-      pool.acquire(1, "", stop.signal, true).then((slot) => slot.release(), () => undefined));
     try {
       await end(r, (await starts(r))[0]!, "done 0");
-      await drainDue(r.stub).catch(() => undefined);  // the pass fails, as a busy pool's does
+      // The pass holds the lane until the refusal's Retry-After, never failed for it. The
+      // pool's units stay held through it, so a read that waited would be refused only by the
+      // pool's own timer, `SLOT_WAIT_MS` on: finishing inside it is the never-waiting.
+      const before = Date.now();
+      const began = clock();
+      await drainDue(r.stub);
+      expect(Date.now() - before).toBeLessThan(SLOT_WAIT_MS);
       expect(await r.sql("SELECT state, code FROM runs WHERE state NOT IN ('running', " +
                          "'succeeded')")).toEqual([{ state: "waiting", code: null }]);
+      const held = (await laneAt(r.stub, "runs"))!;
+      expect(held).toBeGreaterThanOrEqual(began + slotBusy().retryAfter!);
+      expect(held).toBeLessThan(began + LANE_RETRY_S);
     } finally {
-      stop.abort();
       held.release();
-      await Promise.all(queued);
     }
-    // The lane's next try, as its backoff brings it once the pool has freed.
+    // The lane's next try, as its hold brings it once the pool has freed.
     await r.sql("UPDATE cf_agents_jobs SET time = 0 WHERE id = 'owner-schedule/runs'");
     await drainDue(r.stub);
     expect(told((await starts(r)).at(-1)!).body).toBe(long);
@@ -631,9 +639,7 @@ describe("attendance", () => {
      "agent's mail does not", async () => {
     const r = await gated();
     // Codex's sign-in switched on in the control record, which the lane reads itself.
-    await writeControl(env.CONTROL, {
-      outside: "on", ordinary: "all", canary: [], inbound: false, signins: { codex: true } });
-    onTestFinished(() => writeControl(env.CONTROL, null));
+    await writeControl(env.CONTROL, { ...OPEN, signins: { codex: true } });
     await defineAgent(r.stub, r.bind(), "coder", { engine: "codex",
                                                    credential: "vendor_login_in_sandbox",
                                                    scopes: [] });
@@ -965,7 +971,7 @@ describe("the owner-mail schedules", () => {
   it("are gone: no run on the owner's mail, no schedule held to it", async () => {
     const r = await gated();
     for (const extra of [{ on_mail: true }, { cron: "0 * * * *", if_mail: true }]) {
-      expect((await failure(() => r.stub.agentRun(r.bind({ tiers: TIERS }), {
+      expect((await failure(() => r.stub.agentRun(r.bind({ control: OPEN_RECORD }), {
         agent: "main", input: "x", ...extra } as never))).message).toBe("invalid run request");
     }
     const properties = Object.keys(toolsNamed(["run_graph"])[0]!.input["properties"] as object);

@@ -13,7 +13,7 @@ import { refusalOf } from "../../contract/src/refusal";
 import { GC_GRACE_S, INLINE_BYTES, LOG_BYTES } from "../../contract/src/limits";
 import type { Binding } from "../../contract/src/binding";
 import { MUSE, rig, dm } from "./ledger-support";
-import { drainDue, failure, laneAt, starterSeed, TIERS, tiersAt } from "./support";
+import { drainDue, failure, laneAt, openRecord, starterSeed, TIERS, tiersAt } from "./support";
 
 /** What every owner's seed holds, its bytes counted in the figure like any file's. */
 const SEED = starterSeed();
@@ -93,7 +93,7 @@ describe("the one storage number", () => {
      async () => {
     const r = await rig();
     const figure = SEED.bytes + 8000;
-    const small = r.bind(null, { tiers: tiers(figure) });
+    const small = r.bind(null, { control: openRecord(tiers(figure)) });
     // Each rewrite keeps its row and adds a history entry. Nothing is let go to admit one:
     // past the bound the rewrite is refused at the one wall (`storage_full`).
     let refused: Error | null = null;
@@ -121,7 +121,7 @@ describe("the one storage number", () => {
     const r = await rig();
     const unit = INLINE_BYTES + 1000;
     const figure = wholeFiles(unit, 3);
-    const small = r.bind(null, { tiers: tiers(figure) });
+    const small = r.bind(null, { control: openRecord(tiers(figure)) });
     const letGo: { sha256: string; at: number }[] = [];
     for (let i = 0; i <= figure / unit; i++) {
       const path = `/workspace/g${i}.bin`;
@@ -169,7 +169,7 @@ describe("the one storage number", () => {
      async () => {
     const r = await rig();
     const unit = INLINE_BYTES + 1000;
-    const roomy = r.bind(null, { tiers: tiers(SEED.bytes + 4 * unit) });
+    const roomy = r.bind(null, { control: openRecord(tiers(SEED.bytes + 4 * unit)) });
     for (let i = 0; i < 2; i++) {
       const path = `/workspace/g${i}.bin`;
       await r.stub.fileWrite(roomy, { path, expected_etag: null,
@@ -185,7 +185,7 @@ describe("the one storage number", () => {
       .toEqual([{ garbage_bytes: 0 }]);
     // The figure is now the seed's and one file's (a lowered setting, or a downgrade):
     // nothing to take early, so the lane waits for the retry, never sets itself due at once.
-    const small = r.bind(null, { tiers: tiers(SEED.bytes + unit) });
+    const small = r.bind(null, { control: openRecord(tiers(SEED.bytes + unit)) });
     // Read from the lane's job, which the door's own sync set before it answered, and again
     // once whatever is due has run.
     await r.stub.fileMkdir(small, { path: "/workspace/x", expected_etag: null });
@@ -198,7 +198,7 @@ describe("the one storage number", () => {
     const r = await rig();
     const unit = INLINE_BYTES + 1000;
     const figure = wholeFiles(unit, 1);
-    const small = r.bind(null, { tiers: tiers(figure) });
+    const small = r.bind(null, { control: openRecord(tiers(figure)) });
     // Last night's manifest began an hour ago: the files below were live then.
     await generation(r, "0123456789abcdef", Date.now() / 1000 - 3600, Date.now() / 1000 - 3000);
     for (let i = 0; i <= figure / unit; i++) {
@@ -232,7 +232,7 @@ describe("the one storage number", () => {
     const r = await rig();
     const unit = INLINE_BYTES + 1000;
     const figure = wholeFiles(unit, 1);
-    const small = r.bind(null, { tiers: tiers(figure) });
+    const small = r.bind(null, { control: openRecord(tiers(figure)) });
     // The older generation began an hour ago: the files below were live then.
     await generation(r, "0123456789abcdef", Date.now() / 1000 - 3600, Date.now() / 1000 - 3000);
     if (open) {
@@ -270,7 +270,7 @@ describe("the one storage number", () => {
     const r = await rig();
     const unit = INLINE_BYTES + 1000;
     const figure = wholeFiles(unit, 1);
-    const small = r.bind(null, { tiers: tiers(figure) });
+    const small = r.bind(null, { control: openRecord(tiers(figure)) });
     // The owner's first generation began an hour ago and is still being written.
     await generation(r, "0123456789abcdef", Date.now() / 1000 - 3600, null);
     for (let i = 0; i <= figure / unit; i++) {
@@ -296,7 +296,7 @@ describe("the one storage number", () => {
     const r = await rig();
     const unit = INLINE_BYTES + 1000;
     const figure = wholeFiles(unit, 1);
-    const small = r.bind(null, { tiers: tiers(figure) });
+    const small = r.bind(null, { control: openRecord(tiers(figure)) });
     // The newest manifest began and finished more than two nights ago: no recovery point.
     const long = Date.now() / 1000 - MANIFEST_PROTECT_S - 60;
     await generation(r, "0123456789abcdef", long - 60, long);
@@ -317,7 +317,7 @@ describe("the one storage number", () => {
   it("holds mail to the same figure", async () => {
     const r = await rig();
     const figure = SEED.bytes + 3000;
-    const small = r.bind(null, { tiers: tiers(figure) });
+    const small = r.bind(null, { control: openRecord(tiers(figure)) });
     const muse = await r.register(MUSE, "Muse", "pull");
     let refused: Error | null = null;
     for (let i = 0; i < 5 && refused === null; i++) {

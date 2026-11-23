@@ -18,7 +18,7 @@
  *   and nothing that stays imports it but an import an edit names (held over the tree by
  *   `isolation.test.ts`, its cases here); a Python file that stays the same, by its imports;
  * - its dry run (`ci/dry-run.ts`) makes the tree its cases say, and `tests.yml`'s `required-tests`
- *   needs it on every event but the merge group.
+ *   needs it on every event.
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -38,22 +38,21 @@ import { REPO } from "../paths";
 import { actionFiles, type Data, workflow, workflowNames } from "../workflows";
 import { workerFolders } from "../wrangler";
 
-/** The events but the merge group's: the dry run's, whose queue runners are the bottleneck. */
-const NOT_QUEUED = "github.event_name != 'merge_group'";
 const APPLY = "node --experimental-strip-types --no-warnings ci/dry-run.ts apply";
 
 /**
- * Each way `tests.yml`'s dry run could fail to gate a merge: a job that runs on a narrower
- * event set, a leg that runs no applied tree or not its command, or `required-tests` passing
- * without both its jobs' success (run as the gate step's own script).
+ * Each way `tests.yml`'s dry run could fail to gate a merge, the queue's included: a job, a
+ * step of one or the gate step that skips an event, a leg that runs no applied tree or not its command, or
+ * `required-tests` passing without both its jobs' success (run as the gate step's own script).
  */
 function dryRunGateProblems(jobs: Data): string[] {
   const found: string[] = [];
   const [legs, suites, checks, agg] = ["cutover-dry-run-legs", "cutover-dry-run",
     "cutover-dry-run-checks", "required-tests"].map((name) => jobs[name] ?? {});
-  if (legs.if !== NOT_QUEUED || checks.if !== NOT_QUEUED || suites.if !== undefined
+  if ([legs, suites, checks].some((job) => job.if !== undefined
+        || (job.steps ?? []).some((step: Data) => step.if !== undefined))
       || suites.needs !== "cutover-dry-run-legs") {
-    found.push(`the dry run's jobs run on ${NOT_QUEUED}, its legs after their matrix`);
+    found.push("the dry run's jobs run on every event, its legs after their matrix");
   }
   const runs = (job: Data) => (job.steps ?? []).map((step: Data) => step.run).filter(Boolean);
   if (JSON.stringify(runs(suites).slice(-3)) !== JSON.stringify([APPLY, "npm ci",
@@ -68,11 +67,11 @@ function dryRunGateProblems(jobs: Data): string[] {
   const needs = [agg.needs ?? []].flat();
   const gate = (agg.steps ?? []).filter((step: Data) => "DRY_RUN_RESULT" in (step.env ?? {}));
   if (!needs.includes("cutover-dry-run") || !needs.includes("cutover-dry-run-checks")
-      || gate.length !== 1 || gate[0].if !== NOT_QUEUED
+      || gate.length !== 1 || gate[0].if !== undefined
       || JSON.stringify(gate[0].env) !== JSON.stringify({
         DRY_RUN_RESULT: "${{ needs.cutover-dry-run.result }}",
         DRY_RUN_CHECKS_RESULT: "${{ needs.cutover-dry-run-checks.result }}" })) {
-    found.push(`required-tests needs both dry-run jobs and reads their results on ${NOT_QUEUED}`);
+    found.push("required-tests needs both dry-run jobs and reads their results on every event");
     return found;
   }
   const results = ["success", "failure", "skipped", "cancelled", ""];
@@ -637,11 +636,21 @@ describe("the cutover's manifest", () => {
       .toThrow("platform-tests' leg npm test names no workspace");
   });
 
-  it("gates every merge but the queue's through required-tests, on the applied tree", () => {
+  it("gates every merge, in the queue too, through required-tests, on the applied tree", () => {
     expect(dryRunGateProblems(workflow("tests.yml").jobs)).toEqual([]);
     const mutations: Record<string, (jobs: Data) => void> = {
       "the legs run on pull requests only": (jobs) => {
         jobs["cutover-dry-run-legs"].if = "github.event_name == 'pull_request'";
+      },
+      "the checks skip the queue": (jobs) => {
+        jobs["cutover-dry-run-checks"].if = "github.event_name != 'merge_group'";
+      },
+      "a leg's command skips the queue": (jobs) => {
+        jobs["cutover-dry-run"].steps.at(-1).if = "github.event_name != 'merge_group'";
+      },
+      "the gate skips the queue": (jobs) => {
+        jobs["required-tests"].steps.find((each: Data) => "DRY_RUN_RESULT" in (each.env ?? {}))
+          .if = "github.event_name != 'merge_group'";
       },
       "a leg on the unapplied tree": (jobs) => { jobs["cutover-dry-run"].steps.splice(-3, 1); },
       "a leg swallowed": (jobs) => { jobs["cutover-dry-run"].steps.at(-1).run += " || true"; },

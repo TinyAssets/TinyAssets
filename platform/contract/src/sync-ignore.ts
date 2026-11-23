@@ -2,7 +2,7 @@
  * The sandbox sync's ignore list, read by both sides: the runner's sync agent
  * (`sandbox/runner/sync.ts`), which keeps what it names in the sandbox, and the owner's
  * object, which tells the owner what each change to it holds back (`owner-do.ts`): both
- * compile its lines (`ruleLines`, `unappliedLines`), so it is the contract's. Pure, so the
+ * read its lines (`ruleLines`, `LIST_BYTES`), so it is the contract's. Pure, so the
  * runner's bundle takes it whole.
  *
  * The sync-ignore file: what the sync never offers. Regenerable trees (dependencies, build
@@ -55,19 +55,14 @@ export function defaultSyncIgnore(): readonly string[] {
 /**
  * The most states the automaton's lines take together (a line's: its tokens, each a byte, a
  * `?` or a class, plus one), each distinct line once, in file order: a technical ceiling,
- * the matcher's time. A byte of text costs ⌈S/32⌉ word steps, so at the files plane's own
- * ceilings a sync-out's matching stays well inside the sandbox's shortest session
- * (`limits-audit.md`: the arithmetic, with `STEP_NS` measured in the sandbox). Lines an
- * index takes cost none of it.
+ * the matcher's memory in the sync agent's heap. Each folder of the path last asked keeps the
+ * path automaton's state, two 32-bit words for each 32 states, so at the deepest path (2,043
+ * folders in `MAX_PATH_BYTES`) a state takes 511 bytes, in the room `LIST_BYTES` leaves
+ * (`limits-audit.md`; `sandbox/runner/sync.test.ts` holds it there). Lines an index takes cost
+ * none of it. A byte of text costs at most ⌈S/32⌉ word steps, which bounds nothing: a slow
+ * match is said in the run's report, never refused.
  */
-export const AUTOMATON_STATES = 8_192;
-/**
- * The most nanoseconds one automaton step (a byte of text, a 32-state word) may take in the
- * sandbox: the constant `AUTOMATON_STATES` is derived from, measured there (`stepNanos`) by
- * the template's standing check (`sandbox/runner/probes.ts`'s `matcher-probe`), which fails
- * the pair past it.
- */
-export const STEP_NS = 6;
+export const AUTOMATON_STATES = 98_304;
 /**
  * The most bytes of the list applied, in file order: a technical ceiling, the matcher's
  * memory in the sync agent's heap, 7.8 MiB with the worst class's heads diverging, so 6 MiB
@@ -933,11 +928,6 @@ function compile(lines: readonly string[]): Compiled {
            pathAutomaton: new Automaton(automata.path, counted.path), unapplied };
 }
 
-/** The list's lines not applied, in file order, each with the ceiling it is past. */
-export function unappliedLines(lines: readonly string[]): Unapplied[] {
-  return compile(lines).unapplied;
-}
-
 /** What one line takes of `AUTOMATON_STATES`: its states, or 0 when an index takes it. */
 export function automatonStates(line: string): number {
   const parsed = parse(line);
@@ -961,10 +951,10 @@ export function automatonStates(line: string): number {
  *   looked up a segment at a time, `Segments`), never a different answer.
  * - **Names:** at most `REMEMBERED_NAME_BYTES`, each name counted at what it really takes
  *   (`NAME_ENTRY_BYTES` beside its characters at two bytes each, its key a string of its
- *   own, `own`); past it the memory starts again. The time budget (limits-audit.md,
- *   `AUTOMATON_STATES`) counts no names memory, so this buys speed alone: 256 KiB holds 1,200
- *   to 1,500 names, many more than a tree's repeated names (`index.ts`, `package.json`), and
- *   matched a 20,000-folder tree as fast as 1 MiB did (and faster than none).
+ *   own, `own`); past it the memory starts again. No ceiling counts on it, so this buys speed
+ *   alone: 256 KiB holds 1,200 to 1,500 names, many more than a tree's repeated names
+ *   (`index.ts`, `package.json`), and matched a 20,000-folder tree as fast as 1 MiB did (and
+ *   faster than none).
  *
  * Refuses nothing.
  */
@@ -1150,50 +1140,4 @@ export function ignoredBy(lines: readonly string[]): Matcher {
     return decided(step(parent, cut < 0 ? rel : rel.slice(cut + 1)).best, false);
   };
   return Object.assign(match, { unapplied: c.unapplied });
-}
-
-// -- The constant, measured where it runs -------------------------------------------------------
-
-/**
- * Nanoseconds per automaton step (a byte of text, a 32-state word) at `AUTOMATON_STATES`,
- * on the automaton's slowest branch: lines with a `/**\/` each (so every byte
- * reads and writes its passed states too), and text of `/` bytes (the branch that re-arms
- * as well), with `*\/**\/…` and `**\/` lines keeping states alive throughout; the median of
- * five runs of `ms` each after a warm-up, so a neighbour's moment on the sandbox's CPU moves
- * it little; the slower of the two texts (`/` and none). The template's standing check runs
- * it in the sandbox and holds it to `STEP_NS`.
- */
-export function stepNanos(ms = 600): number {
-  const lines: AutomatonLine[] = [];
-  let states = 0;
-  const add = (pattern: string) => {
-    const tokens = tokenize(utf8(pattern), true)!;
-    if (states + statesOf(tokens) > AUTOMATON_STATES) {
-      return false;
-    }
-    lines.push({ tokens, rule: () => 0, dirOnly: false });
-    states += statesOf(tokens);
-    return true;
-  };
-  // A leading `**/` keeps a line alive across `/`; `*` loops keep the rest alive between.
-  add(`**/*${"?".repeat(28)}*`);
-  while (add(`*/**/${"?".repeat(27)}*`)) {
-    // filled to the ceiling
-  }
-  const automaton = new Automaton(lines, AUTOMATON_STATES);
-  const timed = (text: Uint8Array, span: number) => {
-    let runs = 0;
-    const began = Date.now();
-    while (Date.now() - began < span) {
-      const D = Uint32Array.from(automaton.init);
-      automaton.run(D, new Uint32Array(automaton.W), text);
-      runs++;
-    }
-    return ((Date.now() - began) * 1e6) / (runs * text.length * automaton.W);
-  };
-  const median = (text: Uint8Array) => {
-    timed(text, ms);  // warm-up
-    return Array.from({ length: 5 }, () => timed(text, ms)).sort((a, b) => a - b)[2]!;
-  };
-  return Math.max(median(utf8("ab-cd".repeat(51))), median(utf8("a/b/c".repeat(51))));
 }

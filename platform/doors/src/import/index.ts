@@ -59,7 +59,6 @@
  */
 import { object } from "../../../contract/src/checks";
 import { chunkedId, inlineId } from "../../../contract/src/content";
-import { tiersOf } from "../../../contract/src/control";
 import { sha256Hex } from "../../../contract/src/digest";
 import { HEX64 } from "../../../contract/src/ids";
 import {
@@ -437,16 +436,6 @@ async function recorded(env: DoorsEnv, message: ImportMessage): Promise<void> {
   throw new Refusal("refused", "the directory holds a record of this owner: it is never imported into");
 }
 
-/**
- * The control record's tier numbers, read as every account door's binding reads them
- * (`tiersOf`); null for none, so the files plane's quota refuses rather than guesses
- * (`admission.ts`), and none when the record can't be read fresh, so an outage keeps the
- * numbers the owner's object holds. The import passes no gate: it runs dark, before `routes`.
- */
-async function tiers(env: DoorsEnv): Promise<unknown> {
-  return tiersOf(await controlRead(env));
-}
-
 /** The continuation of `message` from `cursor`, sent as JSON (the job's reader takes JSON). */
 async function goOn(env: DoorsEnv, message: ImportMessage, cursor: Cursor): Promise<"more"> {
   const { cursor: _was, ...first } = message;
@@ -498,7 +487,7 @@ export async function importOne(env: DoorsEnv, body: unknown,
   stepsOf(index);
   if (ask === undefined) {
     await verified(env, message, index);
-    const bound = bindImport(env, message.owner, message.bundle, await tiers(env));
+    const bound = bindImport(env, message.owner, message.bundle, await controlRead(env));
     const next = await new Slice(env, message, index, bound, bounds).run(message.cursor
       ?? { step: 0, entry: 0 });
     if (next !== null) {
@@ -511,14 +500,14 @@ export async function importOne(env: DoorsEnv, body: unknown,
   try {
     await recorded(env, message);
     if (message.op === "check") {
-      const bound = bindImport(env, message.owner, message.bundle, await tiers(env));
+      const bound = bindImport(env, message.owner, message.bundle, await controlRead(env));
       const next = await new Slice(env, message, index, bound, bounds).check(message.cursor
         ?? { step: 0, entry: 0 }, ask);
       return next === null ? "done" : await goOn(env, message, next);
     }
     if (message.op === "discard") {
       const { binding, stub } = bindImport(env, message.owner, message.bundle,
-                                           await tiers(env));
+                                           await controlRead(env));
       const { namespace } = await stub.importDiscard(binding);
       await answer(env, answerName(message.prefix, ask), { op: "discard",
                                                            bundle: message.bundle,

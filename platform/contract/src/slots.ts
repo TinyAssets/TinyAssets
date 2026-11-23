@@ -542,10 +542,13 @@ class LeaseOf implements Lease {
   }
 }
 
-/** Run `work` holding `units` of `pool`, released whatever it does. */
-export async function slotted<T>(pool: SlotPool, units: number, work: () => Promise<T>):
-    Promise<T> {
-  const slot = await pool.acquire(units);
+/**
+ * Run `work` holding `units` of `pool`, released whatever it does; `signal`, aborted while
+ * the units are waited for, takes the call out of the queue with its reason.
+ */
+export async function slotted<T>(pool: SlotPool, units: number, work: () => Promise<T>,
+                                 signal?: AbortSignal): Promise<T> {
+  const slot = await pool.acquire(units, "", signal);
   try {
     const done = await work();
     if (pool.observe !== null) {

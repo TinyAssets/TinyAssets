@@ -98,14 +98,14 @@ describe("a log segment's build", () => {
     const o = await owner();
     const made = await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
       const sql = state.storage.sql;
-      // A reservation's numbers as SQLite may write them: `1.0e+20` is 21 digits in JSON.
+      // A sandbox call's numbers as SQLite may write them: `1.0e+20` is 21 digits in JSON.
       const wide = "1.0e+20";
       for (let n = 1; n <= 200; n++) {
         sql.exec("INSERT INTO change_log (line) VALUES (?)",
-                 `{"t":"row","table":"model_reservations","row":{"seq":${n},"id":"r",` +
+                 `{"t":"row","table":"egress_reservations","row":{"id":"r${n}",` +
                  `"max_output_tokens":${wide},"est_tokens":${wide},"est_cost":${wide},` +
-                 `"tokens":${wide},"cost":${wide},"policy_generation":${wide},` +
-                 `"created_at":${wide},"settled_at":${wide}}}`);
+                 `"tokens":${wide},"cost":${wide},"generation":${wide},` +
+                 `"opened_at":${wide},"settled_at":${wide}}}`);
       }
       const rows = sql.exec<{ seq: number; line: string }>(
         "SELECT seq, line FROM change_log ORDER BY seq").toArray();
@@ -134,7 +134,7 @@ describe("a log segment's build", () => {
       const numbers = Array.from({ length: 100 }, (_, n) => `"f${n}":1.0e+20`).join(",");
       for (let n = 1; n <= 4000; n++) {
         sql.exec("INSERT INTO change_log (line) VALUES (?)",
-                 `{"t":"row","table":"model_reservations","row":{"seq":${n},${numbers}}}`);
+                 `{"t":"row","table":"egress_reservations","row":{"id":"r${n}",${numbers}}}`);
       }
       const { last } = log.state();
       const sizes: number[] = [];
@@ -161,7 +161,7 @@ describe("a log segment's build", () => {
       const numbers = Array.from({ length: 100 }, (_, n) => `"f${n}":1.0e+20`).join(",");
       for (let n = 1; n <= 4000; n++) {
         sql.exec("INSERT INTO change_log (line) VALUES (?)",
-                 `{"t":"row","table":"model_reservations","row":{"seq":${n},${numbers}}}`);
+                 `{"t":"row","table":"egress_reservations","row":{"id":"r${n}",${numbers}}}`);
       }
       // Pinned as the old sizing pinned it: the stored bytes and 32 a line to a part.
       const { shipped: from, last } = log.state();

@@ -39,7 +39,7 @@ import { LEDGER_LIMITS } from "../src/ledger";
 import { REFUSALS } from "../../contract/src/refusal";
 import { ARCHIVE_SEGMENTS_MAX, BLOOM_BYTES, SEGMENT_LEAST_BYTES } from "../src/segments";
 import {
-  ACTION_CARD_BYTES, ARGUMENTS_CHARS, AUTHORITY_CHARS, CALLS_OPEN, CHUNK_BYTES, COMMAND_CENTER_MAX,
+  ACTION_CARD_BYTES, ARGUMENTS_CHARS, AUTHORITY_CHARS, CHUNK_BYTES, COMMAND_CENTER_MAX,
   CONNECTION_BLOB_MAX, CONVERSATION_ID_CHARS, CONVERSATIONS_KEPT, CURSOR_CHARS,
   DOORBELL_BLOB_CHARS, EGRESS_JSON_MAX,
   EGRESS_PATH_MAX, ENGINE_SIGNINS, ERROR_BYTES, IMAGE_MAX, INBOUND_ROUTE_MAX, INBOUND_SECRET_MAX,
@@ -59,7 +59,6 @@ import { AUTOINDEXES } from "./autoindexes";
 import { NOTICES_KEPT } from "../src/notices";
 import { MIGRATIONS } from "../src/schema";
 import { SESSION_LIMITS } from "../src/sessions";
-import { USAGE_LIMITS } from "../src/usage";
 import { PLATFORM } from "../../ci/paths";
 import { CONTROL_TEXT_MAX, RUNS_CEILING } from "../../contract/src/control";
 
@@ -167,7 +166,7 @@ function inline(module: string, pattern: RegExp): number {
 
 const CONNECTION_LIMITS = declared("connections", "CONNECTION_LIMITS", "maxConnections",
                                    "maxRevokedKept", "maxModels", "maxFlowRows");
-const EGRESS_LIMITS = declared("egress", "EGRESS_LIMITS", "openPerRun", "receiptsKept",
+const EGRESS_LIMITS = declared("egress", "EGRESS_LIMITS", "open", "receiptsKept",
                                "refusalsKept");
 const GRANT_LIMITS = declared("grants", "GRANT_LIMITS", "maxFreeClients", "maxOwnerClients",
                               "maxScopesBytes");
@@ -330,7 +329,6 @@ export interface Bounds {
   readonly policy?: Partial<typeof POLICY_LIMITS>;
   readonly cards?: Partial<typeof CARD_LIMITS>;
   readonly actions?: Partial<typeof ACTION_LIMITS>;
-  readonly usage?: Partial<typeof USAGE_LIMITS>;
   readonly connections?: Partial<typeof CONNECTION_LIMITS>;
 }
 
@@ -348,7 +346,6 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
   const P = { ...POLICY_LIMITS, ...bounds.policy };
   const K = { ...CARD_LIMITS, ...bounds.cards };
   const A = { ...ACTION_LIMITS, ...bounds.actions };
-  const U = { ...USAGE_LIMITS, ...bounds.usage };
   const CN = { ...CONNECTION_LIMITS, ...bounds.connections };
   /** The file manifest's tables, together: the index's ceiling, at worst fill. */
   const MANIFEST: Term = Object.freeze({
@@ -552,18 +549,12 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     connection_flows: { rows: CN.maxFlowRows, bytes: ROW + 4 * KIB,
                         by: "maxFlowRows",
                         indexes: { connection_flows_by_expiry: key(NUMBER, 64) } },
-    model_reservations: { rows: U.receiptsKept + CALLS_OPEN, bytes: ROW + 1 * KIB,
-                          by: "receiptsKept settled, and CALLS_OPEN open at once",
-                          indexes: { sqlite_autoindex_model_reservations_1: key(33),
-                                     model_reservations_open: key(10) } },
     model_spend: { rows: SPEND_KEPT, bytes: ROW, by: "SPEND_KEPT day and month counters" },
     // The sandbox's egress: its lease is `file_space`'s one row; each request a row.
-    egress_reservations: { rows: E.receiptsKept + E.refusalsKept
-                                  + E.openPerRun * RUNS_CEILING,
+    egress_reservations: { rows: E.receiptsKept + E.refusalsKept + E.open,
                            bytes: ROW + EGRESS_PATH_MAX + 32 + 32 + 64 + 64 + 9 + 64 + 10 + 7
                              + 256 + 25 + 7 + 64 + 30 + 17 * 8 + RUN_ID_CHARS,
-                           by: "receiptsKept admitted, refusalsKept refused and openPerRun at " +
-                             "once for each of the most runs a tier may give, " +
+                           by: "receiptsKept admitted, refusalsKept refused and open at once, " +
                              "each its path (visible ASCII, a byte a character), ids, source, " +
                              "charge, rule, periods, served model and numbers",
                            indexes: { sqlite_autoindex_egress_reservations_1: key(32),
@@ -624,11 +615,8 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                      bytes: ROW + INPUT_BYTES + 4 * STAMP_CHARS + ORIGIN_CHARS + 4 * 256 + 256,
                      by: "SCHEDULES_KEPT, each its input, stamp, origin and last error",
                      indexes: { run_schedules_due: key(NUMBER, SCHEDULE_ID_CHARS) } },
-    platform_tiers: { rows: 1, bytes: ROW + 4 * KIB, by: "one row" },
     control_kept: { rows: 1, bytes: ROW + CONTROL_TEXT_MAX + NUMBER,
                     by: "one row: the record's text, at most CONTROL_TEXT_MAX bytes" },
-    platform_signins: { rows: 1, bytes: ROW + SIGNIN_LIST_CHARS + NUMBER,
-                        by: "one row: the switched-on records' ids, joined" },
     socket_tickets: { rows: SOCKET_TICKETS, bytes: ROW + 64 + 35 + 4 * 128 + 16,
                       by: "SOCKET_TICKETS, each a hash, a conversation and a grant id" },
     owner_erasure: { rows: 1, bytes: ROW, by: "one row" },
@@ -1032,7 +1020,7 @@ describe("the owner's database bound", () => {
     expect(termBytes("x", { rows: 1, bytes: 1200, by: "" })).toBe(4096);
     expect(["model_spend", "run_grants", "connections"]
       .filter((table) => !withoutRowid().has(table))).toEqual([]);
-    expect(withoutRowid().has("model_reservations")).toBe(false);
+    expect(withoutRowid().has("egress_reservations")).toBe(false);
     expect(withoutRowid('"CREATE TABLE a (x) WITHOUT ROWID", "CREATE TABLE b (x)", ' +
                         '"ALTER TABLE a RENAME TO c"')).toEqual(new Set(["c"]));
   });
@@ -1047,8 +1035,7 @@ describe("the owner's database bound", () => {
   it("counts the bounds the sources hold", () => {
     expect([MAX_INTENT_CHUNKS, CHUNK_BYTES, constant("files", "KEEP_CEILING")])
       .toEqual([10_000, 4 * 1024 ** 2, 1000]);
-    expect([CALLS_OPEN, SPEND_KEPT, MODELS_BYTES, BLOB_CHARS])
-      .toEqual([1000, 4300, 655_360, 65_536]);
+    expect([SPEND_KEPT, MODELS_BYTES, BLOB_CHARS]).toEqual([500, 655_360, 65_536]);
     expect([SCOPE_FIELD, CLIENT_NAME]).toEqual([512, 80]);
     // A grant's scopes are counted in bytes: the module's bound is the frozen bound the
     // schema's check spells.
@@ -1057,8 +1044,7 @@ describe("the owner's database bound", () => {
       .toEqual([2048, 128, 512, 128, 128]);
     expect(TERMS["file_intents"]).toMatchObject({
       rows: MAX_OPEN_INTENTS, bytes: 256 + 64 + 2 * 640_000 });
-    expect(TERMS["model_reservations"]!.rows).toBe(USAGE_LIMITS.receiptsKept + 1000);
-    expect(TERMS["model_spend"]!.rows).toBe(4300);
+    expect(TERMS["model_spend"]!.rows).toBe(500);
     expect(TERMS["wake_callbacks"]!.rows).toBe(LEDGER_LIMITS.maxAgents * 16);
     expect(TERMS["connection_secrets"]!.bytes).toBe(256 + 4 * 65_536);
     expect(TERMS["connections"]!.bytes).toBe(256 + 655_360 + 16_384);  // in bytes

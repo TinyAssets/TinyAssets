@@ -13,7 +13,7 @@ import { AGENTS_DIR, GOALS_DIR, within } from "../../contract/src/paths";
 import { AGENTS_OWNER_ONLY } from "../src/paths";
 import { MCP, MUSE, rig as ledgerRig, signedIn } from "./ledger-support";
 import { ALL_SCOPES } from "./runs-support";
-import { admittedOwner, failure, TIERS } from "./support";
+import { admittedOwner, failure, OPEN_RECORD } from "./support";
 
 const bytes = (text: string) => new TextEncoder().encode(text);
 
@@ -23,7 +23,7 @@ async function rig() {
   const stub = await admittedOwner(owner);
   const at = signedIn();
   const unbound = (origin: Origin | null): Binding =>
-    ({ owner, caller: owner, origin, tiers: TIERS,
+    ({ owner, caller: owner, origin, control: OPEN_RECORD,
        ...(origin === null ? {} : { source: MCP, authenticated_at: at }) });
   const { session } = await stub.sessionOpen({ ...unbound(null), authenticated_at: at });
   // The owner's own changes to its agents' files are made in its session, as its app makes

@@ -34,14 +34,15 @@ name: Platform deploy (manual, founder-approved)
 # routes, h2, handback, rollback, control, owner, restore, copyback, recover,
 # erase, rotation and retire here; pair is its own job.
 # `routes` keeps a record of what it changes (the zone's routes, the egress
-# custom domain, E2B's lifecycle webhook) before any change, and its job
-# summary names the record's id (the run's); `handback` takes that id as
-# `record` and puts each back as the record has it (the cutover's rollback).
+# custom domain, E2B's lifecycle webhook) before any change, or keeps the
+# host's record while one stands, and its plan names the record's id (the
+# host's first routes run's); `handback` takes that id as `record` and puts
+# each back as the record has it (the cutover's rollback).
 # `dark` and `routes` keep a rollout record too, each Worker's version before
 # their first deploy, under the run's id; `rollback` takes that id as
 # `record` and takes the run's Workers back to those versions, callers first,
 # stopping at a Worker the run made forward-only (its migrations, its secrets,
-# a whole deploy).
+# a whole deploy, its forward mark).
 # The operator path (deploy/operator.ts): `control` edits the control record
 # in KV itself (`set`, from `replace` in place of the live one), never through
 # the doors; `owner` asks the doors `act` for `owner` through the operator
@@ -161,7 +162,13 @@ jobs:
       KEYRING: ${{ inputs.keyring }}
       AT: ${{ inputs.at }}
     steps:
+      # Every commit, without file contents: the plan reads what each serving Worker hands and
+      # takes at the commit its version's tag names (platform/deploy/handed.ts), each file's
+      # blob fetched as it is read.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
 
       - uses: actions/setup-node@v4
         with:
@@ -270,7 +277,11 @@ jobs:
       KEYRING: ${{ inputs.keyring }}
       AT: ${{ inputs.at }}
     steps:
+      # As the plan job's: its plan made again reads the serving commits' files too.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
 
       - uses: actions/setup-node@v4
         with:

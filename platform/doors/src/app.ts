@@ -45,7 +45,7 @@ import { authorizationServer } from "./oauth";
 import { answer, bearer, failure, jsonObject, mediaType, NO_STORE } from "./kit";
 import { clearedCookie, OWNER_SURFACE, sessionCookie, sessionOf } from "./session";
 import type { Sources } from "../../sources/src/schema";
-import { signinsRead } from "../../sources/src/signin";
+import { signinsOn } from "../../sources/src/signin";
 import { answered, asJson } from "./refused";
 import { toolTable } from "../../contract/src/doors";
 import { callDoor, type DoorName } from "./tools";
@@ -190,9 +190,11 @@ const fileWrite: Route = async ({ owner: { binding, stub }, body: request }) => 
 
 /**
  * `sources`: what the app shows of each record, so its connect screen is the records' data;
- * nothing sealed, no endpoint, no argv.
+ * nothing sealed, no endpoint, no argv. A sign-in shows as offered only on a record read fresh,
+ * as the owner's object starts one (`FRESH_ONLY`; none on a missing record, `signinsOn`).
  */
-function sourceList(sources: Sources, switchedOn: readonly string[]): unknown {
+function sourceList(sources: Sources, gate: ControlRead): unknown {
+  const switchedOn = signinsOn(sources, gate.kind === "read" ? gate.control : null);
   return {
     sources: sources.ids().map((id) => {
       const record = sources.get(id)!;
@@ -211,12 +213,12 @@ function sourceList(sources: Sources, switchedOn: readonly string[]): unknown {
 }
 
 /** `tools/<name>`: one tool of the table, called by the owner as itself. */
-const ownerTool: Route = async ({ owner: { binding, stub }, body: request, rest: name }) => {
+const ownerTool: Route = async ({ owner: { binding, stub }, body, rest: name, request }) => {
   const tool = toolTable().find((row) => row.name === name);
   if (tool === undefined) {
     return failure(404, "no such tool");
   }
-  return answerJson(tool.name, await callDoor(stub, binding, tool.door, request));
+  return answerJson(tool.name, await callDoor(stub, binding, tool.door, body, request.signal));
 };
 
 /**
@@ -372,8 +374,7 @@ function routes(): Readonly<Record<string, OwnerRoute>> {
     "outside-agents": { serve: registering },
     "agent/socket-ticket": { serve: socketTicket },
     "sources": { body: "empty",
-                 serve: async ({ sources, gate }) =>
-                   answer(200, sourceList(sources, signinsRead(sources, gate) ?? [])) },
+                 serve: async ({ sources, gate }) => answer(200, sourceList(sources, gate)) },
     "export": { serve: exportStream },
     "export/chunks": { door: "exportChunks" },
     "export/end": { door: "exportEnd" },
@@ -503,12 +504,13 @@ async function surface(request: Request, env: DoorsEnv, sources: Sources):
   }
   const unread = bindOwner(env, token, session);
   const gate = await ownerRead(env, unread.binding.owner);
-  const owner = withAccount(unread, gate, sources);
+  const owner = withAccount(unread, gate);
   if (route.body === "empty" && !keyed(parsed, [])) {
     return failure(400, NO_FIELDS);
   }
   if ("door" in route) {
-    return answer(200, await callDoor(owner.stub, owner.binding, route.door, parsed));
+    return answer(200, await callDoor(owner.stub, owner.binding, route.door, parsed,
+                                      request.signal));
   }
   return route.serve({ env, owner, body: parsed, presented: presented!, token, request,
                        sources, gate, rest: found!.rest });

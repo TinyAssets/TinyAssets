@@ -213,9 +213,10 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
    * Run one JavaScript script that calls your other tools here as `await tools.<name>(args)`, each
    * held to your grant, and answer its return value and output: many tool calls in one. Its effects
    * are the effects of the tools it calls. Only while the owner's policy turns code mode on; a
-   * script past its time or compute bound is stopped.
+   * script is stopped once you stop waiting for it, or past its compute or memory bound.
    */
-  codeRun(binding: Binding, request: DoorRequest<"codeRun">): Promise<DoorAnswer<"codeRun">>;
+  codeRun(binding: Binding, request: DoorRequest<"codeRun">, stop: ReadableStream<Uint8Array>):
+    Promise<DoorAnswer<"codeRun">>;
   sessionOpen(binding: Binding): Promise<DoorAnswer<"sessionOpen">>;
   sessionExtend(binding: Binding): Promise<DoorAnswer<"sessionExtend">>;
   sessionClose(binding: Binding): Promise<DoorAnswer<"sessionClose">>;
@@ -295,7 +296,6 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
   connectionList(binding: Binding): Promise<DoorAnswer<"connectionList">>;
   flowFinish(binding: Binding, ...request: DoorLoose<"flowFinish">):
     Promise<DoorAnswer<"flowFinish">>;
-  usageReceipts(binding: Binding): Promise<DoorAnswer<"usageReceipts">>;
   noticeList(binding: Binding): Promise<DoorAnswer<"noticeList">>;
   starterReceipts(binding: Binding): Promise<DoorAnswer<"starterReceipts">>;
   admissionSet(binding: Binding, ...request: DoorLoose<"admissionSet">):
@@ -400,6 +400,8 @@ type Loose =
       | "connectionPrepare" | "connectionCommit" | "connectionRevoke" | "flowFinish"
       | "admissionSet" | "wakeEvents" | "signinEvents" | "tierSet" | "egressOpen" | "egressReserve"
       | "egressBeat" | "egressSettle";
+/** The doors the doors call no more, which the object still takes, its types with it. */
+type Dropped = never;
 /** What `DoorTypes` may say of a door, by its row. */
 type Parts<D> = "answer" | (D extends keyof DoorRequests ? "values" | "handed"
   : D extends Loose ? "loose" : never);
@@ -415,7 +417,7 @@ type Stray<D extends keyof DoorTypes> = Exclude<keyof DoorTypes[D], Parts<D>>
  * The doors `DoorTypes` names: `tsc` refuses one that is no door of the table, or one whose
  * entry says what its row leaves no room for (a part, or a field its row does not list).
  */
-type Doors<D extends keyof OwnerDoors> = D;
+type Doors<D extends keyof OwnerDoors | Dropped> = D;
 type None<D extends never> = D;
 type Strays = { [D in keyof DoorTypes]: [Stray<D>] extends [never] ? never : D };
 export type TypedDoors = Doors<keyof DoorTypes> | None<Strays[keyof DoorTypes]>;

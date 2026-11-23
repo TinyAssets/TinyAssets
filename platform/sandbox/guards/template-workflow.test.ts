@@ -72,9 +72,6 @@ const answered = (argv) => {
       turns: [{ exit: 0, answered: true, resumed: false },
               { exit: 0, answered: true, resumed: true }], compacted: null }) + "\\n"];
   }
-  if (command === "matcher-probe") {
-    return [failed ? 3 : 0, JSON.stringify({ step_ns: 1.25, ceiling_ns: 6, ok: !failed }) + "\\n"];
-  }
   return [2, ""];
 };
 globalThis.fetch = async (input, init = {}) => {
@@ -197,7 +194,7 @@ describe("the template's checks", () => {
     const ran = checks("pair");
     expect(ran.status, ran.err).toBe(0);
     const boxes = sandboxes(ran.calls);
-    expect(boxes).toHaveLength(3);
+    expect(boxes).toHaveLength(2);
     for (const box of boxes) {
       const at = (prefix: string) => box.findIndex((call) => call.startsWith(prefix));
       expect(box[0]).toMatch(new RegExp(`^create ${PINNED} timeout=\\d+ autoPause=false`));
@@ -214,25 +211,24 @@ describe("the template's checks", () => {
       expect(steps.every((call) => call.endsWith("(keepalive)"))).toBe(true);
       expect(box.at(-1)).toBe("kill");
     }
-    // The sign-ins under their own networks, the routes after the network closed, the matcher.
+    // The sign-ins under their own networks, the routes after the network closed.
     expect(boxes[0]![0]).toContain("network=egress.tinyassets.io");
     expect(boxes[0]!.filter((call) => / login-probe /.test(call)).length).toBeGreaterThan(0);
     expect(boxes[1]!.indexOf("network none")).toBeGreaterThan(
       boxes[1]!.findIndex((call) => / prepare /.test(call)));
     expect(boxes[1]!.filter((call) => / route-probe /.test(call)).length).toBeGreaterThan(0);
-    expect(boxes[2]!.filter((call) => / matcher-probe/.test(call))).toHaveLength(1);
     // Only now: the record, then the pair's tag at E2B.
     const pair = `${PINNED.slice(PINNED.indexOf(":") + 1)}-r${runner.sha.slice(0, 16)}-p${
       probes.sha.slice(0, 16)}`;
     expect(ran.calls.at(-1)).toBe(`tag ${PINNED} ${pair}`);
     const [entry] = JSON.parse(ran.record) as Record<string, unknown>[];
     expect(entry).toMatchObject({ tag: PINNED.slice(PINNED.indexOf(":") + 1), runner: runner.sha,
-                                  probes: probes.sha, matcher: { step_ns: 1.25, ok: true } });
+                                  probes: probes.sha });
     expect(entry!["install"]).toMatchObject({ bytes: runner.bytes.length });
   });
 
   it.each([["a sign-in", "login-probe"], ["a route", "route-probe"],
-           ["the matcher", "matcher-probe"], ["the runner's prepare", "prepare"]])(
+           ["the runner's prepare", "prepare"]])(
     "record and tag nothing when %s fails, and kill every sandbox they made", (_what, fail) => {
       const ran = checks("pair", { E2B_FAIL: fail });
       expect(ran.status).toBe(1);

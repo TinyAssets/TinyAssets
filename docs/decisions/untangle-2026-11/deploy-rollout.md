@@ -183,13 +183,15 @@ fetched 2026-11-22), wrangler's source at its pinned tag (`cloudflare/workers-sd
   app in open browsers, messages it queued) speak a protocol the version before cannot, is
   forward-only and nothing marks it: a rollback across it is the one direction no deploy
   makes, new callers and data on old code. Until A2b's mark, the founder reads the run's diff
-  for these before approving a `rollback`'s apply job (`checklist.md`).
+  for these before approving a `rollback`'s apply job (`checklist.md`). Closed by
+  `deploy-stages.md`: the forward mark (`platform.json` `forward`, `-f` in the tag).
 - **The record's trust (review).** The control namespace is bound, writable, by the doors,
   owner and sandbox, so a rollback holds the record's tag before and counts to Cloudflare's
   tags, which only the deploy's token writes, and stops on a difference. A record naming
   another real, older version as the one before, with its real tag, still passes: the plan
   job names each target version and tag, which the founder holds to the run's job summary
-  copy before approving the apply job.
+  copy before approving the apply job. Closed by `deploy-stages.md`: the version before is
+  held to the Worker's deployments listing, and the record's Workers to the tree's order.
 - The stages, the health check and the 0% smoke: the series, below.
 
 ## Owed
@@ -200,10 +202,14 @@ fetched 2026-11-22), wrangler's source at its pinned tag (`cloudflare/workers-sd
   once no lease or sandbox minted under it lives; before any split. Built as `ROUTING_KEYRING`
   (`routing-keyring.md`): rotated by `keyring-stage`, then `keyring-activate`, since the owner
   deploys before the doors; retired once every route E2B holds opens under the ring left.
-- [ ] `untangle/deploy-stages`: A2b, the stages, soak, health check and the doors' 0% smoke, as
+- [x] `untangle/deploy-stages`: A2b, the stages, soak, health check and the doors' 0% smoke, as
   "The series" item 3 lists them; and, researched first and before any split (which mixes
   the two versions' data and callers both ways), the rule and the mark that make a version
   forward-only for a shape or protocol its version before cannot read ("Left", review).
+  Done in part in `untangle/deploy-stages` (`deploy-stages.md`: the forward mark, and the
+  record held whole to Cloudflare, a planted version before included); the stages, soak,
+  health check and 0% smoke are owed there as `untangle/deploy-zero` and
+  `untangle/deploy-splits`.
 - [ ] live: the next `dark` run's summary shows its rollout record, each Worker's version before
   equal to its Deployments in the dashboard and that version's tag; a `rollback` dispatch of
   that run's id, its plan job alone (it changes nothing), names each Worker's way back as the

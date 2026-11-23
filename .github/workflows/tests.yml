@@ -28,38 +28,29 @@ on:
     types: [checks_requested]
   push:
     branches: [main]
-  # The post-merge tripwire's only reliable AUTOMATIC trigger on this repo.
-  # This run IS the compensator for `strict` branch protection being off, so a
-  # red `main` here is re-run once and then raises the `main-red` alarm
-  # (main-red.yml). Nothing is reverted automatically.
-  # (`workflow_dispatch` below is also non-PR, but it needs a human to press it,
-  # so it cannot carry a tripwire. Stated precisely because the first draft of
-  # this comment claimed push was the only non-PR trigger, which is false.)
+  # The post-merge check of every merge: the merge queue merges as
+  # `github-merge-queue[bot]`, and its push starts runs, as the repo's
+  # GITHUB_TOKEN's does not (merges by the app raised none, measured 2026-08-03,
+  # before the queue). Entries the queue merges together move `main` once, so the
+  # last of them gets the run: 96 push runs, every one the queue's, for the 110
+  # commits `main` took on 2026-11-21 and 2026-11-22 (four groups finished at
+  # 04:23-04:26 on 2026-11-21 and one run started, for the last). Red on `main` is
+  # re-run once, then raises the `main-red` alarm (main-red.yml): the check that
+  # `strict` status checks being off needs. Nothing is reverted automatically.
   #
-  # `push: branches: [main]` looks like it covers every merge. It does not:
-  # auto-enroll-merge.yml enrols each PR with the repo's GITHUB_TOKEN, so
-  # GitHub performs the merge as `app/github-actions`, and events raised by
-  # GITHUB_TOKEN never start a workflow run (AGENTS.md hard rule 14, "Merged is
-  # not deployed"). Measured 2026-08-03: of the last 6 merges, the 5 done by the
-  # app produced ZERO push runs; only #2191, merged by a human PAT, produced one.
-  # So `push` fires on the rare human merge and never on the normal path — the
-  # tripwire read as coverage while providing none, the same failure shape as the
-  # concurrency bug fixed above.
-  #
-  # `schedule` is used because it is the one trigger empirically proven to fire
-  # here (26 of the last 200 runs). Runners are free on a public repo, so the
-  # cadence is chosen for detection latency, not cost.
+  # `schedule` checks `main` hourly whether or not anything merged, and is the
+  # only automatic run of `heavy-tests`. Runners are free on a public repo, so
+  # the cadence is chosen for detection latency, not cost.
   #
   # It is BEST-EFFORT. The cron declares NOMINAL SLOTS, not a delivered rate:
   # GitHub drops scheduled runs under load. Measured on this repo 2026-08-03,
   # release-reconcile declares `*/15 * * * *` (96 runs/day) and actually fired
   # 16 in 24h — a 6x shortfall, with one 3h47m gap. So read the cron below as a
   # declaration of one nominal slot per hour, not a promise about how many
-  # runs arrive or how far apart they land. That is acceptable
-  # for a
-  # tripwire whose alternative is never running at all; it would NOT be
-  # acceptable for a merge gate, which is why `required-tests` is REQUIRED only
-  # via `pull_request`, where the trigger is deterministic.
+  # runs arrive or how far apart they land. That is acceptable for a check
+  # beside the push run; it would NOT be acceptable for a merge gate, which is
+  # why `required-tests` gates through `pull_request` and `merge_group`, whose
+  # triggers are deterministic.
   #
   # Accepted side effect: `required-tests` and its shards have no job-level
   # `if:` that can skip them — the aggregate's `always()` cannot evaluate
@@ -498,18 +489,15 @@ jobs:
   # workspaces it deletes), the typecheck and the process leg run on that tree. Green when
   # nothing that stays, and is no edit, needs what goes. The tree is never pushed, no job holds
   # a secret, and nothing live is reached. Required through `required-tests`' needs, as the
-  # platform legs are, on every event but the merge group: the queue's runners are its
-  # bottleneck (jobs waited up to 410 s for one in merge-group runs 44901731945 and
-  # 44901733800), and a PR can only break the tree on its own diff, which its PR run reads;
-  # the hourly run holds main (docs/decisions/untangle-2026-11/dry-run-required.md). Deleted
-  # at the cutover with dry-run.ts.
+  # platform legs are, on every event: strict status checks are off, so the merge group is
+  # the one run of a PR merged onto the main it lands on
+  # (docs/decisions/untangle-2026-11/dry-run-queue.md). Deleted at the cutover with dry-run.ts.
   #
   # timeout-minutes is a watchdog, as the platform legs' are: the slowest legs took 23 s, the
   # slowest leg 344 s (owner 2/2, run 44888783406) and the checks 107 s, in ten runs of
   # the old `Cutover dry run` workflow on 2026-11-21 (44888783406 to 44904009707).
   cutover-dry-run-legs:
     name: cutover-dry-run-legs
-    if: github.event_name != 'merge_group'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -556,7 +544,6 @@ jobs:
 
   cutover-dry-run-checks:
     name: cutover-dry-run-checks
-    if: github.event_name != 'merge_group'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -1027,11 +1014,9 @@ jobs:
             exit 1
           fi
 
-      # The cutover's dry run, on every event but the merge group, which runs none of it: its
-      # legs and its checks must have run and succeeded. A failed `cutover-dry-run-legs`
-      # skips `cutover-dry-run`, which fails here.
+      # The cutover's dry run on every event: its legs and its checks must have run and
+      # succeeded. A failed `cutover-dry-run-legs` skips `cutover-dry-run`, which fails here.
       - name: Require the cutover dry run
-        if: github.event_name != 'merge_group'
         env:
           DRY_RUN_RESULT: ${{ needs.cutover-dry-run.result }}
           DRY_RUN_CHECKS_RESULT: ${{ needs.cutover-dry-run-checks.result }}

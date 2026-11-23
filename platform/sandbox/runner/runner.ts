@@ -86,7 +86,7 @@ import { AGENTS_DIR, WORKSPACE } from "../../contract/src/paths";
 import { FRAME_UNITS_MAX, readEvent } from "../../contract/src/run-events";
 
 import { binPath, dispatcherArgv, HOMES, type Invocation, invocation, isKept,
-         keptPaths } from "./engine";
+         keptPaths, resumePaths } from "./engine";
 import { DECIDE_ENV, DECIDE_MS, helperArgv, helperCommand, hookTools } from "./decide";
 import { FLUSH_MS, HEARTBEAT_MS, lineEvent, Outbox, Poster } from "./frames";
 import { remove, safeDirs, safeRead, safeWrite } from "./fsafe";
@@ -94,17 +94,18 @@ import { alive, withLock } from "./pid-lock";
 import { ancestorEnvFile, definitionRefusal, envScanReach, homeEnvFile, projectEnvFile,
          projectEnvRefusal, secretAtoms } from "./guards";
 import { project, skillsOf } from "./project";
-import { diskOf, keepReserve, pruneScratch, readIndex, RESERVE_BYTES, SCRATCH, scratchEnv,
-         scratchCleared, type ScratchCleared,
-         markUsed,
-         writeOrRelease } from "./scratch";
+import { diskLow, type DiskLow, diskOf, keepReserve, letGoSessions, low, markUsed,
+         pruneScratch, readIndex, RESERVE_BYTES, SCRATCH, scratchCleared, type ScratchCleared,
+         scratchEnv, writeOrRelease } from "./scratch";
 import { credentialShaped, loginArgv, onTerminal, plain, type Prompt, prompted,
          statesHold } from "./login";
 import { AUTOMATON_STATES, LIST_BYTES } from "../../contract/src/sync-ignore";
 import {
-  openMirror, SESSIONS_SEEN, stageSessions, SyncClient, SyncFenced, syncIn, syncOut,
-  type SyncReport,
+  type Fetch, fetchSessions, type Held, keepSeen, openMirror, SESSIONS, SESSIONS_SEEN,
+  stageSessions, stillHashed, storeSessions, type StoreSession, SyncClient, SyncFenced, syncIn,
+  syncOut, type SyncReport, tookSessions,
 } from "./sync";
+import { sha256Hex } from "../../contract/src/digest";
 import { CODE_SUFFIX, type Command, COMMAND, COMMAND_MS, EXIT, type HookCommand, hookProgram,
          inboxCode, inboxDoc, JOB_FILES, type JobKind, JOBS, INBOX, LEASE_FILE,
          type LeaseFile, PROTOCOL, type QuietAnswer, RUNNERS, type SigninDoc, type StartDoc,
@@ -387,26 +388,82 @@ class Job {
   }
 }
 
-/** The engines' sessions the sync agent took from the feed, into each store it lacks. */
-function importSessions(): void {
-  const staged = `${SYNC_HOME}/in`;
-  const records = served();
-  for (const rel of sortedWalk(staged)) {
-    const [engine, ...rest] = rel.split("/");
-    const rec = records.get(engine ?? "");
-    const inHome = rest.join("/");
-    if (rec === undefined || !isKept(keptPaths(rec).sessions, inHome)) {
-      continue;
+/**
+ * The files a resume of `session` reads, in its engine's store before its home is made: the
+ * sync agent fetches those the store lacks or holds stale (`fetchSessions`), each moved from
+ * the sync agent's directory of this run's (`in/<run>`) into the store, which keeps no second
+ * copy; one the owner's files no longer hold leaves the store. A store copy holding changes of its own is never replaced: the
+ * resume reads it, and the run's staging sends it. The sync agent then moves the mirror's
+ * rows of what the store took, and only those (`tookSessions`): a copy a run kept meanwhile
+ * is sent against the base it was made on.
+ */
+async function storeResume(rec: Served, run: string, authority: string, session: string | null,
+                           sync: (job: Pick<SyncJob, "direction" | "have" | "took">) =>
+                             Promise<SyncAnswer>): Promise<void> {
+  if (session === null) {
+    return;
+  }
+  const store = join(STORE, rec.id);
+  const prefix = `${SESSIONS}/${authority}/${rec.id}/`;
+  const resumed = resumePaths(rec, session);
+  // Hashed under the store's lock, as a let-go deletes (`sessionsRoom`): a copy it lets go
+  // after this is one it sees this run resume. The sync agent fetches over no copy holding
+  // changes of its own (`fetchSessions`), and what it fetched goes in only where the store
+  // still holds the copy hashed: a newer one a run kept meanwhile stays, to be sent.
+  const hashed = await withStore(rec, () => {
+    const found = new Map<string, { sha256: string; size: number; mtime_ms: number }>();
+    for (const rel of existsSync(store) ? sortedWalk(store) : []) {
+      const bytes = isKept(resumed, rel) ? safeRead(store, join(store, rel)) : null;
+      if (bytes !== null) {
+        const stat = lstatSync(join(store, rel));
+        found.set(rel, { sha256: sha256Hex(bytes), size: stat.size, mtime_ms: stat.mtimeMs });
+      }
     }
-    const store = join(STORE, rec.id);
-    const target = join(store, inHome);
-    if (!existsSync(target)) {
+    return found;
+  });
+  const still = (rel: string) => {
+    const was = hashed.get(rel);
+    return was === undefined ? lstatSync(join(store, rel), { throwIfNoEntry: false }) === undefined
+      : stillHashed(join(store, rel), was);
+  };
+  const answered = async (job: Pick<SyncJob, "direction" | "have" | "took">) => {
+    const done = await sync(job);
+    if (done.code === FENCED) {
+      throw new SyncFenced("the sync door fenced the lease");
+    }
+    if (done.code !== OK || done.report === null) {
+      throw new Error(`the sync agent's ${job.direction} for the resume of ${session} failed ` +
+                      `(exit ${done.code}): the run does not start on a store it cannot trust`);
+    }
+    return done.report;
+  };
+  const { fetched, cursor } = await answered({ direction: "fetch", have: Object.fromEntries(
+    [...hashed].map(([rel, each]) => [`${prefix}${rel}`, each.sha256])) }) as
+    { fetched: Fetch[]; cursor: number };
+  const staged = `${SYNC_HOME}/in/${run}/${rec.id}`;
+  const took: Fetch[] = [];
+  await withStore(rec, () => {
+    for (const each of fetched) {
+      const rel = each.path.slice(prefix.length);
+      if (!each.path.startsWith(prefix) || !isKept(resumed, rel) || !still(rel)) {
+        continue;
+      }
+      if (each.got === null) {
+        remove(join(store, rel));
+        took.push(each);
+        continue;
+      }
       const bytes = safeRead(staged, join(staged, rel));
       if (bytes !== null) {
         safeDirs("/", store, 0o700);
-        safeWrite(store, target, bytes, 0o600);
+        safeWrite(store, join(store, rel), bytes, 0o600);
+        took.push(each);
       }
     }
+    remove(`${SYNC_HOME}/in/${run}`);
+  });
+  if (took.length > 0) {
+    await answered({ direction: "took", took: { fetched: took, cursor } });
   }
 }
 
@@ -446,8 +503,8 @@ async function signedIn(rec: Served): Promise<boolean> {
   }
   const argvOf = login.status_argv;
   const equals = login.status_equals;
-  return withRunUser(rec, `check-${rec.id}-${process.pid}`, { signedIn: true, keeps: false },
-                     async ({ as, home }) => {
+  return withRunUser(rec, `check-${rec.id}-${process.pid}`,
+                     { signedIn: true, resumes: null, keeps: false }, async ({ as, home }) => {
     const check = spawnBounded(asUser(as, [shared()], argvOf.map((arg) =>
       arg.replaceAll("{bin}", binPath(rec)).replaceAll("{home}", home))), {
       env: engineEnv(rec, home), cwd: home, stdio: ["ignore", "pipe", "ignore"] }, COMMAND_MS);
@@ -704,8 +761,13 @@ async function recover(): Promise<number> {
 // -- the sync agent, as its own user ---------------------------------------------------
 
 interface SyncJob {
-  /** In, out, or `known`: the mirror's hash of each of `paths`, read under the lock. */
-  readonly direction: "in" | "out" | "known";
+  /**
+   * In, out, `known` (the mirror's hash and mark of each of `paths`), `fetch` (the files a
+   * resume of `session` reads, those the store holds (`have`) only where the owner's changed
+   * and the store's holds no change of its own), or `took` (the rows of those the store took,
+   * `took`), each under the lock.
+   */
+  readonly direction: "in" | "out" | "known" | "fetch" | "took";
   readonly origin: string;
   readonly token: string;
   readonly lease: { readonly lease_id: string; readonly epoch: number };
@@ -715,6 +777,17 @@ interface SyncJob {
   readonly run: string;
   readonly atoms: readonly string[];
   readonly paths?: readonly string[];
+  readonly session?: string;
+  /** A fetch's store copies of the resume's files, each by its hash. */
+  readonly have?: Readonly<Record<string, string>>;
+  /** What the store took of a fetch, and the feed's cursor at it (`tookSessions`). */
+  readonly took?: { readonly fetched: readonly Fetch[]; readonly cursor: number };
+}
+
+/** The sync agent's report (null when it printed none) and its exit. */
+interface SyncAnswer {
+  readonly report: Record<string, unknown> | null;
+  readonly code: number;
 }
 
 /**
@@ -724,8 +797,7 @@ interface SyncJob {
  * job's (`work`) heartbeat has lapsed: its lease is over, so no sync of it lands, and one
  * that cannot reach the object would wait on it for ever.
  */
-async function syncAgent(job: SyncJob, work: Job):
-    Promise<{ report: Record<string, unknown> | null; code: number }> {
+async function syncAgent(job: SyncJob, work: Job): Promise<SyncAnswer> {
   const as = user(SYNC_USER);
   const argv = asUser(as, [shared()], [process.execPath, ...process.execArgv,
                                        process.argv[1]!, COMMAND.sync]);
@@ -777,10 +849,10 @@ async function syncCommand(): Promise<number> {
 async function syncLocked(job: SyncJob): Promise<number> {
   try {
     const client = new SyncClient(job.origin, job.token, FLUSH_MS, HEARTBEAT_MS);
-    const place = { local: WORKSPACE, sessionsIn: `${SYNC_HOME}/in`,
+    // Each run's own `in` and `out`: a run's import lets go only what its own fetch put there.
+    const place = { local: WORKSPACE, sessionsIn: `${SYNC_HOME}/in/${job.run}`,
                     sessionsOut: `${SYNC_HOME}/out/${job.run}`, authority: job.authority,
                     records: served() };
-    safeDirs(SYNC_HOME, place.sessionsIn, 0o700);
     // The mirror is a database on disk, written as each change lands (`openMirror`): a sync
     // cut short keeps what it sent.
     const mirror = openMirror(`${SYNC_HOME}/mirror.db`);
@@ -788,7 +860,10 @@ async function syncLocked(job: SyncJob): Promise<number> {
       if (job.direction === "known") {
         // What the owner's files hold of each path, as this sandbox last synced it.
         process.stdout.write(JSON.stringify({ known: Object.fromEntries((job.paths ?? [])
-          .map((path) => [path, mirror.get(path)?.sha256 ?? null])) }));
+          .map((path): [string, Held] => {
+            const row = mirror.get(path);
+            return [path, row === undefined ? null : { sha256: row.sha256, unread: row.unread }];
+          })) }));
         return OK;
       }
       if (job.direction === "in") {
@@ -798,6 +873,18 @@ async function syncLocked(job: SyncJob): Promise<number> {
         const made = project(WORKSPACE, job.agent, record(job.engine).cli.definition.skills.paths,
                              previous);
         safeWrite(SYNC_HOME, projected, new TextEncoder().encode(JSON.stringify(made)), 0o600);
+        process.stdout.write(JSON.stringify({ ok: true }));
+        return OK;
+      }
+      if (job.direction === "fetch") {
+        safeDirs(SYNC_HOME, place.sessionsIn, 0o700);
+        process.stdout.write(JSON.stringify(await fetchSessions(
+          client, place, mirror, job.engine, resumePaths(record(job.engine), job.session!),
+          new Map(Object.entries(job.have ?? {})))));
+        return OK;
+      }
+      if (job.direction === "took") {
+        tookSessions(mirror, job.took!.fetched, job.took!.cursor);
         process.stdout.write(JSON.stringify({ ok: true }));
         return OK;
       }
@@ -949,31 +1036,70 @@ function roomForEnd(): void {
   }
 }
 
+/** This run's start and every other live run's, as each one's job holds it. */
+function liveStarts(start: StartDoc, run: string): StartDoc[] {
+  return [start, ...liveRuns().filter((each) => each.id !== run).flatMap((each) => {
+    try {
+      return [readJson<StartDoc>(`${jobDir("run", each.id)}/${JOB_FILES.start}`)];
+    } catch {
+      return [];
+    }
+  })];
+}
+
 /**
  * The run's agent's scratch (`scratch.ts`): made (root's at the top, group `ta`'s below), old
- * scratch let go first (unused past the control record's retention, then least recently used
- * while the disk is low, never a live run's agent), and the agent's marked used now. What
- * went, in plain words for the agent and the user, or null.
+ * scratch let go first (least recently used while the disk is low, never a `live` run's
+ * agent), and the agent's marked used now. What went, in plain words for the agent and the
+ * user, or null.
  */
-function scratchFor(start: StartDoc, run: string):
+function scratchFor(start: StartDoc, live: readonly StartDoc[]):
     { dir: string; notice: ScratchCleared | null } {
   const dir = `${SCRATCH}/${start.agent}`;
   safeDirs("/", SCRATCH, 0o755);
-  const live = new Set([start.agent, ...liveRuns().filter((each) => each.id !== run)
-    .flatMap((each) => {
-      try {
-        return [readJson<StartDoc>(`${jobDir("run", each.id)}/${JOB_FILES.start}`).agent];
-      } catch {
-        return [];
-      }
-    })]);
   const index = readIndex(SCRATCH_INDEX);
   const pruned = pruneScratch(SCRATCH, index, Date.now(),
-                              start.scratch_retention_days ?? null, live);
+                              new Set(live.map((each) => each.agent)));
   safeDirs(SCRATCH, dir, 0o2775, { uid: 0, gid: shared() });
   writeOrRelease(() => markUsed(index, start.agent, Date.now()), RESERVE);
   keepReserve(RESERVE);
   return { dir, notice: scratchCleared(pruned) };
+}
+
+/**
+ * The disk still low after scratch (`scratch.ts`): the engines' stores' copies of sessions the
+ * owner's files hold as they are (`known`, the mirror's hashes) let go, least recently changed
+ * first, never one a live run resumes (a resume fetches its own again); still low, what the
+ * run says of it, with the stores' bytes left, or null. The let-go holds every store's lock,
+ * the live runs read again under it and each copy still the one hashed: a run that began
+ * since, or a home kept since (a newer copy, not sent yet), keeps its files.
+ */
+async function sessionsRoom(start: StartDoc, run: string,
+                            known: (paths: readonly string[]) =>
+                              Promise<Record<string, Held>>): Promise<DiskLow | null> {
+  if (!low(diskOf(STATE))) {
+    return null;
+  }
+  const { sessions, seen } = storeSessions(start.authority);
+  keepSeen(seen);
+  const held = sessions.length === 0 ? {} : await known(sessions.map((each) => each.path));
+  const local = (session: StoreSession) => join(STORE, session.rec.id, session.rel);
+  const freed = await withStores([...served().values()], () => {
+    const live = liveStarts(start, run);
+    const resumed = (session: StoreSession) => live.some((each) =>
+      each.engine === session.rec.id
+      && isKept(resumePaths(session.rec, each.session_id), session.rel));
+    return letGoSessions(STATE, sessions.filter((each) => held[each.path]?.sha256 === each.digest
+      && stillHashed(local(each), each) && !resumed(each)).map((each) => ({
+      local: local(each), size: each.size, mtime_ms: each.mtime_ms })));
+  });
+  return diskLow(sessions.reduce((sum, each) => sum + each.size, 0) - freed, diskOf(STATE));
+}
+
+/** `act` holding every store's lock in `recs`, each taken in their order. */
+async function withStores<T>(recs: readonly Served[], act: () => T): Promise<T> {
+  return recs.length === 0 ? act()
+    : await withStore(recs[0]!, async () => await withStores(recs.slice(1), act));
 }
 
 /** Each shared hook file's policy generation, as the start that last wrote it asked it. */
@@ -1113,6 +1239,9 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     direction, origin: new URL(start.urls.events).origin, token: lease.tokens.sync_token,
     lease: lease.lease, authority: start.authority, agent: start.agent, engine: start.engine,
     run, atoms: secrets });
+  const known = async (paths: readonly string[]) =>
+    ((await syncAgent({ ...job("known"), paths }, work)).report?.["known"] ?? {}) as
+      Record<string, Held>;
   let synced = false;
   try {
     if (recovering) {
@@ -1123,15 +1252,21 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
       throw new SyncFenced("the sync door fenced the lease");
     }
     synced = true;
-    importSessions();
     const agentDir = `${AGENTS_DIR}/${start.agent}`;
     if (!existsSync(`${agentDir}/agent.json`)) {
       throw new Error(`the agent ${start.agent} has no definition in the sandbox`);
     }
-    const scratch = scratchFor(start, run);
+    const live = liveStarts(start, run);
+    const scratch = scratchFor(start, live);
     if (scratch.notice !== null) {
       outbox.push(scratch.notice);
     }
+    const pressed = await sessionsRoom(start, run, known);
+    if (pressed !== null) {
+      outbox.push(pressed);
+    }
+    await storeResume(rec, run, start.authority, start.session_id, (part) =>
+      syncAgent({ ...job(part.direction), session: start.session_id!, ...part }, work));
     const home = homeOf(run);
     const system = systemOf(run);
     // The tools the owner's rules name that the CLI's own hook matches, asked first: its
@@ -1151,7 +1286,8 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
                            "rebooted sandbox cannot continue it");
     }
     await withRunUser(rec, run, { signedIn: start.credential === "vendor_login_in_sandbox",
-                                  keeps: true, files: call.files }, async ({ as }) => {
+                                  resumes: start.session_id, keeps: true, files: call.files },
+                      async ({ as }) => {
       try {
         // Before each start of the CLI, a resume's too: the env files it would load, never
         // one that sets what the run's own environment does not take, nor, for a hooked run,
@@ -1256,9 +1392,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
       roomForEnd();
       if (synced) {
         const secrets = atoms();
-        const refused = await stageSessions(start.authority, run, secrets, async (paths) =>
-          ((await syncAgent({ ...job("known"), paths }, work)).report?.["known"] ?? {}) as
-            Record<string, string | null>);
+        const refused = await stageSessions(start.authority, run, secrets, known);
         for (const path of refused) {
           outbox.push({ type: "ta.sync_refused", path, code: "secret_bytes" });
         }
@@ -1383,7 +1517,8 @@ async function loginRun(id: string): Promise<number> {
       // The vendor's own sign-out first, which may revoke the login on the vendor's side.
       const logout = login.logout_argv;
       if (logout !== undefined) {
-        await withRunUser(rec, id, { signedIn: true, keeps: false }, async ({ as, home }) => {
+        await withRunUser(rec, id, { signedIn: true, resumes: null, keeps: false },
+                          async ({ as, home }) => {
           const argv = asUser(as, [shared()], logout.map((arg) =>
             arg.replaceAll("{bin}", binPath(rec)).replaceAll("{home}", home)));
           await spawnBounded(argv, { env: engineEnv(rec, home), cwd: home, stdio: "ignore" },
@@ -1401,7 +1536,8 @@ async function loginRun(id: string): Promise<number> {
       });
       end = "signed_out";
     } else {
-      end = await withRunUser(rec, id, { signedIn: true, keeps: false }, async (session) => {
+      end = await withRunUser(rec, id, { signedIn: true, resumes: null, keeps: false },
+                              async (session) => {
         const { as, home } = session;
         loginFiles(rec, session);
         const command = loginArgv(login, binPath(rec));

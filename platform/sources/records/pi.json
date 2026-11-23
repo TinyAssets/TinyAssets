@@ -315,6 +315,9 @@
     "session_paths": [
       "{home}/.pi/agent/sessions/"
     ],
+    "resume_paths": [
+      "{home}/.pi/agent/sessions/*/*_{sid}.jsonl"
+    ],
     "hosts": {
       "registry": [
         "registry.npmjs.org"

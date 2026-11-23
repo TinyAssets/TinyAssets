@@ -71,6 +71,17 @@ function rows(result: unknown, what: string): Record<string, unknown>[] {
   return result as Record<string, unknown>[];
 }
 
+/** A deployments listing's page: each deployment's versions, in its order, or a throw. */
+function deploymentsOf(result: unknown, what: string): Serving[][] {
+  return rows((result as { deployments?: unknown } | null)?.deployments, what).map((deployment) =>
+    rows(deployment["versions"] ?? [], what).map((each) => {
+      if (typeof each["version_id"] !== "string" || typeof each["percentage"] !== "number") {
+        throw new Error(`${what} holds a version out of shape`);
+      }
+      return { version: each["version_id"], percentage: each["percentage"] };
+    }));
+}
+
 /**
  * An R2 bucket's lock rule, as the API takes and lists it: objects under `prefix` ("" is every
  * object) kept, unchangeable and undeletable, until they are `maxAgeSeconds` old.
@@ -423,14 +434,20 @@ export class Cloudflare {
     const what = `the deployments listing of ${script}`;
     const { result } = await this.#ok(what,
                                       `/accounts/${account}/workers/scripts/${script}/deployments`);
-    const deployments = (result as { deployments?: unknown } | null)?.deployments;
-    const versions = rows(deployments, what)[0]?.["versions"] ?? [];
-    return rows(versions, what).map((each) => {
-      if (typeof each["version_id"] !== "string" || typeof each["percentage"] !== "number") {
-        throw new Error(`${what} holds a version out of shape`);
-      }
-      return { version: each["version_id"], percentage: each["percentage"] };
-    });
+    const [latest] = deploymentsOf(result, what);
+    return latest ?? [];
+  }
+
+  /**
+   * Every deployment of the Worker `script`, newest first, each its versions as `deployment`
+   * reads them: Cloudflare's history of what it served, which only a token with Workers
+   * Scripts Write makes or deletes. Read to its last page.
+   */
+  async deployments(account: string, script: string): Promise<Serving[][]> {
+    const what = `the deployments listing of ${script}`;
+    return (await this.#pages(what, `/accounts/${account}/workers/scripts/${script}/deployments` +
+                                    "?per_page=100"))
+      .flatMap((result) => deploymentsOf(result, what));
   }
 
   /**
@@ -449,14 +466,24 @@ export class Cloudflare {
     return versions[0]!.version;
   }
 
-  /** The tag of the Worker `script`'s version `version` (`workers/tag`), or null when untagged. */
-  async tag(account: string, script: string, version: string): Promise<string | null> {
+  /**
+   * What Cloudflare notes of the Worker `script`'s version `version`: its tag (`workers/tag`),
+   * and what made it (`workers/triggered_by`: `upload`, `secret` for a secret change,
+   * `rollback`, `promotion`), each null when it names none.
+   */
+  async annotations(account: string, script: string, version: string):
+      Promise<{ readonly tag: string | null; readonly trigger: string | null }> {
     const { result } = await this.#ok(
       `reading the version ${version} of ${script}`,
       `/accounts/${account}/workers/scripts/${script}/versions/${version}`);
-    const tag = (result as { annotations?: Record<string, unknown> } | null)?.annotations?.[
-      "workers/tag"];
-    return typeof tag === "string" && tag !== "" ? tag : null;
+    const noted = (result as { annotations?: Record<string, unknown> } | null)?.annotations;
+    const text = (value: unknown) => typeof value === "string" && value !== "" ? value : null;
+    return { tag: text(noted?.["workers/tag"]), trigger: text(noted?.["workers/triggered_by"]) };
+  }
+
+  /** The tag of the Worker `script`'s version `version` (`workers/tag`), or null when untagged. */
+  async tag(account: string, script: string, version: string): Promise<string | null> {
+    return (await this.annotations(account, script, version)).tag;
   }
 
   /**

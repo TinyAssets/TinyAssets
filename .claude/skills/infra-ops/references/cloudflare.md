@@ -92,11 +92,10 @@ Workers Scripts edit, Zone Workers Routes edit, and Zone DNS Edit:
   DNS Write);
 - mode `handback` deletes the record the egress custom domain made (DNS Write).
 
-DNS Edit is the scope recorded above. A run has shown the read:
-`cloud-only-preflight.yml` run 35704397255 (2026-09-22) read the zone's DNS records with this
-secret, and `internal_origin_dns` passed. No run has written DNS with it yet. So nothing is
-owed while that record holds. To check without the token's value: the dashboard's My
-Profile → API Tokens page lists its permissions (`platform/deploy/checklist.md`).
+DNS Edit is the scope recorded above; the stage's first `routes` (run 45059834265,
+2026-11-22) read and wrote DNS with this secret. So nothing is owed while that record holds.
+To check without the token's value: the dashboard's My Profile → API Tokens page lists its
+permissions (`platform/deploy/checklist.md`).
 
 Token naming: `workflow-<purpose>` (e.g. `workflow-cutover`, `workflow-ci-deploy`).
 

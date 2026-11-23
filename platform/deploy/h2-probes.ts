@@ -14,10 +14,19 @@
  *    it is stopped.
  * 2. The blocking isolation: 10 s of A's compute, and B's one call meanwhile.
  * 3. Whether `exchange` calls count as subrequests: 1,100 tool calls in one script.
- * 4. pi-codemode's own deadline while a script calls tools back to back: when it stops.
+ * 4. A script whose caller waits, calling tools back to back for 10 minutes: it ends with its
+ *    value, no clock of ours ending it, or the owner object's limit on one invocation shows,
+ *    should a script's calls count as one.
  * 5. While A's script loops tool calls: an owner app read's latency, and a revoke's reach
  *    (the script's next call refused); the alarm's reach is read from the owner Worker's
  *    logs for that minute.
+ * 6. The VM memory cap against the isolate's 128 MB (run before 5, which revokes A's key):
+ *    eight of A's scripts at once, each holding just under its cap, and B's one call
+ *    meanwhile. Each ends with its own value or its own `out of memory`, never another's
+ *    reset, or the cap is too high for how many VMs an isolate holds.
+ * 7. A script whose caller leaves (run before 5): its fetch aborted after 5 s, the script
+ *    endless. The owner Worker's log for that minute holds its line "code mode: the script's
+ *    caller stopped waiting", with its calls, and no call of it after.
  */
 import { fileURLToPath } from "node:url";
 
@@ -42,11 +51,11 @@ interface Answer {
   readonly body: unknown;
 }
 
-async function code(key: string, script: string): Promise<Answer> {
+async function code(key: string, script: string, signal?: AbortSignal): Promise<Answer> {
   const started = Date.now();
   const response = await fetch(`${BASE}/api/tools/code`, {
     method: "POST", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ script }) });
+    body: JSON.stringify({ script }), ...signal === undefined ? {} : { signal } });
   const text = await response.text();
   let body: unknown = text;
   try {
@@ -73,9 +82,24 @@ async function main(): Promise<void> {
   row("2 the 10 s script", await busy);
   row("3 1,100 tool calls in one script", await code(a,
     "let n = 0; for (let i = 0; i < 1100; i++) { await tools.agents_list({}); n++; } return n;"));
-  row("4 tool calls back to back past the deadline", await code(a,
+  row("4 tool calls back to back for 10 minutes, the caller waiting", await code(a,
     "const t = Date.now(); let n = 0; while (Date.now() - t < 600000) " +
     "{ await tools.agents_list({}); n++; } return { n, ms: Date.now() - t };"));
+  const held = Array.from({ length: 8 }, () => code(a,
+    "const kept = []; for (let i = 0; i < 30; i++) { kept.push(new Uint8Array(1 << 20)); } " +
+    "for (let i = 0; i < 20; i++) { await tools.agents_list({}); } return kept.length;"));
+  await new Promise((done) => setTimeout(done, 1000));
+  row("6 another owner's call while eight scripts hold memory", await code(b, "return 1;"));
+  for (const [i, answer] of (await Promise.all(held)).entries()) {
+    row(`6 the memory script ${i + 1}`, answer);
+  }
+  const leave = new AbortController();
+  const leaving = code(a, "for (;;) { await tools.agents_list({}); }", leave.signal);
+  setTimeout(() => leave.abort(), 5000);
+  const left = await leaving.then((answer) => JSON.stringify(answer.body).slice(0, 80),
+    (error: Error) => error.name);
+  console.log(`| 7 a script whose caller left after 5 s | ${left} | | its stop line is in the ` +
+              `owner Worker's log at ${new Date().toISOString()} |`);
   const token = process.env[INPUTS.token];
   const keyId = process.env[INPUTS.keyId];
   if (!token || !keyId) {

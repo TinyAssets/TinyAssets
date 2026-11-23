@@ -16,8 +16,8 @@ import { mcpOrigin } from "../src/binder";
 import { bundledSources } from "../../sources/src/catalog";
 import { profileNames, toolNames } from "../../contract/src/doors";
 import {
-  appPost, call, connect, doorsEnv, OPEN, ownDoor, registerClient, serveFirstPartyDocument,
-  setControl, signInApp, TIERS, type Tokens, url,
+  appPost, call, connect, doorsEnv, OPEN, OPEN_RECORD, ownDoor, registerClient,
+  serveFirstPartyDocument, setControl, signInApp, TIERS, type Tokens, url,
 } from "./support";
 
 function owner(): string {
@@ -261,7 +261,7 @@ describe("the owner app's file routes", () => {
     const who = owner();
     const app = await signInApp({ owner: who });
     await doorsEnv.OWNER.getByName(who).fileWrite(
-      { owner: who, caller: who, origin: null, tiers: TIERS },
+      { owner: who, caller: who, origin: null, control: OPEN_RECORD },
       { path: "/workspace/blob.bin", expected_etag: null,
         content: new Uint8Array([0xff, 0xfe, 0x00]) });
     expect(await answered(await appPost("files/read", app.access_token, null,

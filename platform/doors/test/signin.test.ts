@@ -110,8 +110,7 @@ describe("the sign-in routes and door", () => {
     expect(await claude.text()).toMatch(/signin_off/);
   });
 
-  it("read each switch off the catalog the doors serve, in the list and in the binding (D5)",
-     async () => {
+  it("read each switch off the catalog the doors serve, in the list (D5)", async () => {
     // A served catalog unlike the bundled one: Codex's sign-in allowed by its verdict, and
     // one more record that signs in, off by its own until the record switches it on.
     const codex = (records: readonly unknown[], id: string, verdict: string) => {
@@ -135,9 +134,6 @@ describe("the sign-in routes and door", () => {
     };
     const first = await listedOn();
     expect([first.get("codex"), first.get("test_login")]).toEqual([true, false]);
-    // The binding the object holds a sign-in to carries the same switch.
-    expect((await appPost("signin/start", app.access_token, null, { engine: "codex" }, {},
-                          served)).status).toBe(200);
     await setControl({ ...OPEN, signins: { test_login: true } });
     expect((await listedOn()).get("test_login")).toBe(true);
   });

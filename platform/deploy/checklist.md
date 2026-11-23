@@ -13,7 +13,10 @@ three jobs:
 3. **`apply`** runs the mode with `--yes`, in the main-only `production` environment, held
    to that plan: before any change it makes the plan job's plan again from the live state,
    and stops, naming each difference, if anything changed between the jobs (the dispatch,
-   a repository variable, or the account's state). It applies only its own run's plan.
+   a repository variable, or the account's state). It applies only its own run's plan. Then
+   each line its own steps say, as each says it and before its change, must be that plan's
+   line, or one the plan job left to it ("checked by the apply job before any change")
+   with its answer in place of those words; any other line stops it there.
 
 Starting a run with a mode other than `plan` is the approval. Do not add a required reviewer
 to `production`: the uptime canary, the DR drill, deploy-prod and the host installs run there
@@ -41,10 +44,8 @@ record holds.**
   need **Workers Scripts edit** on the account, which the kit's deploys need too.
 - **What the token holds.** The infra-ops reference (`.claude/skills/infra-ops/references/
   cloudflare.md`) records this secret with Zone DNS Edit and Account Workers Scripts edit,
-  and `emergency-dns.yml` writes DNS records with it. A run has shown it reading DNS:
-  `cloud-only-preflight.yml` (run 35704397255, 2026-09-22) read the zone's records with this
-  secret, and `internal_origin_dns` passed. No run has written DNS with it yet: the
-  stage's `routes` is the first (below).
+  and `emergency-dns.yml` writes DNS records with it. The stage's first `routes` (run
+  45059834265, 2026-11-22) read and wrote the zone's DNS records with it.
 - **How to check without reading the token.**
   - In the Cloudflare dashboard, My Profile → API Tokens lists each token's permissions and
     never shows its value.
@@ -100,8 +101,8 @@ It never counts as "absent".
    the callback, with a throwaway challenge; not the doors' own `/authorize`) must answer a
    302 to AuthKit's sign-in on `OWNER_ISSUER`'s host. A `client-id-invalid` or
    `redirect-uri-invalid` page stops the kit, naming it. Mode `plan` cannot list the
-   callback, so there a `redirect-uri-invalid` answer reads "dark registers it"; every
-   other refusal still stops. Any miss stops the kit. The access token's exact `iss` and its
+   callback, so there a `redirect-uri-invalid` answer is left to the apply job, which
+   registers the callback and answers that line; every other refusal still stops. Any miss stops the kit. The access token's exact `iss` and its
    `auth_time` only a real sign-in shows: the stage's first sign-in settles them (d3 §H).
    If its `502` names the issuer, it quotes the `iss` the token carries. Only a WorkOS
    value (`https://api.workos.com/...` or `OWNER_ISSUER`) becomes `token_issuer` in
@@ -116,9 +117,16 @@ It never counts as "absent".
    once). Values come from the environment's secrets: each
    Worker's `secrets.required` (its `wrangler.jsonc`), and on the doors, if set, each shared
    app's signing secret (`platform/doors/shared-apps.json`). A secret two Workers require
-   (the routing keyring, the doors' and the owner's) is set on both or neither.
+   (the routing keyring, the doors' and the owner's) is set on both or neither. The plan job
+   holds no secret, so for an optional one the doors lack (a shared app's, the canary
+   clock's) it says "if the run is given it", and the apply job says whether it is; so does
+   the doors' rollout line, since a secret the run sets makes them forward-only (step 4).
 
-   A held secret is never replaced unless `rotate` names it. A held keyring is never
+   A held secret is never replaced unless `rotate` names it, so a run that changes no
+   secret sets none, and leaves every Worker one a rollback can take back. **A value changed
+   in `production` alone is never deployed:** Cloudflare lists a secret's name, never its
+   value, and the kit keeps no hash, so it cannot tell the value changed. After changing one
+   (a rotated `WORKOS_API_KEY`), dispatch with `rotate` naming it. A held keyring is never
    generated, and its old kids leave it only by mode `retire` (below). It is rotated only by
    adding a key: run `keyring-add` on your copy
    of the stored keyring, store the result, then run with `rotate` naming it. The
@@ -131,8 +139,23 @@ It never counts as "absent".
    than the stored ring's stops the run.
 4. **Every Worker deployed with no public route,** each after the Workers it binds (`WORKERS`,
    `deploy/facts.ts`). None has a `workers.dev` or preview URL. A Worker's first deploy is
-   `wrangler deploy`. Later deploys upload a version, then deploy it (`wrangler versions
-   upload`, then `versions deploy`), which never touches a route. Wrangler refuses a version
+   `wrangler deploy`. Later deploys upload a version, then deploy it in **stages**
+   (`platform/deploy/platform.json` `stages`, each `wrangler versions deploy`, which never
+   touches a route): first at 0% beside the version it serves, the new one listed first, then
+   at 100%. Each deployment is read back before anything follows it, from Cloudflare's
+   deployments listing, which can lag a deployment just made: it is read again every 2 s for
+   up to a minute, never deployed again, and one that still reads back otherwise stops the run
+   there, naming what it last read. At 0% only a request carrying Cloudflare's version override
+   reaches the new version, and no override reaches a call between Workers, so only the doors
+   are smoked there: once they hold their routes, the kit waits `soak_s` (a deployment takes a
+   few seconds to reach every location) and runs the platform canary's doors checks with the
+   override (`canary.ts --smoke`), each answer held to name the new version in
+   `x-tinyassets-version`. Before `routes` hands the doors their routes (every `dark` run until
+   the cutover, and the cutover's own `routes` run, which hands them over after the Workers)
+   no request reaches them, so the plan says each Worker is not smoked and the run goes from
+   0% to 100% with no wait. A Worker the run deploys first or whole, sets a secret on, or
+   marks with a `forward` change goes to 100% at once, in its place in the order: it cannot
+   serve beside its version before. Wrangler refuses a version
    upload with a pending Durable Object migration (read in wrangler 4.154's source). Name that
    Worker in `migrate` to deploy it whole; `migrate` takes only a Worker whose config declares
    Durable Object migrations. Each version is tagged with the commit's first 12 digits and, on
@@ -145,8 +168,9 @@ It never counts as "absent".
    the control namespace (a copy in the job summary): each Worker's version before the run
    and that version's tag, and what the run's version carries that the one before cannot
    take back. Its plan says, Worker by Worker, where a `rollback` of the run would stop. A
-   Worker serving two versions (a split, which only the dashboard makes today) stops the
-   run before any deploy: end the split first.
+   Worker serving two versions (a split: a run stopped between a Worker's stages, a failed
+   smoke among them, or the dashboard) stops the run before any deploy: end the split first,
+   with `rollback` of the stopped run (below), then dispatch again.
 5. **The control record, written only when the API answered that it is absent.** It starts
    with everything closed: outside access off, maintenance admitting no owner, inbound events
    off. It also holds your tier numbers. It is `platform/deploy/control.json`, as is. If the
@@ -158,10 +182,12 @@ It never counts as "absent".
 7. **E2B's lifecycle webhook** (`tinyassets-lifecycle`, found by its name, listed with the
    checks before any change): registered **disabled** at the doors' `hook` in
    `identity.json` if E2B's listing lacks it, its URL moved to that one when the identity's
-   host has changed, and the run that registers it sets the doors' `E2B_WEBHOOK_SECRET` from
-   `production` too, so the two start equal. After that its secret changes only with the
-   doors' (`rotate` naming `E2B_WEBHOOK_SECRET`): E2B never shows a hook's secret, so the kit
-   cannot compare them. It is never disabled or deleted.
+   host has changed, with production's `E2B_WEBHOOK_SECRET`, the value a first deploy sets on
+   the doors, so the two start equal. If E2B holds none while the doors hold the secret, the
+   apply job stops before any secret or Worker: dispatch again with `rotate` naming
+   `E2B_WEBHOOK_SECRET`, which sets both. After that its secret changes only with the
+   doors' (`rotate` naming it): E2B never shows a hook's secret, so the kit cannot compare
+   them. It is never disabled or deleted.
 8. **The platform's canary** (Fact 11, `deploy/canary.ts`) runs against
    `tinyassets.io/mcp`. No route moves, so the old stack still answers: it reads the platform
    dark, checks that the old stack still answers `/mcp` and that E2B holds the pinned
@@ -203,17 +229,20 @@ It never counts as "absent".
   earlier `routes` run's, or yours) is left. Any other address record on the host stops
   the run before any change. A refused make (a token without DNS Edit) stops the run with
   only the route record written: add the record yourself (Cloudflare → `tinyassets.io` →
-  DNS → Records → Add record: `AAAA`, the host's first label, `100::`, Proxied) and re-run
-  that run's jobs (the run → Re-run all jobs), not a new dispatch: its route record has the
-  host bare, so it keeps your record as the run's, and its handback deletes it. A new
-  dispatch keeps it as held, and no handback deletes it. The zone itself holds the site's
-  record, so on it nothing is made.
+  DNS → Records → Add record: `AAAA`, the host's first label, `100::`, Proxied) and run
+  `routes` again (Re-run all jobs, or a new dispatch): the route record it keeps has the
+  host bare, so it keeps your record as the handover's, and its handback deletes it. The
+  zone itself holds the site's record, so on it nothing is made.
 
   It then adds the egress custom domain (`host` in `platform/contract/egress.json`;
-  `wrangler triggers deploy`),
+  `wrangler triggers deploy`), waits up to ten minutes for the egress door's own refusal on
+  the host, a fresh connection each attempt (the host has no TLS for its name until Cloudflare
+  issues its certificate, about two minutes on the stage, and Cloudflare's own error pages do
+  not count), and stops naming the last failure's cause if
+  it does not,
   enables E2B's lifecycle webhook at the doors' path on the host now that the doors serve
   it, and runs the
-  platform's canary's unkeyed checks (`--side doors --unkeyed`, below). The same
+  platform's canary on the doors' side (`--side doors`, below). The same
   `triggers deploy` sets the doors' Cron Trigger, the canary's clock. Every connector then
   signs in again once.
 
@@ -227,8 +256,10 @@ It never counts as "absent".
 
   It also holds the zone, the run id and the time, and no secret. The job summary names its
   id (the run's, which heads the plan) and holds a copy. If the record cannot be written, the
-  run stops with nothing changed. A re-run attempt of the same run keeps its first attempt's
-  record. Re-run all its jobs, not the apply job alone: once an attempt has changed
+  run stops with nothing changed. The handover has one record, the state before its first
+  `routes` run: while the namespace holds a route record of the host, every `routes` run (a
+  re-run attempt, or a later dispatch) keeps the oldest as it is and writes none, and its plan
+  names the id to hand back. Re-run all its jobs, not the apply job alone: once an attempt has changed
   anything, the live state no longer plans what the first plan job showed, and the apply job
   stops before any change.
 
@@ -236,8 +267,10 @@ It never counts as "absent".
   custom domain or holds an address record (A, AAAA or CNAME). Run from the workflow,
   wrangler's custom-domain deploy replaces either, and no handback could give it back. The
   plan job shows this stop too.
-- **Mode `handback`: the routes' rollback.** Dispatch it with `record` set to the id
-  `routes`' summary names. Its plan job reads the record and the zone and changes nothing,
+- **Mode `handback`: the routes' rollback.** Dispatch it with `record` set to the id every
+  `routes` plan names, the host's first `routes` run's. A record kept after it (a kit before
+  2026-11-22 wrote one each `routes` run, holding the handover's own state as its before) is
+  refused, naming the first. Its plan job reads the record and the zone and changes nothing,
   so run it once right after `routes`, to see what a handback would do. The apply job puts
   back what `routes` changed, in reverse order:
   1. E2B's lifecycle webhook is disabled, unless the record has it enabled before. A hook
@@ -266,7 +299,9 @@ It never counts as "absent".
 
   After its changes it reads each back, and stops, naming each difference,
   unless they are the record's. A rerun changes only what is not back yet, and a killed run
-  is simply run again.
+  is simply run again. Read back, it ends the handover: it deletes every route record of the
+  host, the one it names last, each copied into its job summary first, so the next `routes`
+  records the host afresh. A handback run after that finds no record and stops.
 
   It doesn't run the handles canary. Until the old stack is up, the routes it gave back
   serve nothing, so the canary would fail a correct handback. The order is:
@@ -301,25 +336,34 @@ It never counts as "absent".
   - the run set its secrets: its version before holds the old values, and Cloudflare
     refuses that deployment (10220) unless forced, which the kit never does;
   - its version's `-m` counts are higher than its version before's tag names, or that tag
-    names none: every object the newer version migrated would refuse to start.
+    names none: every object the newer version migrated would refuse to start;
+  - its version's `-f` count is higher than its version before's tag names: a change in
+    `platform.json` `forward` says its version before cannot read what it writes, or answer
+    what sandboxes, open pages or queued messages send it. Its author adds that change in
+    the same pull request, and its reviewer finds one missing.
+
+  A Worker a stopped run left at 0% beside its version before is taken back whatever its
+  version carries: at 0% it served only requests with an override for it, and Cloudflare
+  assigns no Durable Object a version at 0%, so no object ran its migrations.
 
   With no Worker to take back it changes nothing. Then roll forward with a fix, or close
-  the gates (mode `control`). Before any change it holds each Worker to the record: a
-  version neither the one before nor one tagged with the run's commit (a deploy since)
-  stops it, named, and so does a record whose tags or counts differ from Cloudflare's.
-
-  **What it cannot see: read the run's diff before you approve the apply job.** A version
-  that writes a shape its version before cannot read, with no migration (a KV value, an R2
-  object, a queue message, Durable Object storage outside `migrate.ts`, JSON in a column),
-  or that sandboxes it started or open browsers speak to in a way the version before cannot,
-  is forward-only too, and nothing marks it yet. Roll forward instead. Hold each version the
-  plan names to the run's job summary copy of the record: other Workers can write the KV one.
+  the gates (mode `control`). Before any change it holds the record whole to Cloudflare,
+  which only the deploy's token writes (other Workers can write the KV record): its Workers
+  are this tree's, in its deploy order; each Worker serves only its version before or ones
+  tagged with the run's commit (else a deploy since stops it, named); the record's tags and
+  counts are Cloudflare's tags; and each version it takes a Worker back to is one the
+  Worker's Deployments show serving alone just before a deployment of the run's commit.
+  Any difference stops it, named, with nothing changed. So does a version it would take a
+  Worker back to whose commit holds no `contract/handed.json`, or whose code is unknown:
+  every later plan reads what each Worker serves, so none could deploy forward from it.
 
   **A rollback by hand** (the dashboard's Deployments, Rollback, from a phone) follows the
-  same rules, which Cloudflare cannot know: never to a version whose tag's `-m` counts are
-  lower than the live version's, nor past a run that set the Worker's secrets (the dashboard
-  asks to confirm changed secrets: refuse), and callers first, the doors before the owner.
-  The run's rollout record names each version before.
+  same rules, which Cloudflare cannot know: never to a version whose tag's `-m` or `-f`
+  counts are lower than the live version's, nor past a run that set the Worker's secrets
+  (the dashboard asks to confirm changed secrets: refuse), nor to a commit without
+  `contract/handed.json` (the kit then plans nothing until the Worker serves one it tagged),
+  and callers first, the doors before the owner. The run's rollout record names each version before; its Deployments
+  show the same one just before the run's.
 - **The platform's canary** (Fact 11, d3 §J2): `deploy/canary.ts`, run by **Platform canary**
   (`platform-canary.yml`) and by the kit after each mode. It checks the platform from
   outside, through the public routes, and changes nothing but one file in the canary owner's
@@ -347,9 +391,13 @@ It never counts as "absent".
     `/workspace/canary-full-run.json`; a failed day stays red until a full run passes;
     dispatch with `full` to run it now). It boots one sandbox a day.
 
-    Without `TA_PROBE_KEY` it fails (exit 7), since an unchecked check is not a pass. A
-    closed gate (`503`) is named too. The handle set assumes the canary owner keeps the
-    default policy (every tool, and code mode on): a narrowed one reads as drift.
+    The keyed checks wait, key or none, only while the control record admits no owner (the
+    dark record's `ordinary: "canary"` with `canary: []`, or `ordinary: "none"`): no canary
+    owner can sign in or pass the gate then. The kit reads the record after every mode it
+    runs the canary for and says so (`--closed`); the workflow holds no token to read it, so
+    its runs always need the key. Otherwise, without `TA_PROBE_KEY` it fails (exit 7), since
+    an unchecked check is not a pass. A closed gate (`503`) is named too. The handle set
+    assumes the canary owner keeps the default policy (every tool, and code mode on): a narrowed one reads as drift.
   - **Its clock and alarm.** The doors' Cron Trigger dispatches the workflow every ten
     minutes with `PLATFORM_CANARY_TOKEN`; without the token it dispatches nothing. A failed
     dispatch pages Pushover directly at `:00` and `:30`. The workflow's own hourly schedule
@@ -360,10 +408,10 @@ It never counts as "absent".
     overdue) open the `platform-down` issue and page, re-paging at 1 h, 4 h and 24 h until
     someone comments; green closes it.
   - **After `routes`, in this order:**
-    1. **The `routes` run's own canary.** It runs the unkeyed checks alone (`--side doors
-       --unkeyed`): the doors answer `/mcp` and its document, and the old stack doesn't. It
-       says the keyed checks wait. It can't run them itself: no canary owner's key exists
-       until the doors serve `/app/api`, and the dark control record admits no one.
+    1. **The `routes` run's own canary** (`--side doors`): the doors answer `/mcp` and its
+       document, and the old stack doesn't. It says the keyed checks wait: the dark control
+       record admits no one, so no canary owner exists yet. Every mode's canary says the same
+       until step 3, and from step 3 each needs `TA_PROBE_KEY`.
     2. **Disable the old pager:** `gh workflow disable uptime-canary.yml` (the manifest's
        `routes` phase). Its old-stack probes would page on every run against the doors.
     3. **Open the control record for the canary owner, both gates:** `outside: "on"`,
@@ -394,8 +442,8 @@ It never counts as "absent".
   1. **`routes`, plan then apply.** The plan shows the route record, the host's DNS record
      to make (`AAAA stage.tinyassets.io 100::`, proxied), everything `dark` does, every
      doors route added on the stage host and none of the zone's touched, the egress custom
-     domain, and the hook moved to the stage host's path and enabled. Its canary runs the
-     unkeyed checks on the stage host.
+     domain, and the hook moved to the stage host's path and enabled. Its canary checks the
+     doors on the stage host, the keyed checks waiting while the record is closed.
   2. **`handback`'s plan job once**, read-only, to see what a handback would do.
   3. **The first sign-in, with the gate closed.** It settles what only a real sign-in through
      the doors shows: User Management's `authenticate` takes the API key as the client's
@@ -426,7 +474,8 @@ It never counts as "absent".
   5. **Each account signs in and mints one API key**; store the probe keys (`TA_PROBE_KEY`
      and the rest, as after `routes` above) and run the platform's canary keyed.
   6. **The end:** each stage account's own erasure in the owner app, then `handback` of the
-     stage's route record. It deletes the stage host's routes and DNS record, detaches the
+     stage's route record, the one the next `routes` plan or a refused handback names. It
+     deletes the stage host's routes and DNS record, detaches the
      egress domain and disables the hook; the old stack never stopped, so its last line's
      restart does not apply. Then empty the OAuth namespace (`OAUTH_KV` in `platform.json`'s
      titles) and close the control record. The platform's canary reads the platform dark
@@ -448,6 +497,16 @@ It never counts as "absent".
   `deploy:control:<run id>` (put it back with `replace`), and reads the write back. It edits
   KV itself, never through the doors, so `outside=off`, the kill switch, works when they
   don't. A missing or malformed record is shown as it is; `replace` gives the whole record.
+  **A kill flipped while KV is down reaches no kept copy.** While KV can't be read, each reader
+  serves the copy it last read well formed (the doors' per-location cache, the owner's and the
+  sandbox's objects' own row), `outside=on` included, until KV answers again; the mode's own
+  read and write go to KV, so they fail too. The kill that needs no KV is an edge switch at
+  Cloudflare, and **there is none yet**: slice B1, two WAF custom rules on the zone kept
+  disabled (`TinyAssets kill: outside`, blocking the doors' outside paths, and `TinyAssets
+  kill: all`, every doors path and the egress host), each toggled from the dashboard or the
+  app, is owed (`untangle/kill-switch-cloudflare`). Until it lands, the one kill that reads no
+  KV is a custom rule you make by hand (Security, WAF, Custom rules) blocking those paths; mode
+  `handback` reads its route record from KV too.
 - **Mode `owner`** asks the doors one op for one owner through the operator channel (`owner`
   and `act`: `state`, `tier=<tier>`, `suspend=<reason>`, `lift=<reason>`, `admit`, `rewrap`
   or `reseal`) and prints their answer between the owner's state before and after it, or

@@ -42,7 +42,8 @@ Untangle the code a change touches, or a whole area, and finish the job.
   test uses, a copy of a contract value, a per-module allow-list, an enforcer
   (hook, gate, sandbox check) reading or started under env or files the
   agent or its settings can write (`NODE_OPTIONS`), or start-checked in an
-  env it does not enforce in.
+  env it does not enforce in, and a change `platform/deploy/platform.json`
+  `forward` lacks.
   It asks only for what makes the code more correct or simpler, and calls a
   departure from the decided design better (the log is updated) or a
   shortcut. It commits its own fixes of up to 50 lines and approves that
@@ -54,10 +55,10 @@ Untangle the code a change touches, or a whole area, and finish the job.
 - CI is the one full run; a coordinator's prompt adds or drops no check this
   section names. Push a draft once it compiles, having run once only what the
   diff can break (the done-check: `docs/reference/executable-gates.md`), one
-  mutation per declared change; a whole workspace's suite and the recorders
-  are CI's. Read only what applies. A reviewer reruns two or three of the
-  builder's mutations and one of each new guard's, and runs the rest for its
-  own fixes only. One review a PR, a second only after a security block.
+  mutation per declared change. Read only what applies. A reviewer reruns two
+  or three builder mutations and one of each new guard's, and runs the rest
+  for its own fixes only. One review a PR, a second only after a security
+  block.
   Merge `origin/main` in; never rebase.
 - **Parallel by default:** every PR sharing no file with open work starts now,
   from `main`, never stacked; one blocked on some files starts now without
@@ -65,9 +66,8 @@ Untangle the code a change touches, or a whole area, and finish the job.
 - An agent runs git only in worktrees it made; a reviewer checks the PR out
   in its own detached one. On a shared host, heavy runs (`test:root`,
   `test:sizes`, `test:memory`, the deploy harness) take the host's run lock;
-  a timeout under load
-  is rerun under it, never a finding. When done, delete only what you wrote
-  outside the repo, and your `node_modules`.
+  a timeout under load is rerun under it, never a finding. When done, delete
+  only what you wrote outside the repo, and your `node_modules`.
 - A change bringing a measured time or size (a watchdog, budget, quota)
   within about 20% of its ceiling lands with its fix, or a reviewer blocks.
   CI is about 2.7x slower than a local host: a test past a third of its budget

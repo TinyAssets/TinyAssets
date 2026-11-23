@@ -27,8 +27,8 @@
  * - `cancel`: stop the run's CLI (SIGTERM, then a kill after a grace; "Stop a run with
  *   SIGTERM", Claude's headless docs). The run settles from the runner's last report, or
  *   `unknown` if the runner is lost.
- * - `release`: the lease ended, so the sandbox is paused unless a run started in
- *   it since (zero idle tail).
+ * - `release`: the lease ended, so the sandbox is paused once nothing lives in it, unless a
+ *   job launched in it since (zero idle tail).
  * - `unwait`: the owner has no run waiting for a sandbox any more, so it leaves
  *   the platform's line and the next owner in it is rung.
  * - `erase` (the erasure's step 2): every sandbox of the owner killed, paused ones
@@ -46,6 +46,7 @@ import {
   namedRefusal, type Refusal, type RefusalCode, refusalOf,
 } from "../../contract/src/refusal";
 import { keyed, object } from "../../contract/src/checks";
+import { taken } from "../../contract/src/handed";
 import {
   type CredentialKind, NETWORK_STATES, type SandboxService, START_CODES, type Started,
 } from "../../contract/src/sandbox";
@@ -173,10 +174,10 @@ export type StartOutcome = Started
 
 /** A start's answer as the contract has it (`Started`), or undefined. */
 function started(value: unknown): Started | undefined {
-  if (keyed(value, ["started"]) && value["started"] === true) {
+  if (keyed(value, ...taken("started")) && value["started"] === true) {
     return { started: true };
   }
-  const code = keyed(value, ["code", "started"]) && value["started"] === false
+  const code = keyed(value, ...taken("not_started")) && value["started"] === false
     ? START_CODES.find((each) => each === value["code"]) : undefined;
   return code === undefined ? undefined : { started: false, code };
 }
@@ -189,9 +190,9 @@ function started(value: unknown): Started | undefined {
  * (above), so the same start (its job's id, its admission's tokens and network) is sent again
  * after the refusal's own `Retry-After`, while its job still `stands` (not cancelled or ended
  * meanwhile) and that wait ends within `LANE_CALL_MS` of the first send: the bound on one
- * outside call a lane's row makes, so the waits add no more than that to a pass (a send's
- * own time is the sandbox Worker's, bounded by nothing: `untangle/lane-start-bound`). Past it
- * the refusal stands, by its own code.
+ * outside call a lane's row makes. A lane's pass waits on the whole start to that bound
+ * (`Launcher`'s `#laneLaunch`), and a start answered later is recorded then, against its job
+ * as it then stands. Past it the refusal stands, by its own code.
  */
 export async function startOutcome(job: "a run" | "a sign-in", start: () => Promise<unknown>,
                                    stands: () => Promise<boolean>): Promise<StartOutcome> {
@@ -237,8 +238,9 @@ export async function startOutcome(job: "a run" | "a sign-in", start: () => Prom
  */
 export async function networkOutcome(reapply: () => Promise<unknown>):
     Promise<"applied" | "at_resume" | "failed"> {
-  const got = await sandboxAnswer(reapply, ["state"], (value) => keyed(value, ["state"])
-    ? NETWORK_STATES.find((each) => each === value["state"]) : undefined);
+  const got = await sandboxAnswer(reapply, ["state"], (value) =>
+      keyed(value, ...taken("network_answer"))
+        ? NETWORK_STATES.find((each) => each === value["state"]) : undefined);
   if (got.kind === "answered") {
     return got.answer === "lost" ? "failed" : got.answer;
   }

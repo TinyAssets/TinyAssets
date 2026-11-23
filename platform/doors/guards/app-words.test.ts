@@ -8,8 +8,6 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { AUTOMATON_STATES, LIST_BYTES } from "../../contract/src/sync-ignore";
-
 type Shown = (event: unknown) => unknown;
 const VIEW = join(import.meta.dirname, "..", "app", "view.js");
 const { eventShown } = await import(VIEW) as { eventShown: Shown };
@@ -18,8 +16,7 @@ describe("the runner's events, in the app's words", () => {
   it("says the sync-ignore lines past their ceilings, which and why", () => {
     const lines = [{ line: "*a?", reason: "states" }, { line: "*b?", reason: "states" }];
     expect(eventShown({ type: "ta.sync_ignore_unapplied", lines, count: 2,
-                        list_bytes_past: 1200, automaton_states: AUTOMATON_STATES,
-                        list_bytes: LIST_BYTES }))
+                        list_bytes_past: 1200, automaton_states: 8192, list_bytes: 6291456 }))
       .toEqual({ type: "ta.sync_ignore_unapplied", lines, count: 2, list_bytes_past: 1200,
                  message: "In /workspace/.ta/sync-ignore, 2 lines past the 8,192 automaton " +
                    "states the lines with *, ? or [ ] may take together, and the list past its " +
@@ -41,13 +38,25 @@ describe("the runner's events, in the app's words", () => {
 
   it("names what scratch went and that the owner's storage is unaffected, never an upgrade",
      () => {
-    const shown = eventShown({ type: "ta.scratch_cleared", evicted: ["builder"], expired: [],
+    const shown = eventShown({ type: "ta.scratch_cleared", evicted: ["builder"],
                                freed_bytes: 3_100_000_000, free_bytes: 4_000_000_000,
                                total_bytes: 15_000_000_000 }) as { type: string; text: string };
     expect(shown).toEqual({ type: "ta.scratch_cleared", text: "The sandbox's working disk was " +
       "running low, so old scratch was cleared (builder; 3.1 GB freed; 4.0 GB of 15.0 GB free " +
       "now). Scratch is a temporary cache: a cleared repository is cloned again when needed. " +
       "Your storage is unaffected." });
+    expect(shown.text.toLowerCase()).not.toContain("upgrade");
+  });
+
+  it("names the disk still low and the sessions left on it, never an upgrade", () => {
+    const shown = eventShown({ type: "ta.disk_low", store_bytes: 9_200_000_000,
+                               free_bytes: 900_000_000, total_bytes: 14_400_000_000 }) as
+      { type: string; text: string };
+    expect(shown).toEqual({ type: "ta.disk_low", text: "The sandbox's working disk is nearly " +
+      "full (900 MB of 14.4 GB free), with old scratch and the session copies your files " +
+      "already hold cleared; the engines' sessions left here take 9.2 GB. A run may stop for " +
+      "lack of room until some of its agent's scratch is cleared. The working disk is the same " +
+      "on every plan." });
     expect(shown.text.toLowerCase()).not.toContain("upgrade");
   });
 
@@ -95,6 +104,7 @@ describe("the runner's events, in the app's words", () => {
                          { type: "ta.sync_refused", path: "/a", reason: "storage_full" },
                          { type: "ta.sync_unnamed", count: "1", paths: [] },
                          { type: "ta.scratch_cleared", evicted: "builder" },
+                         { type: "ta.disk_low", store_bytes: "9" },
                          { type: "ta.sync_skipped",
                            skipped: [{ path: "/a", code: "toString" }] }]) {
       expect(eventShown(event)).toBe(event);

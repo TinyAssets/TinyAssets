@@ -27,8 +27,7 @@
  *   credential in its environment (`DECIDE_ENV`), and, when the owner's rules name tools it
  *   matches (`hook.tools`), its file filled from the record's template (`{matcher}` those
  *   tools; the door's address, its header and the credential's variable; the helper's command
- *   line and its argv, the door their argument), what the record adds to its argv, and its
- *   pinned settings files in the home (`pins`, root's like every run config file).
+ *   line and its argv, the door their argument), and what the record adds to its argv.
  * - The agent's own hooks (D5, `definition.hooks`), where its record has a decide hook: the
  *   run's own file of them for each event its agent has hooks on (`hooksFile`, `runHooks`),
  *   and the dispatcher's entries in the hook file (`{dispatcher}` its command line, each
@@ -462,9 +461,6 @@ export function invocation(record: Served, start: StartDoc,
   if (hooked && own) {
     write(decide!.file, decide!.template);
   }
-  for (const [path, template] of Object.entries(hooked ? decide!.pins ?? {} : {})) {
-    write(path, template);
-  }
   if (hooks !== null && options.hook !== undefined) {
     for (const [event, file] of Object.entries(runHooks(record.id, decide!, agentDir,
                                                         start.hooks))) {
@@ -496,8 +492,24 @@ export function keptPaths(record: Served): { secrets: string[]; sessions: string
 }
 
 /**
+ * The store files a resume of `session` reads (the record's `resume_paths`, `{sid}` filled),
+ * each from its home; none for a new conversation (null). A session id is one name: one
+ * holding a `/` or a `*` would reach past its own files, so it fails loudly.
+ */
+export function resumePaths(record: Served, session: string | null): string[] {
+  if (session === null) {
+    return [];
+  }
+  if (session === "" || /[/*]/.test(session)) {
+    throw new Error(`the session id ${JSON.stringify(session)} is not one name`);
+  }
+  return record.cli.resume_paths.map((path) =>
+    path.slice("{home}/".length).replaceAll("{sid}", session));
+}
+
+/**
  * Whether `rel`, a path in a home, is one of `kept`: that file, or under that tree (`a/`),
- * a `*` segment matching any one segment.
+ * a `*` matching any run of characters within one segment.
  */
 export function isKept(kept: readonly string[], rel: string): boolean {
   const parts = rel.split("/");
@@ -507,6 +519,9 @@ export function isKept(kept: readonly string[], rel: string): boolean {
     if (tree ? parts.length <= want.length : parts.length !== want.length) {
       return false;
     }
-    return want.every((segment, i) => segment === "*" || segment === parts[i]);
+    return want.every((segment, i) => segment.includes("*")
+      ? new RegExp(`^${segment.split("*").map((piece) =>
+        piece.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*")}$`, "su").test(parts[i]!)
+      : segment === parts[i]);
   });
 }

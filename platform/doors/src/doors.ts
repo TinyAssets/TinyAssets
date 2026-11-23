@@ -29,7 +29,9 @@ import {
   AUTHORIZE_PATH, CONNECT_CALLBACK_PATH, E2B_HOOK_PATH, INBOUND_PATH, MCP_PATH,
   UPSTREAM_CALLBACK_PATH,
 } from "./config";
-import { ORIGIN, WEB_CLIENT, WEB_REDIRECT } from "../../contract/src/identity";
+import {
+  ORIGIN, VERSION_HEADER, WEB_CLIENT, WEB_REDIRECT,
+} from "../../contract/src/identity";
 import type { AccountBinding } from "../../contract/src/binding";
 import type { DoorsEnv } from "./env";
 import { EGRESS_ORIGIN } from "../../contract/src/egress";
@@ -63,8 +65,8 @@ function webClient(): Response {
  * verify included, is the OAuth resource's, so it is answered the one `401` naming the
  * resource's metadata.
  */
-async function mcpDoor(request: Request, env: DoorsEnv, ctx: ExecutionContext,
-                       sources: Sources): Promise<Response> {
+async function mcpDoor(request: Request, env: DoorsEnv,
+                       ctx: ExecutionContext): Promise<Response> {
   // No browser origin may send to `/mcp`: a present `Origin` is refused (MCP 2026-07-28
   // Streamable HTTP), an absent one is allowed.
   if (request.headers.get("Origin") !== null) {
@@ -72,21 +74,17 @@ async function mcpDoor(request: Request, env: DoorsEnv, ctx: ExecutionContext,
   }
   const key = await presentedKey(env, request);
   if (key !== null) {
-    return outsideMcp(request, env, key, sources);
+    return outsideMcp(request, env, key);
   }
   return mcpResource(async (req, environment, token) =>
-    outsideMcp(req, environment, await bindMcp(environment, token), sources))
+    outsideMcp(req, environment, await bindMcp(environment, token)))
     .fetch(request, env, ctx);
 }
 
-function outsideMcp(request: Request, env: DoorsEnv, bound: Bound<AccountBinding>,
-                    sources: Sources): Promise<Response> {
-  return answered(asJson, async () =>
-    serveMcp(request, await outsideAccount(env, bound, sources), env));
+function outsideMcp(request: Request, env: DoorsEnv,
+                    bound: Bound<AccountBinding>): Promise<Response> {
+  return answered(asJson, async () => serveMcp(request, await outsideAccount(env, bound), env));
 }
-
-/** The header naming the version that served an answer: its id (`CF_VERSION_METADATA`). */
-export const VERSION_HEADER = "x-tinyassets-version";
 
 /**
  * `answer`, naming `version`: Cloudflare ignores a version override for a version outside
@@ -110,16 +108,16 @@ export async function serve(request: Request, env: DoorsEnv, ctx: ExecutionConte
   }
   const path = url.pathname;
   if (path === MCP_PATH || path.startsWith(`${MCP_PATH}/`)) {
-    return mcpDoor(withoutCookie(request), env, ctx, sources);
+    return mcpDoor(withoutCookie(request), env, ctx);
   }
   if (path.startsWith("/api/")) {
-    return serveApi(withoutCookie(request), env, sources);
+    return serveApi(withoutCookie(request), env);
   }
   if (path === E2B_HOOK_PATH) {
     return e2bLifecycle(withoutCookie(request), env);
   }
   if (path.startsWith(INBOUND_PATH)) {
-    return serveInbound(withoutCookie(request), env, sources);
+    return serveInbound(withoutCookie(request), env);
   }
   if (path.startsWith("/hooks/")) {
     return notFound();

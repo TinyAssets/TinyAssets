@@ -15,7 +15,8 @@ import {
   EGRESS_ORIGIN, egressTokenOf, GENERATION_HEADER, generationOf, SANDBOX_HEADER, SYNC_HEADER,
 } from "../../contract/src/egress";
 import {
-  appPost, call, defineMain, doorsEnv, OPEN, recorded, serveFirstPartyDocument, setControl,
+  appPost, call, defineMain, doorsEnv, OPEN, OPEN_RECORD, recorded, serveFirstPartyDocument,
+  setControl,
   signInApp,
 } from "./support";
 import type { SandboxStart } from "../../contract/src/sandbox";
@@ -34,7 +35,7 @@ const SIGNED_IN = Object.freeze({ engine: "claude-code", credential: "vendor_log
 async function leased() {
   const who = `user_${crypto.randomUUID().replace(/-/g, "")}`;
   const app = await signInApp({ owner: who });
-  const binding: Binding = { owner: who, caller: who, origin: null, tiers: OPEN.tiers };
+  const binding: Binding = { owner: who, caller: who, origin: null, control: OPEN_RECORD };
   await defineMain(who, app, SIGNED_IN);
   await doorsEnv.OWNER.getByName(who).fileWrite(binding, {
     path: "/workspace/notes.md", expected_etag: null, content: new TextEncoder().encode("hi") });

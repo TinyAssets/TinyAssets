@@ -36,7 +36,7 @@ import {
 } from "./generation-support";
 import { MUSE, registerOn, signedIn, dm } from "./ledger-support";
 import {
-  drainDue, failure, gateFor, laneAt, laneJobs, ownerObject, storesOn, TIERS,
+  drainDue, failure, gateFor, laneAt, laneJobs, OPEN_RECORD, ownerObject, storesOn,
 } from "./support";
 
 type Stub = DurableObjectStub<OwnerDO>;
@@ -73,8 +73,8 @@ const SINGLE_COUNTERS: Readonly<Record<string, readonly string[]>> = Object.free
 /**
  * A production-shaped owner: its seed, a policy written in its session, inline and chunked
  * files with history and garbage, collection rows with a placed body and an erasure, an
- * outside agent with mail read and acked, notices, a model reservation settled and pruned (so
- * the spend outlives it), an API key, an inbound binding and a model connection.
+ * outside agent with mail read and acked, notices, a sandbox call charged, settled and pruned
+ * (so the spend outlives it), an API key, an inbound binding and a model connection.
  */
 async function shaped(o: Owner): Promise<void> {
   const { generation, policy } = await o.stub.policyRead(o.bind());
@@ -113,12 +113,19 @@ async function shaped(o: Owner): Promise<void> {
   });
   const sql = (text: string, ...args: SqlStorageValue[]) => sqlIn(o.stub, text, ...args);
   await sql("INSERT INTO owner_notices (at, type, detail) VALUES (1, 'x', ?)", `${PLAIN} n`);
-  await sql("INSERT INTO model_reservations (id, run, connection_id, source, model, state, " +
-            "max_output_tokens, est_tokens, est_cost, tokens, cost, policy_generation, day, " +
-            "month, created_at, settled_at) VALUES ('r1', 'run', 'c', 'src', 'm', 'succeeded', " +
-            "10, 10, 7, 9, 5, 1, '20261101', '202611', 1, 2), ('r2', 'run', 'c', 'src', 'm', " +
-            "'succeeded', 10, 10, 7, 9, 3, 1, '20261101', '202611', 1, 2)");
-  await sql("DELETE FROM model_reservations WHERE id = 'r1'");  // pruned: its spend outlives it
+  for (const [id, cost] of [["1".repeat(32), 5], ["2".repeat(32), 3]] as const) {
+    await sql("INSERT INTO egress_reservations (id, lease_id, epoch, run, token, connection_id, " +
+              "method, path, generation, opened_at, state) VALUES (?, ?, 1, ?, ?, ?, 'POST', " +
+              "'/v1/messages', 1, 1, 'open')", id, "l".repeat(32), "r".repeat(36), "t".repeat(64),
+              "c".repeat(25));
+    await sql("UPDATE egress_reservations SET charge = 'held', source = 'src', " +
+              "max_output_tokens = 10, est_tokens = 10, est_cost = 7, day = '20261101', " +
+              "month = '202611' WHERE id = ?", id);
+    await sql("UPDATE egress_reservations SET state = 'settled', outcome = 'complete', " +
+              "charge = 'succeeded', tokens = 9, cost = ?, settled_at = 2 WHERE id = ?", cost, id);
+  }
+  // Pruned: its spend outlives it.
+  await sql("DELETE FROM egress_reservations WHERE id = ?", "1".repeat(32));
   await sql("INSERT INTO owner_keys (key_id, client, name, created_at) VALUES (?, ?, 'k', 1)",
             "0123456789abcdef", MUSE.client);
   await sql("INSERT INTO inbound_bindings (binding_id, kind, agent, enabled, revision, route, " +
@@ -248,7 +255,7 @@ describe("a restore", () => {
       .toBe(RESTORING);
     expect((await failure(() => stub.importNotice(
       { owner: o.name, caller: PLATFORM_CALLER, origin: null, import: { bundle: "b".repeat(64) },
-        tiers: TIERS } as Binding, { detail: "x" }))).message).toBe(RESTORING);
+        control: OPEN_RECORD } as Binding, { detail: "x" }))).message).toBe(RESTORING);
     // No lane runs while a restore is under way.
     expect(await laneJobs(stub)).toEqual({});
     const answers = await stepped(stub, o.name);
