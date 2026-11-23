@@ -99,9 +99,9 @@ describe("the strongest source, on the platform's ranking", () => {
       .toEqual(["c-or/~anthropic/claude-fable-latest"]);
     expect(ranked([openrouter(model("openai/gpt-6.1-sol:batch"))], [], shippedRanking(),
                   SOURCES)).toEqual([]);
-    // The same id on a source whose record marks nothing is a candidate.
-    expect(first([key("c-o", "openrouter", 1, model("anthropic/claude-fable-5.1:batch"))], []))
-      .toBe("c-o/anthropic/claude-fable-5.1:batch");
+    // The same id on a source whose record marks nothing (Anthropic's) is a candidate.
+    expect(first([key("c-a", "anthropic", 1, model("anthropic/claude-fable-5.1:batch"))], []))
+      .toBe("c-a/anthropic/claude-fable-5.1:batch");
   });
 });
 

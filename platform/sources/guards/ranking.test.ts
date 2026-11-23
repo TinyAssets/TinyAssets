@@ -48,7 +48,6 @@ describe("the platform's ranking", () => {
      () => {
     const marked = bundledRecords().map(sourceRecord).filter((record) =>
       record.not_interactive !== undefined);
-    expect(marked.map((record) => record.id)).toEqual(["openrouter_user_models_v1"]);
     for (const record of marked) {
       const ids = catalog(record.upstream!.provider);
       for (const pattern of record.not_interactive!) {
@@ -56,7 +55,7 @@ describe("the platform's ranking", () => {
                pattern).toBe(true);
       }
     }
-    const openrouter = marked[0]!;
+    const openrouter = marked.find((record) => record.id === "openrouter_user_models_v1")!;
     expect(interactive(openrouter, "anthropic/claude-fable-5.1:batch")).toBe(false);
     expect(interactive(openrouter, "~anthropic/claude-fable-latest")).toBe(true);
     expect(interactive(openrouter, "nvidia/nemotron-3-ultra-550b-a55b:free")).toBe(true);

@@ -15,6 +15,7 @@ import {
   ID as PROVIDER, keyExchangeSource, type Source, source as gatewaySource,
 } from "../../contract/src/egress-scope";
 import { HEX64 } from "../../contract/src/ids";
+import { MODEL_ID as MODEL_PATTERN } from "../../contract/src/model-record";
 import {
   type EngineEvents, type EventMatcher, PATTERN_FLAGS,
 } from "../../contract/src/run-events";
@@ -44,8 +45,6 @@ const TEXT = /^[^\p{Cc}]{1,128}$/u;
 const CITATION = /^[^\p{Cc}]{1,1024}$/u;
 const SCOPE = /^[\x21-\x7e]+(?: [\x21-\x7e]+)*$/;
 const CLIENT_ID = /^[\x21-\x7e]{1,512}$/;
-/** A model pattern: a model id's characters (`contract/src/model-record.ts`), `*` among them. */
-const MODEL_PATTERN = /^[\x21-\x7e]{1,200}$/;
 
 /** The record's checks, each failing with the record and the field it is about. */
 function checker(id: string) {
@@ -1526,6 +1525,7 @@ export function sourceRecord(value: unknown): SourceRecord {
   }
   record["engines"] = Object.freeze(engines);
   if (fields["not_interactive"] !== undefined) {
+    // A model pattern is a model id's characters (`*` among them), the gateway's rule.
     const patterns = check.strings(fields["not_interactive"], "not_interactive", MODEL_PATTERN, 16);
     if (patterns.length === 0 || new Set(patterns).size !== patterns.length) {
       check.fail("not_interactive lists model patterns, at least one, each once");
