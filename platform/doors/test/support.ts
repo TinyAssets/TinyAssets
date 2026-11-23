@@ -8,7 +8,7 @@ import { vi } from "vitest";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { base64url } from "../../contract/src/envelope";
 import { acceptanceKey, answerKey } from "../../contract/src/operator-message";
-import type { DoorAnswer } from "../../contract/src/owner";
+import type { OwnerStateAnswer } from "../../contract/src/owner";
 import { QUEUES } from "../../contract/src/queue-names";
 import type { Refusal } from "../../contract/src/refusal";
 import { upstreamConfig } from "../../contract/src/signin";
@@ -23,6 +23,7 @@ import { serve } from "../src/doors";
 import doors from "../src/index";
 import { authorizationServer } from "../src/oauth";
 import { callDoor, type DoorName } from "../src/tools";
+import { asTested, type TestAnswer } from "./answers";
 import type { Sources } from "../../sources/src/schema";
 import { signInCode } from "./fake-providers";
 import { NAVIGATE } from "../../contract/src/navigation";
@@ -417,7 +418,7 @@ export async function refuseOnce(door: string, owner: string, refusal: Refusal):
 /** `owner`'s admission and tier, as its `ownerState` door answers the platform. */
 export async function admissionOf(owner: string) {
   const { state, reasons, tier } = await doorsEnv.OWNER.getByName(owner).ownerState(
-    { owner, caller: PLATFORM_CALLER, origin: null });
+    { owner, caller: PLATFORM_CALLER, origin: null }) as unknown as OwnerStateAnswer;
   return { state, reasons, tier };
 }
 
@@ -428,14 +429,14 @@ export function ownBinding(owner: string): Binding {
 
 /**
  * `owner`'s door `door` called with its own binding (`ownBinding`), as the doors call a table
- * door (`callDoor`): its answer, as the contract types it (`DoorAnswer`), or its refusal.
+ * door (`callDoor`): its answer, as these tests read it (`TestAnswer`), or its refusal.
  * Awaited here, so a refusal is this promise's alone: a test that asserted on the stub's own
  * promise would leave a rejected pipelined property of it unhandled.
  */
 export async function ownDoor<D extends DoorName>(owner: string, door: D,
-                                                  request?: unknown): Promise<DoorAnswer<D>> {
-  return await callDoor(doorsEnv.OWNER.getByName(owner), ownBinding(owner), door, request,
-                        new AbortController().signal);
+                                                  request?: unknown): Promise<TestAnswer<D>> {
+  return asTested(door, await callDoor(doorsEnv.OWNER.getByName(owner), ownBinding(owner), door,
+                                       request, new AbortController().signal));
 }
 
 /** `owner`'s grants, as its `grantList` door answers them to its own binding. */
@@ -491,7 +492,7 @@ export async function registerAgent(tokens: Tokens, owner: string, delivery_meth
   const registered = await callDoor(stub, { ...ownBinding(owner), session }, "registerAgent",
                                     { card_id: filed.card_id, digest: filed.digest },
                                     new AbortController().signal);
-  return registered.agent_id;
+  return asTested("registerAgent", registered).agent_id;
 }
 
 /**

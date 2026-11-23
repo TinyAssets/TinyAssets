@@ -20,6 +20,10 @@
         "name": "inbox_digest", "title": "Inbox digest", "readOnlyHint": true,
         "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
         "description": "Read what is new for this agent in one call: its unacknowledged mail, oldest first, and the rows of the owner's rooms changed after a cursor, each with the head of its body. Acknowledge mail with mailbox_ack; a mail body cut to fit (truncated true) is read on with mailbox_read's body_offset and message_id; read a whole row with collection_get. An answer with reset true means a deletion past the cursor is no longer kept: read the rooms again whole, then go on from the cursor given. A connection has mail once it is a registered agent: file one with agent_register, for the owner to approve."
+      },
+      "answer": {
+        "required": { "mail": { "type": "object" }, "rooms": { "type": "object" } },
+        "optional": {}
       }
     },
     {
@@ -38,7 +42,8 @@
         "name": "board_digest", "title": "Board digest", "readOnlyHint": true,
         "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
         "description": "Read the owner's board rows changed after a cursor in one call, each with its etag and the head of its body. Claim a row with collection_write on its etag; read a whole row with collection_get. An answer with reset true means a deletion past the cursor is no longer kept: read the board again whole (collection_list of the board collection, after left out), then go on from the cursor given."
-      }
+      },
+      "answer": { "required": { "rows": { "type": "array" } }, "optional": {} }
     },
     {
       "door": "mailboxRead", "class": "read", "capability": "read_graph",
@@ -108,7 +113,13 @@
         "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
         "description": "List the agents registered for this connection, the owner's own agents, each with the room_id it is reached in (null until this connection is a registered agent: agent_register), and which of the owner's AI apps are connected to TinyAssets, each one not connected with its connect_url, the page with its connect step. One answer holds as many as fit; when it carries next, read again with after set to it for the rest."
       },
-      "answer": { "required": { "owner_agents": { "type": "array" } }, "optional": {} }
+      "answer": {
+        "required": {
+          "agents": { "type": "array" }, "owner_agents": { "type": "array" },
+          "apps": { "type": "array" }
+        },
+        "optional": {}
+      }
     },
     {
       "door": "registerPropose", "class": "work", "capability": null,
@@ -162,8 +173,7 @@
         "name": "collection_get", "title": "Get collection row", "readOnlyHint": true,
         "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
         "description": "Read one row of a collection. One answer holds at most 50000 characters: a body that does not fit is cut, with truncated true and body_next_offset; read the rest by calling again with body_offset set to it and etag set to the row's etag, which refuses the read if the row changed meanwhile."
-      },
-      "answer": { "required": { "row": { "type": ["object", "null"] } }, "optional": {} }
+      }
     },
     {
       "door": "collectionPull", "class": "read", "capability": "read_graph",
@@ -293,7 +303,8 @@
         "name": "file_list", "title": "List directory", "readOnlyHint": true,
         "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
         "description": "List a directory's entries by name. With head_chars, each small file also carries the start of its text, enough to read its title and description."
-      }
+      },
+      "answer": { "required": { "entries": { "type": "array" } }, "optional": {} }
     },
     {
       "door": "fileText", "class": "read", "capability": "read_files",
@@ -388,7 +399,8 @@
         "name": "file_write", "title": "Write file", "readOnlyHint": false,
         "destructiveHint": true, "idempotentHint": false, "openWorldHint": false,
         "description": "Write a whole file of the user's TinyAssets workspace: its text replaces what is there, at the file's current etag, or \"\" to create a file that is not there yet. A conflict answers the file as it now stands. At most 4 MiB of text."
-      }
+      },
+      "answer": { "required": {}, "optional": { "entry": { "type": "object" } } }
     },
     {
       "door": "fileEdit", "class": "work", "capability": "write_files",
@@ -433,6 +445,13 @@
         "name": "file_usage", "title": "File usage", "readOnlyHint": true,
         "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
         "description": "Read the owner's file usage and quotas."
+      },
+      "answer": {
+        "required": {
+          "entries": { "type": "integer" }, "chunk_bytes": { "type": "integer" },
+          "inline_bytes": { "type": "integer" }
+        },
+        "optional": {}
       }
     },
     {
@@ -555,6 +574,15 @@
         "name": "converse", "title": "Talk with an agent", "readOnlyHint": false,
         "destructiveHint": true, "idempotentHint": false, "openWorldHint": false,
         "description": "Send a message to one of the owner's agents: a run of its engine in a new conversation, or in one of yours by conversation_id. A retry with the same client_send_id is the same run. Waits up to wait_ms for the run to end, then answers the run as it stands; run_status reads it later."
+      },
+      "answer": {
+        "required": {
+          "run_id": { "type": "string" }, "conversation_id": { "type": "string" },
+          "state": { "type": "string" }, "engine": { "type": "string" },
+          "model": { "type": ["string", "null"] }, "result": { "type": ["string", "null"] },
+          "error": { "type": ["string", "null"] }, "code": { "type": ["string", "null"] }
+        },
+        "optional": {}
       }
     },
     {
@@ -590,6 +618,15 @@
         "name": "run_status", "title": "Run status", "readOnlyHint": true,
         "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
         "description": "Read one of your runs, its state and its result once done, or one of your schedules."
+      },
+      "answer": {
+        "required": {},
+        "optional": {
+          "run_id": { "type": "string" }, "state": { "type": "string" },
+          "engine": { "type": "string" }, "model": { "type": ["string", "null"] },
+          "result": { "type": ["string", "null"] }, "error": { "type": ["string", "null"] },
+          "code": { "type": ["string", "null"] }
+        }
       }
     },
     {
@@ -605,6 +642,15 @@
         "name": "run_cancel", "title": "Cancel run", "readOnlyHint": false,
         "destructiveHint": true, "idempotentHint": true, "openWorldHint": false,
         "description": "Cancel one of your runs (its engine is stopped), or one of your schedules."
+      },
+      "answer": {
+        "required": {},
+        "optional": {
+          "run_id": { "type": "string" }, "state": { "type": "string" },
+          "engine": { "type": "string" }, "model": { "type": ["string", "null"] },
+          "result": { "type": ["string", "null"] }, "error": { "type": ["string", "null"] },
+          "code": { "type": ["string", "null"] }
+        }
       }
     },
     {
@@ -630,19 +676,16 @@
       "door": "sessionExtend", "class": "read", "capability": null, "args": "none"
     },
     {
-      "door": "sessionClose", "class": "reduce", "capability": null, "args": "none",
-      "answer": { "required": { "closed": { "type": "integer" } }, "optional": {} }
+      "door": "sessionClose", "class": "reduce", "capability": null, "args": "none"
     },
     {
       "door": "sessionCloseAll", "class": "reduce", "capability": null, "args": "none"
     },
     {
-      "door": "sandboxBilled", "class": null, "capability": null, "args": "loose",
-      "answer": { "required": { "counted": { "type": "boolean" } }, "optional": {} }
+      "door": "sandboxBilled", "class": null, "capability": null, "args": "loose"
     },
     {
-      "door": "sandboxDays", "class": "read", "capability": null, "args": "loose",
-      "answer": { "required": { "days": { "type": "array" } }, "optional": {} }
+      "door": "sandboxDays", "class": "read", "capability": null, "args": "loose"
     },
     {
       "door": "storageUsage", "class": "read", "capability": null, "args": "none"
@@ -674,31 +717,16 @@
       "door": "exportEnd", "class": "reduce", "capability": null, "args": "loose"
     },
     {
-      "door": "dataKeyRewrap", "class": "admission", "capability": null, "args": "none",
-      "answer": {
-        "required": {
-          "rewrapped": { "type": "boolean" }, "roots": { "type": "integer" },
-          "left": { "type": "integer" }, "kid": { "type": ["string", "null"] }
-        },
-        "optional": {}
-      }
+      "door": "dataKeyRewrap", "class": "admission", "capability": null, "args": "none"
     },
     {
-      "door": "gatewayReseal", "class": "admission", "capability": null, "args": "none",
-      "answer": {
-        "required": {
-          "resealed": { "type": "integer" }, "left": { "type": "integer" },
-          "kid": { "type": ["string", "null"] }
-        },
-        "optional": {}
-      }
+      "door": "gatewayReseal", "class": "admission", "capability": null, "args": "none"
     },
     {
       "door": "policyRead", "class": "read", "capability": null, "args": "none",
       "answer": {
         "required": {
           "generation": { "type": "integer" }, "policy": { "type": "object" },
-          "notes": { "type": "array" }, "hooks": { "type": "object" },
           "codemode": { "type": "object" }
         },
         "optional": {}
@@ -758,7 +786,8 @@
       }
     },
     {
-      "door": "actionRequests", "class": "read", "capability": null, "args": "none"
+      "door": "actionRequests", "class": "read", "capability": null, "args": "none",
+      "answer": { "required": { "cards": { "type": "array" } }, "optional": {} }
     },
     {
       "door": "actionApprove", "class": "work", "capability": null,
@@ -766,7 +795,8 @@
         "refused": "invalid action request",
         "required": { "card_id": { "type": "string" }, "digest": { "type": "string" } },
         "optional": {}
-      }
+      },
+      "answer": { "required": { "run": { "type": ["string", "null"] } }, "optional": {} }
     },
     {
       "door": "actionRefuse", "class": "reduce", "capability": null,
@@ -856,8 +886,7 @@
       "args": {
         "refused": "invalid erasure request", "required": { "confirm": { "type": "string" } },
         "optional": {}
-      },
-      "answer": { "required": { "erasing": { "type": "boolean" } }, "optional": {} }
+      }
     },
     {
       "door": "erasureOutside", "class": "admission", "capability": null, "args": "none",
@@ -911,10 +940,7 @@
       },
       "answer": {
         "required": { "state": { "type": "string" } },
-        "optional": {
-          "receipt": { "type": "string" }, "deduped": { "type": "boolean" },
-          "error": { "type": "string" }
-        }
+        "optional": { "error": { "type": "string" } }
       }
     },
     {
@@ -954,7 +980,7 @@
           "optional": {}, "refused": "invalid ledger request"
         }
       },
-      "answer": { "required": { "agent_id": { "type": "string" } }, "optional": {} }
+      "answer": { "required": { "display_name": { "type": "string" } }, "optional": {} }
     },
     {
       "door": "registerProposals", "class": "read", "capability": null, "args": "none",
@@ -1013,14 +1039,16 @@
     },
     {
       "door": "connectionCommit", "class": "work", "act": { "name": "security.change" },
-      "capability": null, "args": "loose"
+      "capability": null, "args": "loose",
+      "answer": { "required": { "display_name": { "type": "string" } }, "optional": {} }
     },
     {
       "door": "connectionRevoke", "class": "reduce", "act": { "name": "security.change" },
       "capability": null, "args": "loose"
     },
     {
-      "door": "connectionList", "class": "read", "capability": null, "args": "none"
+      "door": "connectionList", "class": "read", "capability": null, "args": "none",
+      "answer": { "required": { "connections": { "type": "array" } }, "optional": {} }
     },
     {
       "door": "flowFinish", "class": "work", "capability": null, "args": "loose",
@@ -1038,8 +1066,7 @@
       "answer": { "required": { "notices": { "type": "array" } }, "optional": {} }
     },
     {
-      "door": "starterReceipts", "class": "read", "capability": null, "args": "none",
-      "answer": { "required": { "version": { "type": "integer" } }, "optional": {} }
+      "door": "starterReceipts", "class": "read", "capability": null, "args": "none"
     },
     {
       "door": "admissionSet", "class": "admission", "capability": null, "args": "loose",
@@ -1047,14 +1074,7 @@
     },
     {
       "door": "ownerState", "class": "admission", "capability": null, "args": "none",
-      "answer": {
-        "required": {
-          "state": { "type": "string" }, "reasons": { "type": "array" },
-          "tier": { "type": "string" }, "restore": { "type": ["string", "null"] },
-          "runs": { "type": "integer" }, "stored_bytes": { "type": "integer" }
-        },
-        "optional": {}
-      }
+      "answer": { "required": { "state": { "type": "string" } }, "optional": {} }
     },
     {
       "door": "toolProfile", "class": "read", "capability": null, "args": "none",
@@ -1119,7 +1139,7 @@
       },
       "answer": {
         "required": { "entry": { "type": "object" } },
-        "optional": { "inline": { "type": "bytes" }, "chunks": { "type": "array" } }
+        "optional": { "inline": { "type": "bytes" } }
       }
     },
     {
@@ -1208,19 +1228,22 @@
           "tool_input": { "type": ["string", "number", "boolean", "object", "array", "null"] }
         }
       },
-      "answer": {
-        "required": {},
-        "optional": {
-          "tools": { "type": "array" }, "generation": { "type": "integer" },
-          "allow": { "type": "boolean" }, "hook": { "type": "object" }
-        }
-      }
+      "answer": { "required": {}, "optional": { "hook": { "type": "object" } } }
     },
     {
       "door": "signinStart", "class": "work", "capability": null,
       "args": {
         "refused": "invalid run request", "required": { "engine": { "type": "string" } },
         "optional": { "authority": { "type": "string" }, "mode": { "type": "string" } }
+      },
+      "answer": {
+        "required": {},
+        "optional": {
+          "started": { "type": "boolean" }, "code": { "type": ["string", "null"] },
+          "id": { "type": "string" }, "state": { "type": "string" },
+          "url": { "type": ["string", "null"] }, "host": { "type": ["string", "null"] },
+          "accepts_code": { "type": "boolean" }
+        }
       }
     },
     {
@@ -1242,13 +1265,20 @@
     },
     {
       "door": "signinList", "class": "read", "capability": null, "args": "none",
-      "answer": { "required": { "engines": { "type": "array" } }, "optional": {} }
+      "answer": {
+        "required": { "signins": { "type": "array" }, "engines": { "type": "array" } },
+        "optional": {}
+      }
     },
     {
       "door": "runList", "class": "read", "capability": null,
       "args": {
         "refused": "invalid run request", "required": {},
         "optional": { "before": { "type": "integer" }, "limit": { "type": "integer" } }
+      },
+      "answer": {
+        "required": { "runs": { "type": "array" }, "next": { "type": ["integer", "null"] } },
+        "optional": {}
       }
     },
     {
@@ -1266,29 +1296,21 @@
       "args": {
         "refused": "invalid run request", "required": { "conversation_id": { "type": "string" } },
         "optional": {}
-      }
+      },
+      "answer": { "required": { "ticket": { "type": "string" } }, "optional": {} }
     },
     {
       "door": "socketsEnd", "class": "reduce", "capability": null, "args": "none"
     },
     {
-      "door": "tierSet", "class": "admission", "capability": null, "args": "loose",
-      "answer": { "required": { "tier": { "type": "string" } }, "optional": {} }
+      "door": "tierSet", "class": "admission", "capability": null, "args": "loose"
     },
     {
       "door": "tierRead", "class": "read", "capability": null, "args": "none",
       "answer": { "required": { "tier": { "type": "string" } }, "optional": {} }
     },
     {
-      "door": "restoreSource", "class": "admission", "capability": null, "args": "none",
-      "answer": {
-        "required": {
-          "namespace": { "type": ["string", "null"] }, "generations": { "type": "array" },
-          "state": { "type": "string" }, "begins": { "type": "boolean" },
-          "restore": { "type": ["object", "null"] }
-        },
-        "optional": {}
-      }
+      "door": "restoreSource", "class": "admission", "capability": null, "args": "none"
     },
     {
       "door": "restoreBegin", "class": "admission", "capability": null,
@@ -1296,25 +1318,13 @@
         "refused": "invalid restore request",
         "required": { "namespace": { "type": "string" }, "gen": { "type": "string" } },
         "optional": {}
-      },
-      "answer": {
-        "required": { "step": { "type": "string" }, "done": { "type": "boolean" } },
-        "optional": {
-          "failed": { "type": "string" }, "gen": { "type": "string" },
-          "rows": { "type": "integer" }, "chunks": { "type": "integer" },
-          "keys": { "type": "array" }, "state": { "type": "string" }, "reasons": { "type": "array" }
-        }
       }
     },
     {
       "door": "restoreStep", "class": "admission", "capability": null, "args": "none",
       "answer": {
-        "required": { "step": { "type": "string" }, "done": { "type": "boolean" } },
-        "optional": {
-          "failed": { "type": "string" }, "gen": { "type": "string" },
-          "rows": { "type": "integer" }, "chunks": { "type": "integer" },
-          "keys": { "type": "array" }, "state": { "type": "string" }, "reasons": { "type": "array" }
-        }
+        "required": { "done": { "type": "boolean" } },
+        "optional": { "keys": { "type": "array" } }
       }
     },
     {
@@ -1323,28 +1333,12 @@
         "refused": "invalid restore request",
         "required": { "namespace": { "type": "string" }, "gen": { "type": "string" } },
         "optional": {}
-      },
-      "answer": {
-        "required": {
-          "step": { "type": "string" }, "namespace": { "type": "string" },
-          "gen": { "type": "string" }, "fresh": { "type": ["string", "null"] },
-          "written": { "type": "boolean" }, "confirm": { "type": ["string", "null"] }
-        },
-        "optional": {}
       }
     },
     {
       "door": "restoreWipe", "class": "admission", "capability": null,
       "args": {
         "refused": "invalid restore request", "required": { "confirm": { "type": "string" } },
-        "optional": {}
-      },
-      "answer": {
-        "required": {
-          "step": { "type": "string" }, "namespace": { "type": "string" },
-          "gen": { "type": "string" }, "fresh": { "type": ["string", "null"] },
-          "written": { "type": "boolean" }, "confirm": { "type": ["string", "null"] }
-        },
         "optional": {}
       }
     },
@@ -1356,13 +1350,6 @@
       "args": {
         "refused": "invalid restore request", "required": { "from": { "type": "integer" } },
         "optional": {}
-      },
-      "answer": {
-        "required": {
-          "chunks": { "type": "array" }, "generations": { "type": "array" },
-          "next": { "type": ["integer", "null"] }
-        },
-        "optional": {}
       }
     },
     {
@@ -1371,10 +1358,6 @@
         "refused": "invalid restore request",
         "required": { "namespace": { "type": "string" }, "gen": { "type": "string" } },
         "optional": {}
-      },
-      "answer": {
-        "required": { "namespace": { "type": "string" }, "held": { "type": "string" } },
-        "optional": {}
       }
     },
     {
@@ -1382,9 +1365,8 @@
       "answer": {
         "required": { "ok": { "type": "boolean" } },
         "optional": {
-          "reservation": { "type": "string" }, "connection": { "type": "string" },
-          "blob": { "type": "string" }, "version": { "type": "integer" },
-          "generation": { "type": "integer" }, "metered": { "type": "boolean" },
+          "reservation": { "type": "string" }, "blob": { "type": "string" },
+          "version": { "type": "integer" }, "metered": { "type": "boolean" },
           "ended": { "type": "stream" }, "code": { "type": "string" },
           "receipt": { "type": ["string", "null"] }
         }
@@ -1407,8 +1389,7 @@
       "door": "egressSettle", "class": "reduce", "capability": null, "args": "loose"
     },
     {
-      "door": "egressReceipts", "class": "read", "capability": null, "args": "none",
-      "answer": { "required": { "receipts": { "type": "array" } }, "optional": {} }
+      "door": "egressReceipts", "class": "read", "capability": null, "args": "none"
     },
     {
       "door": "fileSyncCommit", "class": "work", "act": { "name": "workspace.files" },

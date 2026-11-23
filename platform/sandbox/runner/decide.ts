@@ -16,7 +16,7 @@
  * asks which tools the hook matches instead and prints them: the runner's start check.
  */
 import { DECIDE_HEADER, decideCredential, egressDoor } from "../../contract/src/egress";
-import type { DoorAnswer } from "../../contract/src/owner";
+import type { DecideAnswer } from "../../contract/src/owner";
 
 import { COMMAND, hookProgram } from "./protocol";
 
@@ -32,7 +32,7 @@ const REFUSE = 2;
 
 /** Each field the door answers (`runDecide`), as read: anything, until it is held. */
 type Fields<A> = A extends object ? keyof A : never;
-type Answer = Partial<Record<Fields<DoorAnswer<"runDecide">>, unknown>>;
+type Answer = Partial<Record<Fields<DecideAnswer>, unknown>>;
 
 /** Whether `url` is the decide door: http(s), its path the door's, nothing after it. */
 function isDoor(url: string): boolean {

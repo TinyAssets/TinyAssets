@@ -35,8 +35,7 @@ import { sha256Hex } from "../../contract/src/digest";
 import { EGRESS_BODY_MAX } from "../../contract/src/limits";
 
 import { type Profile, profile as checkedProfile, proves } from "../../contract/src/inbound-proof";
-import type { InboundAnswer } from "../../contract/src/binding";
-import type { JsonBody } from "../../contract/src/owner";
+import type { DoorAnswer, JsonBody } from "../../contract/src/owner";
 import { Refusal } from "../../contract/src/refusal";
 
 import apps from "../shared-apps.json" with { type: "json" };
@@ -200,7 +199,7 @@ function capabilityEvent(token: string, request: Request): Routed {
 }
 
 /** The object's answer as the sender gets it; a refused one is thrown, for its surface. */
-function delivered(accepted: InboundAnswer): Response {
+function delivered(accepted: DoorAnswer<"inboundAccept">): Response {
   if (accepted.state === "refused") {
     throw new Refusal(accepted.error);
   }

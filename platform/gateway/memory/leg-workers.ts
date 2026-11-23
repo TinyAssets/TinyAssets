@@ -23,7 +23,7 @@ import { CONTROL_KEY } from "../../contract/src/control";
 import { EGRESS_HOST } from "../../contract/src/egress";
 import { source } from "../../contract/src/egress-scope";
 import type { ConnectService } from "../../contract/src/gateway";
-import type { DoorAnswer, DoorLoose } from "../../contract/src/owner";
+import type { DoorAnswer, DoorLoose, EgressOpened } from "../../contract/src/owner";
 import type { OwnerDoors } from "../../contract/src/owner-doors";
 import { LEASE_LIVED, mintToken } from "../../contract/src/routing-mac";
 import { builtinCatalog } from "../src/catalog";
@@ -55,7 +55,7 @@ export class LegOwner extends DurableObject<Env> implements EgressDoors {
     await this.ctx.storage.put("blob", blob);
   }
 
-  async egressOpen(): Promise<DoorAnswer<"egressOpen">> {
+  async egressOpen(): Promise<EgressOpened> {
     const blob = await this.ctx.storage.get<string>("blob");
     if (blob === undefined) {
       throw new Error("no blob held: the leg seals one (`/seal`) before any call");

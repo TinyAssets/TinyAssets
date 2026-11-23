@@ -53,15 +53,18 @@ function names(door: string, fields: Readonly<Record<string, unknown>>): string 
 
 /**
  * A field type's TypeScript type: a request's (`REQUEST_TS`), or an answer's, whose object is
- * `object`, which a handler's answer of an interface type is, its fields `DoorTypes`'s to say.
+ * `object`, which a handler's answer of an interface type is, and whose list holds values RPC
+ * carries (a list of `unknown` makes a stub's whole answer `never`, which reads as anything);
+ * an object's fields and a list's items are `DoorTypes`'s to say.
  */
 const REQUEST_TS: Readonly<Record<FieldType, string>> = Object.freeze({
   string: "string", integer: "number", number: "number", boolean: "boolean",
   object: "Readonly<Record<string, unknown>>", array: "readonly unknown[]", null: "null",
   bytes: "Uint8Array", stream: "ReadableStream<Uint8Array>",
 });
-const ANSWER_TS: Readonly<Record<FieldType, string>> =
-  Object.freeze({ ...REQUEST_TS, object: "object" });
+const ANSWER_TS: Readonly<Record<FieldType, string>> = Object.freeze({
+  ...REQUEST_TS, object: "object", array: "readonly (string | number | boolean | object | null)[]",
+});
 
 /** One field as its type's member: its value's type, from its schema (`fieldTypes`), in `ts`. */
 function member(door: string, name: string, schema: unknown, optional: boolean,
@@ -132,16 +135,21 @@ function requestsSource(rows: readonly DoorRow[]): string {
     return [`${fieldsType(row.door, args, lead, "  ")};`];
   });
   const answers = rows.flatMap((row) => row.answer === undefined ? [] : [row.door]);
-  /** The fields of `door`'s answer that `unread` lists (`listed`), or the others. */
+  /**
+   * The fields of `door`'s answer that `unread` lists (`listed`), or the others; with none
+   * required, an `object` too, so an arm of a union answer that has none of them is still one
+   * (`tsc` refuses a value sharing no field with a type of optional fields alone).
+   */
   const answerType = (door: string, listed: boolean): string => {
     const answer = rows.find((row) => row.door === door)!.answer as Answer;
     const kept = ([name]: [string, unknown]) =>
       (answer.unread ?? []).includes(name) === listed;
+    const required = Object.fromEntries(Object.entries(answer.required).filter(kept));
     return `${fieldsType(door, {
-      required: Object.fromEntries(Object.entries(answer.required).filter(kept)),
-      optional: Object.fromEntries(Object.entries(answer.optional).filter(kept)) },
+      required, optional: Object.fromEntries(Object.entries(answer.optional).filter(kept)) },
     `  readonly ${door}:`, "  ", ANSWER_TS,
-    !listed && answer.nullable === true ? " | null" : "")};`;
+    `${Object.keys(required).length === 0 ? " & object" : ""}${
+      !listed && answer.nullable === true ? " | null" : ""}`)};`;
   };
   const unread = answers.filter((door) =>
     rows.find((row) => row.door === door)!.answer!.unread !== undefined);

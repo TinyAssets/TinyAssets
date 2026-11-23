@@ -319,39 +319,69 @@ export interface DoorRequests {
 
 /** What the doors read of each answer its row declares: its fields, but `unread` ones. */
 export interface DoorAnswers {
-  readonly outsideAgents: { readonly owner_agents: readonly unknown[] };
-  readonly collectionGet: { readonly row: object | null };
+  readonly inboxDigest: { readonly mail: object; readonly rooms: object };
+  readonly boardDigest: { readonly rows: readonly (string | number | boolean | object | null)[] };
+  readonly outsideAgents: {
+    readonly agents: readonly (string | number | boolean | object | null)[];
+    readonly owner_agents: readonly (string | number | boolean | object | null)[];
+    readonly apps: readonly (string | number | boolean | object | null)[];
+  };
   readonly fileStat: { readonly entry: object | null };
+  readonly fileList: { readonly entries: readonly (string | number | boolean | object | null)[] };
+  readonly fileWrite: { readonly entry?: object } & object;
+  readonly fileUsage: {
+    readonly entries: number;
+    readonly chunk_bytes: number;
+    readonly inline_bytes: number;
+  };
+  readonly agentSubmit: {
+    readonly run_id: string;
+    readonly conversation_id: string;
+    readonly state: string;
+    readonly engine: string;
+    readonly model: string | null;
+    readonly result: string | null;
+    readonly error: string | null;
+    readonly code: string | null;
+  };
+  readonly agentStatus: {
+    readonly run_id?: string;
+    readonly state?: string;
+    readonly engine?: string;
+    readonly model?: string | null;
+    readonly result?: string | null;
+    readonly error?: string | null;
+    readonly code?: string | null;
+  } & object;
+  readonly agentCancel: {
+    readonly run_id?: string;
+    readonly state?: string;
+    readonly engine?: string;
+    readonly model?: string | null;
+    readonly result?: string | null;
+    readonly error?: string | null;
+    readonly code?: string | null;
+  } & object;
   readonly sessionOpen: { readonly session: string };
-  readonly sessionClose: { readonly closed: number };
-  readonly sandboxBilled: { readonly counted: boolean };
-  readonly sandboxDays: { readonly days: readonly unknown[] };
   readonly ownerExport: {
     readonly export_id: string;
-    readonly lines: readonly unknown[];
+    readonly lines: readonly (string | number | boolean | object | null)[];
     readonly next: string | null;
     readonly pending: boolean;
-  };
-  readonly dataKeyRewrap: {
-    readonly rewrapped: boolean;
-    readonly roots: number;
-    readonly left: number;
-    readonly kid: string | null;
-  };
-  readonly gatewayReseal: {
-    readonly resealed: number;
-    readonly left: number;
-    readonly kid: string | null;
   };
   readonly policyRead: {
     readonly generation: number;
     readonly policy: object;
-    readonly notes: readonly unknown[];
-    readonly hooks: object;
     readonly codemode: object;
   };
-  readonly policyProposals: { readonly cards: readonly unknown[] };
-  readonly grantList: { readonly clients: readonly unknown[] };
+  readonly policyProposals: {
+    readonly cards: readonly (string | number | boolean | object | null)[];
+  };
+  readonly actionRequests: {
+    readonly cards: readonly (string | number | boolean | object | null)[];
+  };
+  readonly actionApprove: { readonly run: string | null };
+  readonly grantList: { readonly clients: readonly (string | number | boolean | object | null)[] };
   readonly grantRevoke: {
     readonly client: string;
     readonly revoked: boolean;
@@ -362,14 +392,13 @@ export interface DoorAnswers {
   readonly keyMint: {
     readonly name: string;
     readonly created_at: number;
-    readonly scopes: readonly unknown[];
+    readonly scopes: readonly (string | number | boolean | object | null)[];
   };
-  readonly keyList: { readonly keys: readonly unknown[] };
+  readonly keyList: { readonly keys: readonly (string | number | boolean | object | null)[] };
   readonly ownerErase: { readonly erasing: boolean };
-  readonly erasureBegin: { readonly erasing: boolean };
   readonly erasureOutside: {
-    readonly keys: readonly unknown[];
-    readonly routes: readonly unknown[];
+    readonly keys: readonly (string | number | boolean | object | null)[];
+    readonly routes: readonly (string | number | boolean | object | null)[];
   } | null;
   readonly inboundCreate: {
     readonly binding_id: string;
@@ -382,24 +411,25 @@ export interface DoorAnswers {
     readonly route: string;
   };
   readonly inboundRevoke: { readonly route: string | null };
-  readonly inboundAccept: {
-    readonly state: string;
-    readonly receipt?: string;
-    readonly deduped?: boolean;
-    readonly error?: string;
-  };
+  readonly inboundAccept: { readonly state: string; readonly error?: string };
   readonly fileUploadTarget: {
     readonly namespace: string;
     readonly key: string;
-    readonly chunks: readonly unknown[];
-    readonly pending: readonly unknown[];
+    readonly chunks: readonly (string | number | boolean | object | null)[];
+    readonly pending: readonly (string | number | boolean | object | null)[];
   };
-  readonly registerAgent: { readonly agent_id: string };
-  readonly registerProposals: { readonly cards: readonly unknown[] };
+  readonly registerAgent: { readonly display_name: string };
+  readonly registerProposals: {
+    readonly cards: readonly (string | number | boolean | object | null)[];
+  };
   readonly connectionPrepare: {
     readonly connection: string;
     readonly version: number;
     readonly flow?: object;
+  };
+  readonly connectionCommit: { readonly display_name: string };
+  readonly connectionList: {
+    readonly connections: readonly (string | number | boolean | object | null)[];
   };
   readonly flowFinish: {
     readonly connection: string;
@@ -408,102 +438,54 @@ export interface DoorAnswers {
     readonly redirect_uri: string;
     readonly source: string;
   };
-  readonly noticeList: { readonly notices: readonly unknown[] };
-  readonly starterReceipts: { readonly version: number };
+  readonly noticeList: { readonly notices: readonly (string | number | boolean | object | null)[] };
   readonly admissionSet: { readonly state: string };
-  readonly ownerState: {
-    readonly state: string;
-    readonly reasons: readonly unknown[];
-    readonly tier: string;
-    readonly restore: string | null;
-    readonly runs: number;
-    readonly stored_bytes: number;
-  };
+  readonly ownerState: { readonly state: string };
   readonly toolProfile: {
     readonly profile: string;
-    readonly tools: readonly unknown[];
-    readonly withheld: readonly unknown[];
+    readonly tools: readonly (string | number | boolean | object | null)[];
+    readonly withheld: readonly (string | number | boolean | object | null)[];
   };
   readonly definitionRead: {
     readonly agent: string;
     readonly instructions: Uint8Array | null;
     readonly soul: Uint8Array | null;
-    readonly skills: readonly unknown[];
+    readonly skills: readonly (string | number | boolean | object | null)[];
   };
-  readonly wakeEvents: { readonly events: readonly unknown[] };
-  readonly fileRead: {
-    readonly entry: object;
-    readonly inline?: Uint8Array;
-    readonly chunks?: readonly unknown[];
+  readonly wakeEvents: { readonly events: readonly (string | number | boolean | object | null)[] };
+  readonly fileRead: { readonly entry: object; readonly inline?: Uint8Array };
+  readonly fileReadChunks: {
+    readonly chunks: readonly (string | number | boolean | object | null)[];
   };
-  readonly fileReadChunks: { readonly chunks: readonly unknown[] };
-  readonly runDecide: {
-    readonly tools?: readonly unknown[];
-    readonly generation?: number;
-    readonly allow?: boolean;
-    readonly hook?: object;
-  };
-  readonly signinList: { readonly engines: readonly unknown[] };
-  readonly tierSet: { readonly tier: string };
-  readonly tierRead: { readonly tier: string };
-  readonly restoreSource: {
-    readonly namespace: string | null;
-    readonly generations: readonly unknown[];
-    readonly state: string;
-    readonly begins: boolean;
-    readonly restore: object | null;
-  };
-  readonly restoreBegin: {
-    readonly step: string;
-    readonly done: boolean;
-    readonly failed?: string;
-    readonly gen?: string;
-    readonly rows?: number;
-    readonly chunks?: number;
-    readonly keys?: readonly unknown[];
+  readonly runDecide: { readonly hook?: object } & object;
+  readonly signinStart: {
+    readonly started?: boolean;
+    readonly code?: string | null;
+    readonly id?: string;
     readonly state?: string;
-    readonly reasons?: readonly unknown[];
+    readonly url?: string | null;
+    readonly host?: string | null;
+    readonly accepts_code?: boolean;
+  } & object;
+  readonly signinList: {
+    readonly signins: readonly (string | number | boolean | object | null)[];
+    readonly engines: readonly (string | number | boolean | object | null)[];
   };
-  readonly restoreStep: {
-    readonly step: string;
-    readonly done: boolean;
-    readonly failed?: string;
-    readonly gen?: string;
-    readonly rows?: number;
-    readonly chunks?: number;
-    readonly keys?: readonly unknown[];
-    readonly state?: string;
-    readonly reasons?: readonly unknown[];
-  };
-  readonly restorePin: {
-    readonly step: string;
-    readonly namespace: string;
-    readonly gen: string;
-    readonly fresh: string | null;
-    readonly written: boolean;
-    readonly confirm: string | null;
-  };
-  readonly restoreWipe: {
-    readonly step: string;
-    readonly namespace: string;
-    readonly gen: string;
-    readonly fresh: string | null;
-    readonly written: boolean;
-    readonly confirm: string | null;
-  };
-  readonly restoreNames: {
-    readonly chunks: readonly unknown[];
-    readonly generations: readonly unknown[];
+  readonly runList: {
+    readonly runs: readonly (string | number | boolean | object | null)[];
     readonly next: number | null;
   };
-  readonly restoreHold: { readonly namespace: string; readonly held: string };
+  readonly socketTicket: { readonly ticket: string };
+  readonly tierRead: { readonly tier: string };
+  readonly restoreStep: {
+    readonly done: boolean;
+    readonly keys?: readonly (string | number | boolean | object | null)[];
+  };
   readonly egressOpen: {
     readonly ok: boolean;
     readonly reservation?: string;
-    readonly connection?: string;
     readonly blob?: string;
     readonly version?: number;
-    readonly generation?: number;
     readonly metered?: boolean;
     readonly ended?: ReadableStream<Uint8Array>;
     readonly code?: string;
@@ -515,14 +497,13 @@ export interface DoorAnswers {
     readonly code?: string;
     readonly receipt?: string | null;
   };
-  readonly egressReceipts: { readonly receipts: readonly unknown[] };
   readonly importFileBegin: {
     readonly skipped: boolean;
     readonly intent_id?: string;
     readonly namespace?: string;
     readonly key?: string;
-    readonly chunks?: readonly unknown[];
-    readonly pending?: readonly unknown[];
+    readonly chunks?: readonly (string | number | boolean | object | null)[];
+    readonly pending?: readonly (string | number | boolean | object | null)[];
   };
   readonly importCheck: { readonly more: boolean };
   readonly importDiscard: { readonly namespace: string | null };
