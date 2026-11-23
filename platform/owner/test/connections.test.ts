@@ -1158,9 +1158,12 @@ describe("how strong its models are", () => {
   const OPENROUTER = "openrouter_user_models_v1";
   const kept = (r: Gated) =>
     r.sql("SELECT scores, due IS NOT NULL AS due FROM connection_strength");
-  /** Once the lane has kept a strength read: its due set again. */
-  const read = (r: Gated) => until(async () => ((await r.sql(
-    "SELECT due FROM connection_strength")) as { due: number }[])[0]!.due > 0,
+  /**
+   * Once the lane has kept a strength read: its due set again, after now. A row the lane made
+   * is due at once, and the test sets one due at 0, so neither passes before the read's outcome.
+   */
+  const read = (r: Gated) => until(async () => (await r.sql(
+    "SELECT due FROM connection_strength WHERE due > ?", Date.now() / 1000)).length === 1,
                                    "the strength read");
 
   it("is read once a connection is active, its own models' scores kept, read again daily",
