@@ -8,9 +8,9 @@
  * - **Mint** (`OwnerDO.keyMint`): the key's grant (`Grants.set`, source `api_key`, revision
  *   0; full, as an MCP client's first call records one, unless the mint names scopes) and
  *   this row in one unit, the live keys counted in that unit, so two concurrent mints
- *   cannot pass the count by one. The count is the owner's set clients'
- *   own bound (`GRANT_LIMITS.maxOwnerClients`, the 10 GB's share: each key's grant is an
- *   owner-set client), held equal by a test. An agent's held key request (a policy card,
+ *   cannot pass the count by one. The count is the owner's set clients' own bound
+ *   (`GRANT_LIMITS.maxOwnerClients`, the 10 GB's share: each key's grant is an owner-set
+ *   client), held equal by a test. An agent's held key request (a policy card,
  *   `api_key_request`) is applied with the grant, once, its scopes the card's.
  * - **Use**: every call an API key makes marks its row's `last_used_at`, at most once a
  *   `USE_INTERVAL_S`, so a key's use is a read most calls (as a grant's `last_seen`).
@@ -157,8 +157,9 @@ export const keysDoors = Object.freeze({
    * Mint an API key's record and its grant, in the owner's session, in one unit: the live
    * keys counted there (`MAX_KEYS`, strict), the grant set (source `api_key`, revision 0;
    * scoped when it names scopes, else full), an agent's held key request applied with it
-   * when one is named (`proposal`), and the key's row. The binder then writes the key's directory entry and
-   * shows its secret once (`doors/src/api-keys.ts`); the object never sees the secret.
+   * when one is named (`proposal`), and the key's row. The binder then writes the key's
+   * directory entry and shows its secret once (`doors/src/api-keys.ts`); the object never
+   * sees the secret.
    */
   keyMint(o: KeysDoorNeeds, { session, r }: Call<KeyMintRequest, "session">):
       ApiKey & { scopes: Scope[]; revision: number } {
