@@ -70,10 +70,11 @@ rollback to a version it could not deploy forward from.
   (plan) and `rollbackAsk` (rollback) both read a version through `codeOf` then `sideAt`. In a
   rollback, a target either cannot read stops the run before any change. The stop names the
   Worker, the version and its tag, and the reason. It names the ways out: roll forward, or
-  close the gates. It also names the by-hand path (`wrangler versions deploy <version>@100%`,
-  `checklist.md`), after which the kit plans nothing until that Worker serves a version this
-  kit tagged of a commit holding `handed.json`. `UNKNOWN_CODE` is the one statement of an
-  untagged version `codeOf` cannot trace, used by both stops.
+  close the gates. It also names the by-hand path
+  (`wrangler versions deploy <version>@100% --name <Worker>`, `checklist.md`), after which the
+  kit plans nothing until that Worker serves a version this kit tagged of a commit holding
+  `handed.json`. `UNKNOWN_CODE` is the one statement of an untagged version `codeOf` cannot
+  trace, used by both stops.
 
 ## The problems, with their fixes
 
