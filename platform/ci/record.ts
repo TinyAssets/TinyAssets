@@ -152,7 +152,7 @@ async function recordWorkspace(sides: readonly Side[], workspace: string, shard:
   const passed = await Promise.all(sides.map(async (side, at) => {
     const log = logs[at]!;
     const kept = new Map(recorders.map(({ prefix }) => [`${prefix}\t`, [] as string[]]));
-    const ok = lists[at] !== null && (names.length === 0 ||
+    const ok = lists[at] !== null &&
       await ran(["npx", "vitest", "run", ...CONFIG, "--disableConsoleIntercept", ...filter,
                  ...files], join(side.platform, workspace), log, (text) => {
         const lines = kept.get(text.slice(0, text.indexOf("\t") + 1));
@@ -161,7 +161,7 @@ async function recordWorkspace(sides: readonly Side[], workspace: string, shard:
         } else {
           lines.push(text.replace(/"next":"[^"]*"/g, '"next":"<b64>"'));
         }
-      }));
+      });
     log.end();
     for (const { name, prefix } of recorders) {
       const lines = kept.get(`${prefix}\t`)!.sort();
