@@ -15,12 +15,13 @@
  * (`RESEALED_HEADER`, `egress.ts`).
  *
  * Each value one side builds and the gateway reads has its checker beside its type
- * (`metering`, `doorbellInput`, `ringRequest`, `creditRead`), so its builder and its reader
- * hold one rule.
+ * (`metering`, `doorbellInput`, `ringRequest`; a credit read's, `CreditRead`, is
+ * `egress-scope.ts`'s, as the source records are checked by it too), so its builder and its
+ * reader hold one rule.
  */
-import { keyed, object, valueAtPath, whole } from "./checks.ts";
+import { keyed, object, whole } from "./checks.ts";
 import { taken } from "./handed.ts";
-import type { EgressScope, ServiceSource, Source } from "./egress-scope.ts";
+import type { CreditRead, EgressScope, ServiceSource, Source } from "./egress-scope.ts";
 import type { ModelRecord } from "./model-record.ts";
 import { Refusal } from "./refusal.ts";
 import { AUTH_HEADER } from "./wake-records.ts";
@@ -198,91 +199,9 @@ export type RingAnswer =
   | { readonly state: "refused" }
   | { readonly state: "unknown" };
 
-/**
- * One test of a key's limits answer (`CreditRead`): the value at `path` is `equals`, or a
- * number at most `at_most`.
- */
-export type NoCredit =
-  | { readonly path: readonly string[]; readonly equals: boolean }
-  | { readonly path: readonly string[]; readonly at_most: number };
-
-/**
- * Where a source reports what a key can pay for, from its source record (`credit`): a `GET`
- * of `url` with the sealed secret, whose JSON answer says the key can pay for nothing when
- * any of `none_when` holds. Every test's path must be in the answer (its value may be null),
- * so an answer of another shape is a failed read, never a key that pays.
- */
-export interface CreditRead {
-  readonly url: string;
-  readonly none_when: readonly NoCredit[];
-}
-
 /** What a key's limits answer said: whether it can pay for a priced model. */
 export interface KeyCredit {
   readonly pays: boolean;
-}
-
-const PATH_KEY = /^[A-Za-z0-9_-]{1,64}$/;
-const PATH_MAX = 8;
-const NO_CREDIT_MAX = 8;
-
-function noCredit(value: unknown): NoCredit {
-  const path = object(value) ? value["path"] : undefined;
-  if (!Array.isArray(path) || path.length < 1 || path.length > PATH_MAX
-      || !path.every((key) => typeof key === "string" && PATH_KEY.test(key))) {
-    throw new Refusal("invalid_request");
-  }
-  const kept = Object.freeze([...path] as string[]);
-  if (keyed(value, ["path", "equals"]) && typeof value["equals"] === "boolean") {
-    return Object.freeze({ path: kept, equals: value["equals"] });
-  }
-  if (keyed(value, ["path", "at_most"]) && typeof value["at_most"] === "number"
-      && Number.isFinite(value["at_most"])) {
-    return Object.freeze({ path: kept, at_most: value["at_most"] });
-  }
-  throw new Refusal("invalid_request");
-}
-
-/**
- * A credit read, checked (`invalid_request`): an `https:` URL written as the URL parser
- * writes it, with no fragment, and one to `NO_CREDIT_MAX` tests. The gateway sends it only
- * where the sealed endpoints allow a `GET` (`allows`), so it reaches nothing a sandbox's read
- * could not.
- */
-export function creditRead(value: unknown): CreditRead {
-  if (!keyed(value, ...taken("credit_read")) || typeof value["url"] !== "string"
-      || !Array.isArray(value["none_when"]) || value["none_when"].length < 1
-      || value["none_when"].length > NO_CREDIT_MAX) {
-    throw new Refusal("invalid_request");
-  }
-  let url: URL;
-  try {
-    url = new URL(value["url"]);
-  } catch {
-    throw new Refusal("invalid_request");
-  }
-  if (url.protocol !== "https:" || url.href !== value["url"] || url.hash !== "") {
-    throw new Refusal("invalid_request");
-  }
-  return Object.freeze({ url: url.href,
-                         none_when: Object.freeze(value["none_when"].map(noCredit)) });
-}
-
-/**
- * Whether a key whose limits answer is `body` can pay for a priced model: none of `read`'s
- * tests holds. Null when a test's path is not in the answer: an answer of another shape.
- */
-export function paysBy(read: CreditRead, body: unknown): boolean | null {
-  let none = false;
-  for (const test of read.none_when) {
-    const value = valueAtPath(body, test.path);
-    if (value === undefined) {
-      return null;
-    }
-    none ||= "equals" in test ? value === test.equals
-      : typeof value === "number" && value <= test.at_most;
-  }
-  return !none;
 }
 
 /** The default entrypoint, as the owner's object binds it (`GATEWAY`). */

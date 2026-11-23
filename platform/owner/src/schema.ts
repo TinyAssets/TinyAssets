@@ -2629,9 +2629,10 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   ]),
   // 29 (`connections.ts`; `untangle-2026-11/auto-credit.md`): what each active connection's
   // key can pay for, where its source record says how a key reports it (`credit`): whether
-  // it pays (null until known), and when the `connections` lane reads it next. A row is an active connection's alone: its revoke deletes it. The lane makes one
-  // for each active connection it has not considered, the ones from before among them, so
-  // none needs a reconnect. The provider's, read again, not the owner's: not exported.
+  // it pays (null until known), and when the `connections` lane reads it next. A row is an
+  // active connection's alone: its revoke deletes it. The lane makes one for each active
+  // connection it has not considered, the ones from before among them, so none needs a
+  // reconnect. The provider's, read again, not the owner's: not exported.
   Object.freeze([
     "CREATE TABLE connection_credit (connection TEXT PRIMARY KEY CHECK " +
       "(length(connection) = 25), pays INTEGER CHECK (pays IS NULL OR pays IN (0, 1)), " +

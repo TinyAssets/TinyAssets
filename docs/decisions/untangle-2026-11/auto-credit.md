@@ -52,8 +52,13 @@ Direction 2 puts the vendor's facts in its record, never in code.
   - `interactive` was the source's half of the rule: it is now `pickable`, with the key's
     credit beside it, so the two exclusions are one rule in one place.
 - **The gateway's `credit` reads it, held to the sealed endpoints and to the read's tests,
-  checked by the one rule the record checker uses (`contract/src/gateway.ts` `creditRead`,
+  checked by the one rule the record checker uses (`contract/src/egress-scope.ts` `creditRead`,
   `paysBy`).** An answer missing a test's path is a failed read, never a key that pays (Fact 8).
+  - The rule sits beside `allows`, not in `gateway.ts`: the sandbox runner's bundle reads the
+    source records through `sources/src/check.ts`, and `gateway.ts` imports `wake-records.ts`,
+    which carries the doors' identity (`identity.json`) the runner must never ship (sandbox
+    `guards/template.test.ts`, found in review). The owner's call's keys (`credit_read`) are
+    checked by the gateway (`forward.ts`).
 - **The `connections` lane reads it once a connection is active, and again every hour while the
   key pays for nothing.** An active connection with no credit row is due at once. That covers a
   new connection and every connection made before this, so none needs a reconnect, and no
@@ -61,6 +66,9 @@ Direction 2 puts the vendor's facts in its record, never in code.
 - **A settle with one of the record's refusal statuses marks the key as paying for nothing
   (`Connections.refused`, from `egressSettle`).** This is how the stage connection learns it,
   at its next refused call, with no reconnect.
+  - On such a blob the mark lapses at its hourly recheck (the read answers `endpoint_refused`,
+    so `pays` goes back to unknown): credit bought is seen at the next call, and a key still
+    dry is marked again by its next refusal (found in review: it stayed free-only for good).
   - `egressSettle` now writes a lane's rows, so its door is `synced` (`owner/doors.json`), as
     every door that changes a lane's rows is.
 - **The owner sees it.** The connection's view carries `pays`. The app's sources screen says

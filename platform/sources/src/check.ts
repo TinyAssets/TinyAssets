@@ -12,9 +12,9 @@ import {
 import { object, valueAtPath, whole } from "../../contract/src/checks";
 import { RUN_HEADER } from "../../contract/src/egress";
 import {
-  allows, ID as PROVIDER, keyExchangeSource, type Source, source as gatewaySource,
+  allows, type CreditRead, creditRead, ID as PROVIDER, keyExchangeSource, type Source,
+  source as gatewaySource,
 } from "../../contract/src/egress-scope";
-import { type CreditRead, creditRead } from "../../contract/src/gateway";
 import { HEX64 } from "../../contract/src/ids";
 import { MODEL_ID as MODEL_PATTERN } from "../../contract/src/model-record";
 import {

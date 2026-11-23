@@ -31,13 +31,14 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { type Catalog, modelInfos } from "./catalog";
 import { bearer, type Credential } from "./credential";
 import {
-  allows, egressHeaders, type EgressScope, egressTarget, isService, type Meter, meteredCall,
-  meteredModel, type ModelScope, type Upstream,
+  allows, creditRead, egressHeaders, type EgressScope, egressTarget, isService, type Meter,
+  meteredCall, meteredModel, type ModelScope, paysBy, type Upstream,
 } from "../../contract/src/egress-scope";
 import {
-  creditRead, type KeyCredit, metering, MODEL_NAME, type MeterOutcome, paysBy, type Resealed,
-  type Reservation, type Reserve, type Verified,
+  type KeyCredit, metering, MODEL_NAME, type MeterOutcome, type Resealed, type Reservation,
+  type Reserve, type Verified,
 } from "../../contract/src/gateway";
+import { taken } from "../../contract/src/handed";
 import { boundedJson } from "./answer";
 import { type GatewayCode, Refusal } from "../../contract/src/refusal";
 import { codeOf, failureResponse, upstreamCode } from "./failure";
@@ -46,7 +47,7 @@ import {
   aliased, apiRules, fallbackList, freeCall, manyChoices, paidTool, READS, servedPriced,
   tierMultiplier, unpricedOption,
 } from "../../contract/src/api-rules";
-import { valueAtPath } from "../../contract/src/checks";
+import { keyed, valueAtPath } from "../../contract/src/checks";
 import { clamped, meteredRecord, meteredUsage, Meters } from "./meter";
 import { type Binding, type KeyringEnv, open, type Opened } from "./keyring";
 import {
@@ -614,7 +615,7 @@ export async function verify(env: KeyringEnv, bound: Binding, blob: unknown,
 const CREDIT_ANSWER_MAX = 64 * 1024;
 
 /**
- * What an opened model credential's key can pay for (`CreditRead`, checked here): a `GET` of
+ * What an opened model credential's key can pay for (`credit_read`, checked here): a `GET` of
  * the read's URL, only where the sealed endpoints allow one (`endpoint_refused`), sent as
  * `verify` sends; a 2xx answer's JSON, read to `CREDIT_ANSWER_MAX`, held to the read's
  * tests. Anything else is the upstream outcome's fixed code, and an answer of another shape
@@ -622,6 +623,9 @@ const CREDIT_ANSWER_MAX = 64 * 1024;
  */
 export async function credit(env: KeyringEnv, bound: Binding, blob: unknown,
                              value: unknown): Promise<KeyCredit> {
+  if (!keyed(value, ...taken("credit_read"))) {
+    throw new Refusal("invalid_request");
+  }
   const read = creditRead(value);
   const { credential } = await open(env, bound, blob);
   if (isService(credential.upstream)) {

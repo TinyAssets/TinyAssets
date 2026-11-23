@@ -1145,6 +1145,12 @@ describe("what a key can pay for", () => {
     expect(await told(r)).toBe(1);
     await settle(402);
     expect(await told(r)).toBe(1);
+    // Its recheck, with no read on its blob: the mark lapses, so credit bought is seen.
+    expect(await kept(r)).toEqual([{ pays: 0, due: 1 }]);
+    await r.sql("UPDATE connection_credit SET due = 0");
+    await lanes(r);
+    expect(await pays(r)).toEqual([null]);
+    expect(await kept(r)).toEqual([{ pays: null, due: 0 }]);
   });
 });
 

@@ -62,8 +62,9 @@
  * with one of the record's `refused` statuses (`refused`, at its settle) says the key pays for
  * nothing too, which is how a connection sealed before its record named the read learns it.
  * A key that pays for nothing is read again every `creditRecheckS`, so credit bought shows
- * within that; one that pays is not read again until a refusal says otherwise. `auto` reads it
- * (`usable`; `sources/src/ranking.ts` `pickable`), and so does the owner's view.
+ * within that (on a blob with no read, a refused call's mark lapses then, learned again at
+ * the next refusal); one that pays is not read again until a refusal says otherwise. `auto`
+ * reads it (`usable`; `sources/src/ranking.ts` `pickable`), and so does the owner's view.
  *
  * Every write is a unit of the object's gate, and each unit reads what it acts on: a door's
  * body, or a step between the lane's or a call's outside calls. Bounds: `maxConnections`
@@ -77,7 +78,7 @@ import { randomBytes } from "node:crypto";
 
 
 import {
-  egressScope, type EgressScope, SERVICE_PROVIDER,
+  type CreditRead, egressScope, type EgressScope, SERVICE_PROVIDER,
 } from "../../contract/src/egress-scope";
 import { base64url, KID, parseBlob } from "../../contract/src/envelope";
 import { fields } from "../../contract/src/doors";
@@ -85,9 +86,7 @@ import { type ShapeName, taken } from "../../contract/src/handed";
 import { checkedRecord, type ModelRecord } from "../../contract/src/model-record";
 import { bundledSources } from "../../sources/src/catalog";
 
-import type {
-  CreditRead, GatewayService, KeyCredit, Refreshed,
-} from "../../contract/src/gateway";
+import type { GatewayService, KeyCredit, Refreshed } from "../../contract/src/gateway";
 import type {
   ConnectionCommitRequest, ConnectionPrepareRequest, ConnectionRequest, FlowFinishRequest,
   ResealAnswer, Swept,
@@ -1039,16 +1038,26 @@ export class Connections {
   /**
    * In a unit: a credit read's outcome, for the connection at `version` still active: a
    * verdict kept, read again after `creditRecheckS` when it pays for nothing; nothing to read
-   * on its blob (`none`), no read due; a failure, read again after `creditRecheckS`.
+   * on its blob (`none`), not known, and no read due, so what a refused call said lapses once
+   * its recheck is due and credit bought is seen at the next call; a failure, read again after
+   * `creditRecheckS`.
    */
   #credited(id: string, version: number, outcome: KeyCredit | "none" | "failed",
             now: number): void {
     if (!this.current(id, version)) {
       return;
     }
-    if (outcome === "none" || outcome === "failed") {
+    if (outcome === "failed") {
       this.#sql.exec("UPDATE connection_credit SET due = ? WHERE connection = ?",
-                     outcome === "none" ? null : now + CONNECTION_LIMITS.creditRecheckS, id);
+                     now + CONNECTION_LIMITS.creditRecheckS, id);
+      return;
+    }
+    if (outcome === "none") {
+      if (this.#row(id)!.pays !== null) {
+        this.#changed();
+      }
+      this.#sql.exec("UPDATE connection_credit SET pays = NULL, due = NULL WHERE connection = ?",
+                     id);
       return;
     }
     this.#pays(id, outcome.pays, now);

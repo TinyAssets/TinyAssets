@@ -579,6 +579,7 @@ describe("credit", () => {
     expect(JSON.stringify(evil)).not.toContain("sk-free");
     for (const bad of [{ ...READ, extra: 1 }, { ...READ, none_when: [] },
                        { ...READ, url: "http://credit.test/key" },
+                       { ...READ, url: "https://credit.test/key?key=1" },
                        { ...READ, none_when: [{ path: ["data"], equals: "yes" }] }]) {
       expect(await read("sk-free", LIMITED, bad), JSON.stringify(bad))
         .toMatchObject({ code: "invalid_request" });

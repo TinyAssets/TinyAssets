@@ -22,9 +22,9 @@
  * first token). A request with an `id` is recorded as it arrives, read back from
  * `https://status.test/cancelled?id=<id>` (`arrived`), so a test acts once the provider has
  * it; `auth.test` is a token endpoint; `keys.test` is a key-exchange endpoint (OpenRouter's
- * PKCE flow); `credit.test/key` a key's limits (`keyLimits`); `evil.test` records everything it receives, read back from
- * `https://status.test/evil`, so a test sees whether a redirect was followed. It is test
- * code: its module state (the cancel registry, the evil log) is the fake's, never the
+ * PKCE flow); `credit.test/key` a key's limits (`keyLimits`); `evil.test` records
+ * everything it receives, read back from `https://status.test/evil`, so a test sees whether
+ * a redirect was followed. It is test code: its module state (the cancel registry, the evil log) is the fake's, never the
  * gateway's. `doorbell.test`, and Claude's `/fire` path on `api.anthropic.com`, are a
  * doorbell's receiver: each request is recorded, read back from
  * `https://status.test/doorbell`, and answered by its path: `status-<n>` that status
