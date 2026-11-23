@@ -2822,6 +2822,22 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "AND length(CAST(models AS BLOB)) <= 655360)), due REAL) WITHOUT ROWID",
     "CREATE INDEX connection_listing_due ON connection_listing (due) WHERE due IS NOT NULL",
   ]),
+  // 34 (`connections.ts`; `untangle-2026-11/listing-records.md`): each active model
+  // connection's models as the `connections` lane last read them: the records its blob reaches
+  // by the gateway's catalog now, of them the ones its vendor's listing lists where its record
+  // names one, each with its score or null (a JSON list of record and score pairs, null until
+  // read, within `MODELS_JSON_MAX`), and when the lane reads them next. It replaces migration
+  // 33's listing, which held the ids of the models committed at connect, so a catalog bump
+  // reached no connection: the lane makes each active connection's row due at once, so none
+  // needs a reconnect. A row is an active connection's alone: its revoke deletes it. The
+  // gateway's and the vendor's, read again, not the owner's: not exported.
+  Object.freeze([
+    "DROP TABLE connection_listing",
+    "CREATE TABLE connection_models (connection TEXT PRIMARY KEY CHECK " +
+      "(length(connection) = 25), models TEXT CHECK (models IS NULL OR (json_valid(models) " +
+      "AND length(CAST(models AS BLOB)) <= 655360)), due REAL) WITHOUT ROWID",
+    "CREATE INDEX connection_models_due ON connection_models (due) WHERE due IS NOT NULL",
+  ]),
 ]);
 
 /**
@@ -2916,6 +2932,7 @@ export const FORWARD: readonly (string | null)[] = Object.freeze([
   PRIVATE_SPACES,  // 31
   null,  // 32
   null,  // 33
+  null,  // 34
 ]);
 
 /**

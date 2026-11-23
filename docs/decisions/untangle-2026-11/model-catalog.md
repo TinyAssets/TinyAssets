@@ -161,10 +161,12 @@ pi is no longer the engine the platform runs, but pi-ai is more than a catalog t
   so an OpenRouter connection lists none of them (20 in 1.6.0, `anthropic/claude-opus-5.5`
   among them). Its own research: one record on both APIs (each model's API from the catalog,
   the meter's and the egress scope's rules by the model's API) or a second record.
-- [ ] untangle/listing-records: a connection keeps the catalog records of its connect, so a
+- [x] untangle/listing-records: a connection keeps the catalog records of its connect, so a
   pin bump reaches only new connections. #5833's daily listing read (landed) can answer each
   listed model's record from the gateway's current catalog, so every connection moves with
   the pin without a reconnect.
+  The lane's read of a connection's models is the gateway's current catalog on its sealed APIs,
+  joined with the listing (`listing-records.md`).
 - [ ] untangle/pi-ai-watch: a scheduled draft PR when pi-ai publishes (as `okf-watch` does
   for the starter's spec), so the catalog lags by a review, not by a month.
 - [x] untangle/store-probe: delete the store probe or rebuild it on what the owner runs.

@@ -1155,28 +1155,33 @@ describe("what a key can pay for", () => {
   });
 });
 
-describe("the models its vendor serves it", () => {
+describe("the models it reaches now", () => {
   const OPENROUTER = "openrouter_user_models_v1";
-  const kept = (r: Gated) =>
-    r.sql("SELECT models, due IS NOT NULL AS due FROM connection_listing");
+  /** Each kept read: its models' ids and scores, and whether a read is due again. */
+  const kept = async (r: Gated) =>
+    (await r.sql("SELECT models, due IS NOT NULL AS due FROM connection_models")).map((row) => ({
+      models: row["models"] === null ? null : (JSON.parse(String(row["models"])) as
+        [ModelRecord, number | null][]).map(([model, score]) => [model.id, score]),
+      due: row["due"] }));
   const models = async (r: Gated) =>
     (await r.stub.connectionList(r.session())).connections[0]!.models;
   /**
-   * Once the lane has kept a listing read: its due set again, after now. A row the lane made
-   * is due at once, and the test sets one due at 0, so neither passes before the read's outcome.
+   * Once the lane has kept a read of the models: its due set again, after now. A row the lane
+   * made is due at once, and the test sets one due at 0, so neither passes before the read's
+   * outcome.
    */
   const read = (r: Gated) => until(async () => (await r.sql(
-    "SELECT due FROM connection_listing WHERE due > ?", Date.now() / 1000)).length === 1,
-                                   "the listing read");
+    "SELECT due FROM connection_models WHERE due > ?", Date.now() / 1000)).length === 1,
+                                   "the models read");
   const again = async (r: Gated, answer: unknown) => {
     await r.gateway.arm("listing", { answer });
-    await r.sql("UPDATE connection_listing SET due = 0");
+    await r.sql("UPDATE connection_models SET due = 0");
     await lanes(r);
     await read(r);
   };
 
-  it("is read once a connection is active, and its models are then the ones listed, with " +
-     "their scores, read again daily", async () => {
+  it("is read once a connection is active, and its models are then the ones its vendor lists, " +
+     "with their scores, read again daily", async () => {
     const r = await gated();
     const [one, two, three] = (await catalog(OPENAI)).map((model) => model.id);
     await r.gateway.arm("listing", { answer: { models: [
@@ -1185,8 +1190,7 @@ describe("the models its vendor serves it", () => {
     const connection = await r.connect("sk-good", OPENAI, "OpenRouter", undefined, OPENROUTER);
     await lanes(r);
     await read(r);
-    expect(await kept(r)).toEqual([{ models: JSON.stringify([[one, 13.6], [two, null]]),
-                                     due: 1 }]);
+    expect(await kept(r)).toEqual([{ models: [[one, 13.6], [two, null]], due: 1 }]);
     expect(await models(r)).toEqual([one, two]);
     // The read its record names, with the connection's blob.
     const [sent] = (await r.gateway.calls()).filter((call) => call.method === "listing");
@@ -1215,13 +1219,52 @@ describe("the models its vendor serves it", () => {
     expect(await kept(r)).toEqual([]);
   });
 
-  it("is every model its setup check listed, never read again, where its sealed endpoints " +
-     "hold no such read", async () => {
+  it("is every model its blob reaches, read again daily, where its sealed endpoints hold no " +
+     "listing", async () => {
     const r = await gated();
     await r.connect("sk-good", OPENAI, "OpenRouter", undefined, OPENROUTER);
     await lanes(r);
-    expect(await kept(r)).toEqual([{ models: null, due: 0 }]);
-    expect(await models(r)).toEqual((await catalog(OPENAI)).map((model) => model.id));
+    await read(r);
+    const all = (await catalog(OPENAI)).map((model) => model.id);
+    expect(await kept(r)).toEqual([{ models: all.map((id) => [id, null]), due: 1 }]);
+    expect(await models(r)).toEqual(all);
+  });
+
+  it("follows the gateway's catalog, not the one it connected under: a model and a price the " +
+     "catalog changed since reach it with no reconnect", async () => {
+    const r = await gated();
+    const now = await catalog(ANTHROPIC);
+    const [gone, priced, ...rest] = now;
+    // Committed under an older catalog: one model it lacked, and one priced otherwise.
+    await r.connect("sk-good", ANTHROPIC, "Key", [
+      { ...priced!, cost: { ...priced!.cost, input: priced!.cost.input + 1 } }, ...rest]);
+    expect(await models(r)).not.toContain(gone!.id);
+    await lanes(r);
+    await read(r);
+    expect(await models(r)).toEqual(now.map((model) => model.id));
+    const [{ models: json }] = await r.sql("SELECT models FROM connection_models") as
+      [{ models: string }];
+    const records = (JSON.parse(json) as [ModelRecord, null][]).map(([model]) => model);
+    expect(records.find((model) => model.id === priced!.id)!.cost).toEqual(priced!.cost);
+    // Each names the API its blob reaches it on.
+    expect(new Set(records.map((model) => model.api))).toEqual(new Set(["anthropic-messages"]));
+    // Nothing a call of the gateway's reaches outside the gateway: no listing for this source.
+    expect((await r.gateway.calls()).filter((call) => call.method === "listing")).toEqual([]);
+  });
+
+  it("keeps what it has when the gateway's read fails, and reads again an hour later",
+     async () => {
+    const r = await gated();
+    await r.gateway.arm("models", { refuse: { code: "internal", message: "internal" } });
+    await r.connect("sk-good");
+    await lanes(r);
+    const committed = (await catalog(ANTHROPIC)).map((model) => model.id);
+    await until(async () => (await r.sql("SELECT due FROM connection_models WHERE due > ?",
+                                          Date.now() / 1000)).length === 1, "the failed read");
+    expect(await kept(r)).toEqual([{ models: null, due: 1 }]);
+    expect(await models(r)).toEqual(committed);
+    const [{ due }] = await r.sql("SELECT due FROM connection_models") as [{ due: number }];
+    expect(due - Date.now() / 1000).toBeLessThanOrEqual(CONNECTION_LIMITS.modelsRetryS);
   });
 });
 
