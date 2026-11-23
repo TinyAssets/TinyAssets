@@ -50,8 +50,9 @@ async function widenings() {
       "keys.add": refusals((proof) => keys.add(proof, "0".repeat(16), "2".repeat(64), "k", now),
                            "session"),
       "policy.write": refusals((proof) => policy.write(proof, policy.read().generation,
-                                                       policy.read().document, null, now),
+                                                       policy.read().document, now),
                                "session"),
+      "policy.apply": refusals((proof) => policy.apply(proof, "card", "d", now), "session"),
       "policy.changed": refusals((proof) => policy.changed(proof, policy.read().generation,
                                                            "wake_limits", {}, "rule", now),
                                  "session"),
@@ -88,7 +89,9 @@ function untyped({ grants, keys, policy, registrations, sessions, admission }: T
   // @ts-expect-error a key is minted only in it
   keys.add(null, "0".repeat(16), "2".repeat(64), "k", now);
   // @ts-expect-error the owner's policy is written only in it
-  policy.write("session", 1, {}, null, now);
+  policy.write("session", 1, {}, now);
+  // @ts-expect-error and a held proposal applied only in it
+  policy.apply(self, "card", "d", now);
   // @ts-expect-error a policy change outside the document, the same
   policy.changed(self, 1, "wake_limits", {}, "rule", now);
   // @ts-expect-error a held key request, the same
@@ -114,6 +117,7 @@ describe("a widening's proof", () => {
     expect(await widenings()).toEqual({
       "grants.set": without("session"), "grants.forgetRevoked": without("session"),
       "keys.add": without("session"), "policy.write": without("session"),
+      "policy.apply": without("session"),
       "policy.changed": without("session"), "policy.applyKeyRequest": without("session"),
       "registrations.take": without("session"), "sessions.open": without("owner"),
       "sessions.extend": without("owner"), "admission.set": without("reserved"),

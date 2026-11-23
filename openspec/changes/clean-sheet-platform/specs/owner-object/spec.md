@@ -386,11 +386,15 @@ A widening refused after its call reached the owner's account SHALL leave a `ref
 - **THEN** the call is refused, no agent is registered, and one refusal receipt is kept
 
 ### Requirement: Owner policy is one document written against its generation
-The owner's policy SHALL be one validated document whose digest is rechecked on every read; a write SHALL name the generation it was made against and bump it. An agent's held proposal SHALL be applied at most once, only by the owner's write that names the card and the digest it was shown. A pending proposal SHALL have no life of its own: at the pending set's bound a new card SHALL let the oldest pending one go (the proposer's own at its share, else its class's: an outside client's card SHALL never push out the owner's; a card whose class has none to let go is refused), and the owner SHALL be told whose went.
+The owner's policy SHALL be one validated document whose digest is rechecked on every read; a write SHALL name the generation it was made against and bump it. Every proposal an agent files SHALL be held as a card (its own id, or one minted), and its answer and the owner's notice SHALL name the owner app's page of the card, where the owner SHALL see it with every other card waiting on its answer. The owner SHALL answer it only by the card's id and the digest it was shown: a yes, only in its session, SHALL apply it at most once, as the owner's write, and only a whole policy made against the generation it applies at; a no, a narrowing that needs no session, SHALL delete the card. A pending proposal SHALL have no life of its own: at the pending set's bound a new card SHALL let the oldest pending one go (the proposer's own at its share, else its class's: an outside client's card SHALL never push out the owner's; a card whose class has none to let go is refused), and the owner SHALL be told whose went.
 
 #### Scenario: Two writes from the same view
 - **WHEN** the owner writes twice naming the same generation
 - **THEN** the first commits with one receipt and the second is refused with "policy generation changed"
+
+#### Scenario: A proposal answered on its page
+- **WHEN** an outside client proposes a change and the owner opens the page its answer names, signed in
+- **THEN** the card shows who asks and the change; the owner's yes in session applies a whole policy made at the current generation once, any other change is refused there, and a no without a session deletes the card
 
 ### Requirement: An action rule holds where the action is seen
 The owner's action rules SHALL be one `actions` table, empty until the owner writes one (Fact 15): each names an act of `contract/acts.json`, `ask` or `never`, and MAY name the MCP tools that do it. It SHALL hold only where its act is seen (the doors naming it, its CLI tool kinds, its tools), and `acts.json` SHALL name what nothing of ours sees. A rule nothing could see SHALL be refused. The old rule tables, spend caps and egress `ask` SHALL NOT be policy.

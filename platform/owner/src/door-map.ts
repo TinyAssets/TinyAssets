@@ -105,10 +105,14 @@ export interface DoorRows {
     { readonly module: "policy"; readonly caller: "session"; readonly gate: "units" };
   readonly policyProposal:
     { readonly module: "policy"; readonly caller: "owner"; readonly gate: "door" };
+  readonly policyProposals:
+    { readonly module: "policy"; readonly caller: "owner"; readonly gate: "door" };
+  readonly policyApply:
+    { readonly module: "policy"; readonly caller: "session"; readonly gate: "units" };
+  readonly policyDecline:
+    { readonly module: "policy"; readonly caller: "owner"; readonly gate: "door" };
   readonly policyWakeLimits:
     { readonly module: "ledger"; readonly caller: "session"; readonly gate: "door" };
-  readonly actionRequest:
-    { readonly module: "actions"; readonly caller: "owner"; readonly gate: "door" };
   readonly actionRequests:
     { readonly module: "actions"; readonly caller: "owner"; readonly gate: "door" };
   readonly actionApprove:
@@ -369,7 +373,9 @@ export interface DoorMethods<H> {
   registerPropose(binding: Binding, request: RequestIn<H, "registerPropose">):
     Promise<AnswerIn<H, "registerPropose">>;
   /**
-   * Propose a change to the owner's policy, for the owner to approve.
+   * Propose a change to the owner's policy, for the owner to apply or decline. The answer's
+   * approve_url is the owner's page of it: give it to your user, who opens it signed in to
+   * TinyAssets.
    */
   policyPropose(binding: Binding, request: RequestIn<H, "policyPropose">):
     Promise<AnswerIn<H, "policyPropose">>;
@@ -556,10 +562,13 @@ export interface DoorMethods<H> {
     Promise<AnswerIn<H, "policyWrite">>;
   policyProposal(binding: Binding, request: RequestIn<H, "policyProposal">):
     Promise<AnswerIn<H, "policyProposal">>;
+  policyProposals(binding: Binding): Promise<AnswerIn<H, "policyProposals">>;
+  policyApply(binding: Binding, request: RequestIn<H, "policyApply">):
+    Promise<AnswerIn<H, "policyApply">>;
+  policyDecline(binding: Binding, request: RequestIn<H, "policyDecline">):
+    Promise<AnswerIn<H, "policyDecline">>;
   policyWakeLimits(binding: Binding, request: RequestIn<H, "policyWakeLimits">):
     Promise<AnswerIn<H, "policyWakeLimits">>;
-  actionRequest(binding: Binding, request: RequestIn<H, "actionRequest">):
-    Promise<AnswerIn<H, "actionRequest">>;
   actionRequests(binding: Binding): Promise<AnswerIn<H, "actionRequests">>;
   actionApprove(binding: Binding, request: RequestIn<H, "actionApprove">):
     Promise<AnswerIn<H, "actionApprove">>;

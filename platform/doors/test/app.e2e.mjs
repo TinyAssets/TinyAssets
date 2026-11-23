@@ -818,27 +818,32 @@ test("every card waiting on the owner is on Home, and its page, where a refusal,
                  client: client.client, conversation: "conv-1",
                  request: '{"expected_etag":null,"path":"/workspace/held"}', cut: false,
                  generation: 1, filed_at: 1_700_000_100 };
-  const pages = [card, held].map((each) => waitingPage(each.card_id));
+  const proposal = { card_id: "card-9", digest: "sha256:" + "f".repeat(64), client: null,
+                     filed_at: 1_700_000_200, change: { allow: "github.com" } };
+  const pages = [card, held, proposal].map((each) => waitingPage(each.card_id));
   const fakes = [
     ["**/app/api/registrations", { cards: [card] }], ["**/app/api/actions", { cards: [held] }],
+    ["**/app/api/policy/proposals", { cards: [proposal] }],
     ["**/app/api/grants", { clients: [client] }],
     ["**/app/api/notices", { notices: [
       { seq: 1, at: card.filed_at, type: "agent_registration",
         detail: `An app you connected asks to register an agent: approve or decline it at ${
           pages[0]}` },
       { seq: 2, at: held.filed_at, type: "action_request",
-        detail: `main asks to workspace.files at fileMkdir: allow or deny it at ${pages[1]}` }] }]];
+        detail: `main asks to workspace.files at fileMkdir: allow or deny it at ${pages[1]}` },
+      { seq: 3, at: proposal.filed_at, type: "policy_proposal",
+        detail: `Your agent asks to change your settings: apply or decline it at ${pages[2]}` }] }]];
   const answered = fakes.map(([path, json]) => [path, (route) => route.fulfill({ json })]);
   for (const [path, handler] of answered) {
     await page.route(path, handler);
   }
   try {
-    // Home lists both, oldest first, in one view.
+    // Home lists every kind, oldest first, in one view.
     await page.goto(`${ORIGIN}/app#home`);
     const waiting = page.locator("section", { hasText: "Waiting for you" }).locator(".card");
-    await waiting.nth(1).waitFor();
+    await waiting.nth(2).waitFor();
     assert.deepEqual((await waiting.allInnerTexts()).map((text) => text.split("\n")[0]),
-                     ["Muse Agent", "Changing the owner's files."]);
+                     ["Muse Agent", "Changing the owner's files.", "A change to your settings"]);
     for (const [shown, lines, answers] of [
       [card, ["asked by Muse", "Gets its mail by: pull", "Recipe: none", "Space: work",
               "What its app may do: read_graph in work as main"],
@@ -846,6 +851,8 @@ test("every card waiting on the owner is on Home, and its page, where a refusal,
       [held, ["asked by main, started by Muse", "Act: workspace.files", "At: fileMkdir",
               "In conversation: conv-1", '"path":"/workspace/held"', "resumes its run"],
        [["Allow once", "actions/approve"], ["Deny", "actions/refuse"]]],
+      [proposal, ["asked by your own agent", '"allow": "github.com"', "yours to make"],
+       [["Apply", "policy/apply"], ["Decline", "policy/decline"]]],
     ]) {
       // Each notice on Home links to its card's page.
       await page.goto(`${ORIGIN}/app#home`);

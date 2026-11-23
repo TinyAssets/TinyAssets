@@ -507,3 +507,61 @@ describe("an agent's held call, answered in the owner app", () => {
     expect(cardOf(await mkdir(tokens, "/workspace/denied"))).not.toBe(card);
   });
 });
+
+describe("an agent's policy proposal, answered in the owner app", () => {
+  /** A card as the owner is shown it. */
+  type Shown = { card_id: string; digest: string; client: string | null; change: unknown };
+
+  /** The pending proposals, as the app shows them. */
+  async function cards(token: string): Promise<Shown[]> {
+    return (await answered(await appPost("policy/proposals", token, null, {})))["cards"] as
+      Shown[];
+  }
+
+  /** `tokens`' client proposes `change`: the answer it is given. */
+  async function propose(tokens: Tokens, change: unknown): Promise<Record<string, unknown>> {
+    return answerOf(await legacyTool(tokens.access_token, "policy_propose", { change }));
+  }
+
+  it("names its page to the agent and the owner, and once applied there in session the " +
+     "owner's settings are the ones proposed", async () => {
+    const who = owner();
+    const { access_token: token, session } = await signInApp({ owner: who });
+    const tokens = await connect(await registerClient("Muse"), { owner: who });
+    const read = await answered(await appPost("policy", token, null, {}));
+    const policy = { ...read["policy"] as object, codemode: { on: true } };
+    const filed = await propose(tokens, { type: "policy_proposal",
+                                          expected_generation: read["generation"], policy });
+    const card = filed["card_id"] as string;
+    expect(filed["approve_url"]).toBe(waitingPage(card));
+    const { notices } = await answered(await appPost("notices", token, null, {})) as
+      { notices: { type: string; detail: string }[] };
+    expect(notices.filter((n) => n.type === "policy_proposal")
+      .map((n) => n.detail.endsWith(` ${waitingPage(card)}`))).toEqual([true]);
+    const [shown, ...more] = await cards(token);
+    expect([shown, more]).toMatchObject([{ card_id: card, client: expect.any(String) }, []]);
+    const answer = { card_id: card, digest: shown!.digest };
+    expect(await answered(await appPost("policy/apply", token, null, answer), 403))
+      .toEqual({ error: "interactive owner session required" });
+    expect(await answered(await appPost("policy/apply", token, session, answer)))
+      .toMatchObject({ generation: (read["generation"] as number) + 1, codemode: { on: true } });
+    expect(await cards(token)).toEqual([]);
+  });
+
+  it("is declined there with no session, only as the card shown", async () => {
+    const who = owner();
+    const { access_token: token, session } = await signInApp({ owner: who });
+    const tokens = await connect(await registerClient("Muse"), { owner: who });
+    const card = (await propose(tokens, { allow: "github.com" }))["card_id"] as string;
+    const [{ digest }] = await cards(token) as [Shown];
+    expect(await answered(await appPost("policy/decline", token, null,
+                                        { card_id: card, digest: "0".repeat(64) }), 403))
+      .toEqual({ error: "proposal is not the pending card shown" });
+    expect(await answered(await appPost("policy/decline", token, null, { card_id: card, digest })))
+      .toEqual({ card_id: card, declined: true });
+    expect(await cards(token)).toEqual([]);
+    expect(await answered(await appPost("policy/apply", token, session,
+                                        { card_id: card, digest }), 403))
+      .toEqual({ error: "proposal is not the pending card shown" });
+  });
+});

@@ -260,6 +260,16 @@ const KINDS = Object.freeze([
              ? "Allowed once: its agent's next try of this call goes through."
              : `Allowed once: its run resumes (${answer.run}).` },
     no: { words: "Deny", route: "actions/refuse", said: () => "Denied: the call is not made." } },
+  { list: "policy/proposals",
+    title: () => "A change to your settings",
+    asker: (card, names) => card.client === null ? "your own agent" : appOf(card.client, names),
+    lines: (card) => [h("pre", {}, JSON.stringify(card.change, null, 2))],
+    note: () => "Applying makes these your settings, once, if they are a whole set made " +
+      "against your settings as they stand. Any other change is yours to make, or to decline.",
+    yes: { words: "Apply", route: "policy/apply",
+           said: () => "Applied: your settings are the ones proposed." },
+    no: { words: "Decline", route: "policy/decline",
+          said: () => "Declined: your settings are unchanged." } },
 ]);
 
 /** Every pending card of every kind, oldest first, each with its kind. */

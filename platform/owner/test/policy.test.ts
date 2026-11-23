@@ -23,6 +23,7 @@ import {
   DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON, EGRESS_IP_LITERAL, POLICY_LIMITS,
   policyDigest, validate,
 } from "../../contract/src/policy-document";
+import { waitingPage } from "../../contract/src/identity";
 import { modelSettings } from "../src/policy";
 import { MUSE, rig, type Rig } from "./ledger-support";
 import { atClock, failure, inStores, ownerObject } from "./support";
@@ -93,7 +94,7 @@ describe("the default policy", () => {
     const r = await rig();
     for (const call of [() => r.stub.policyRead(r.bind(MUSE)),
                         () => r.stub.policyReceipts(r.bind(MUSE)),
-                        () => r.stub.policyProposal(r.bind(MUSE), { request_id: "card" })]) {
+                        () => r.stub.policyProposals(r.bind(MUSE))]) {
       expect((await failure(call)).message).toBe("only the owner may read its policy");
     }
   });
@@ -271,65 +272,104 @@ describe("an agent's proposal", () => {
   const change = (generation: number, document: Doc = defaults()) =>
     ({ type: "policy_proposal", expected_generation: generation, policy: document });
 
-  it("is receipted, held under its card, and applied once by the owner's write", async () => {
+  /** The pending cards, as the owner is shown them. */
+  async function cards(r: Rig) {
+    return (await r.stub.policyProposals(r.bind(null))).cards;
+  }
+
+  /** The owner's yes to `card_id` as it was shown, in its session. */
+  async function apply(r: Rig, card_id: string, digest: string) {
+    return r.stub.policyApply(r.session(null), { card_id, digest });
+  }
+
+  it("is held under its card, its page named to the agent and the owner, and applied once " +
+     "in the owner's session", async () => {
     const r = await rig();
     const document = { ...defaults(), actions: [rule("share")] };
     const filed = await r.stub.policyPropose(r.bind(MUSE), {
       change: change(1, document), request_id: "card-1" });
-    expect(filed).toEqual({ request_digest: policyDigest(change(1, document)), generation: 1 });
+    expect(filed).toEqual({ card_id: "card-1", request_digest: policyDigest(change(1, document)),
+                            generation: 1, approve_url: waitingPage("card-1") });
     expect(await r.stub.policyPropose(r.bind(MUSE), { change: change(1, document),
                                                       request_id: "card-1" })).toEqual(filed);
     const refiled = await failure(() => r.stub.policyPropose(r.bind(MUSE), {
       change: change(1), request_id: "card-1" }));
     expect([refiled.code, refiled.message])
       .toEqual(["refused", "a proposal is already held for this card"]);
-    const held = await r.stub.policyProposal(r.bind(null), { request_id: "card-1" });
-    expect(held).toEqual({ change: change(1, document), digest: filed.request_digest });
-    // The apply must be the card the owner was shown, exactly.
-    for (const [extra, policy] of [
-      [{ proposal: { request_id: "card-1", digest: "sha256:" + "0".repeat(64) } }, document],
-      [{ proposal: { request_id: "card-2", digest: held.digest } }, document],
-      [{ proposal: { request_id: "card-1", digest: held.digest } }, defaults()],
+    expect((await r.table("owner_notices")).filter((row) => row["type"] === "policy_proposal")
+      .map((row) => row["detail"])).toEqual([
+      `An app you connected asks to change your settings: apply or decline it at ${
+        waitingPage("card-1")}`]);
+    const [shown, ...more] = await cards(r);
+    expect([shown, more]).toEqual([{ card_id: "card-1", digest: filed.request_digest,
+                                     filed_at: expect.any(Number), client: MUSE.client,
+                                     change: change(1, document) }, []]);
+    for (const [call, message] of [
+      [() => r.stub.policyApply(r.bind(null), { card_id: "card-1", digest: shown!.digest }),
+        "interactive owner session required"],
+      [() => r.stub.policyApply(r.session(MUSE), { card_id: "card-1", digest: shown!.digest }),
+        "an outside client's call never carries the owner's session"],
+      [() => apply(r, "card-1", "sha256:" + "0".repeat(64)), "proposal is not the pending card shown"],
+      [() => apply(r, "card-2", shown!.digest), "proposal is not the pending card shown"],
     ] as const) {
-      const refused = await failure(() => write(r, policy, extra));
-      expect([refused.code, refused.message])
-        .toEqual(["refused", "proposal is not the pending card shown"]);
+      expect((await failure(call)).message).toBe(message);
     }
-    for (const proposal of [{ request_id: "card-1" }, { request_id: "", digest: "x" },
-                            { request_id: "card-1", digest: held.digest, more: 1 }, "card-1"]) {
-      const refused = await failure(() => write(r, document, { proposal }));
-      expect([refused.code, refused.message]).toEqual(["invalid", "invalid proposal apply"]);
-    }
-    const applied = await write(r, document, { proposal: { request_id: "card-1",
-                                                           digest: held.digest } });
-    expect(applied.policy).toEqual(document);
-    const again = await failure(() => r.stub.policyWrite(r.session(null), {
-      expected_generation: 2, policy: document as never,
-      proposal: { request_id: "card-1", digest: held.digest } }));
-    expect(again.message).toBe("proposal is not the pending card shown");
-    expect((await failure(() => r.stub.policyProposal(r.bind(null), { request_id: "card-1" })))
-      .message).toBe("no pending proposal for this card");
+    const applied = await apply(r, "card-1", shown!.digest);
+    expect([applied.generation, applied.policy]).toEqual([2, document]);
+    expect((await failure(() => apply(r, "card-1", shown!.digest))).message)
+      .toBe("proposal is not the pending card shown");
+    expect(await cards(r)).toEqual([]);
     expect((await kinds(r, "proposal")).map((row) => [row["bucket"], row["rule"],
                                                       row["decision"], row["outcome"]]))
       .toEqual([["agent", "owner_policy", "ask", "requested"],
                 ["agent", "owner_policy", "ask", "requested"]]);
+    expect((await kinds(r, "write")).map((row) => row["new_digest"]))
+      .toEqual([policyDigest(document)]);
   });
 
-  it("applies only at the generation it was made for, and only as a policy card",
-     async () => {
+  it("applies only as a whole policy made at the generation it applies at, and waits to be " +
+     "declined otherwise", async () => {
     const r = await rig();
-    const key = { type: "api_key_request", expected_generation: 1, policy: defaults() };
-    const { request_digest: keyDigest } = await r.stub.policyPropose(r.bind(null), {
-      change: key, request_id: "key-card" });
-    const shown = await failure(() => write(r, defaults(), { proposal: {
-      request_id: "key-card", digest: keyDigest } }));
-    expect(shown.message).toBe("proposal is not the pending card shown");
-    const { request_digest: digest } = await r.stub.policyPropose(r.bind(null), {
-      change: change(1), request_id: "stale" });
+    for (const [asked, request_id] of [
+      [{ type: "api_key_request", scopes: [] }, "key-card"], [{ allow: "github.com" }, "words"],
+      [change(1), "stale"]] as const) {
+      await r.stub.policyPropose(r.bind(null), { change: asked, request_id });
+    }
     await write(r, defaults());  // the policy moved on
-    const stale = await failure(() => write(r, defaults(), { proposal: {
-      request_id: "stale", digest } }));
-    expect(stale.message).toBe("proposal is not the pending card shown");
+    const shown = await cards(r);
+    expect(shown.map((card) => [card.card_id, card.client]))
+      .toEqual([["key-card", null], ["words", null], ["stale", null]]);
+    expect(await Promise.all(shown.map(async ({ card_id, digest }) =>
+      (await failure(() => apply(r, card_id, digest))).message))).toEqual([
+      "this proposal is not a whole set of rules to apply: make the change it asks yourself, " +
+        "or decline it",
+      "this proposal is not a whole set of rules to apply: make the change it asks yourself, " +
+        "or decline it",
+      "this proposal was made against your rules before a later change, so it no longer " +
+        "applies: decline it, or make the change yourself"]);
+    expect((await current(r)).generation).toBe(2);
+    expect(await cards(r)).toEqual(shown);
+  });
+
+  it("is declined by the owner alone, with no session, only as the card shown", async () => {
+    const r = await rig();
+    await r.stub.policyPropose(r.bind(MUSE), { change: change(1), request_id: "card-1" });
+    const { digest } = (await cards(r))[0]!;
+    const answer = { card_id: "card-1", digest };
+    expect((await failure(() => r.stub.policyDecline(r.bind(MUSE), answer))).message)
+      .toBe("only the owner may decline its agents' proposals");
+    expect((await failure(() => r.stub.policyDecline(r.bind(null), {
+      card_id: "card-1", digest: "sha256:" + "0".repeat(64) }))).message)
+      .toBe("proposal is not the pending card shown");
+    expect(await r.stub.policyDecline(r.bind(null), answer))
+      .toEqual({ card_id: "card-1", declined: true });
+    expect(await cards(r)).toEqual([]);
+    expect((await failure(() => apply(r, "card-1", digest))).message)
+      .toBe("proposal is not the pending card shown");
+    expect((await current(r)).generation).toBe(1);
+    // Its proposer may ask again.
+    await r.stub.policyPropose(r.bind(MUSE), { change: change(1), request_id: "card-1" });
+    expect((await cards(r)).map((card) => card.card_id)).toEqual(["card-1"]);
   });
 
   it("refuses a malformed proposal, and at a full pending set lets the oldest go",
@@ -343,24 +383,27 @@ describe("an agent's proposal", () => {
     }
     expect((await failure(() => r.stub.policyPropose(r.bind(null), { request_id: "x" } as never)))
       .message).toBe("invalid policy request");
-    // A proposal with no card is receipted and held nowhere.
-    await r.stub.policyPropose(r.bind(null), { change: change(1) });
-    expect(await r.table("policy_proposals")).toEqual([]);
+    // A proposal naming no card is held under one minted for it.
+    const minted = await r.stub.policyPropose(r.bind(null), { change: change(1) });
+    expect(minted.card_id).toMatch(/^pol_[0-9a-f]{32}$/);
+    expect((await cards(r)).map((card) => card.card_id)).toEqual([minted.card_id]);
+    await r.stub.policyDecline(r.bind(null), { card_id: minted.card_id,
+                                               digest: minted.request_digest });
     const { pendingProposals: most } = POLICY_LIMITS;
     const ids = (from: number) => Array.from({ length: most }, (_, n) => `p${from + n}`);
     await inStores(r.stub, ({ policy }) => {
       const now = clock();
+      const held = (card: string) => policy.list().some((each) => each.card_id === card);
       for (const id of ids(0).slice(1)) {
         policy.propose(change(1), id, "owner", now);
       }
       // A pending proposal has no life of its own: a filing years on prunes none.
       const later = now + 10 * 365 * 86_400;
       policy.propose(change(1), "late", "owner", later);
-      expect(policy.held("p1")).not.toBeNull();
+      expect(held("p1")).toBe(true);
       // A full set refuses the owner nothing: a new card lets the oldest pending one go.
       policy.propose(change(1), "over", "owner", later);
-      expect(policy.held("p1")).toBeNull();
-      expect(policy.held("p2")).not.toBeNull();
+      expect([held("p1"), held("p2")]).toEqual([false, true]);
       // An outside client's card never pushes out the owner's: with none of its class's to
       // let go, it is refused.
       expect(() => policy.propose(change(1), "outside", MUSE.client, later))
@@ -369,8 +412,8 @@ describe("an agent's proposal", () => {
     expect((await r.table("policy_proposals")).map((row) => row["request_id"]).sort())
       .toEqual([...ids(2).slice(0, most - 2), "late", "over"].sort());
     // Read years on, the oldest is still the owner's to apply.
-    expect((await atClock(clock() + 10 * 365 * 86_400, () =>
-      r.stub.policyProposal(r.bind(null), { request_id: "p2" }))).digest).toMatch(/^sha256:/);
+    const [oldest] = await atClock(clock() + 10 * 365 * 86_400, () => cards(r));
+    expect(oldest!.card_id).toBe("p2");
   });
 
   it("keeps only the newest applied proposals", async () => {
@@ -379,11 +422,9 @@ describe("an agent's proposal", () => {
     const applied = Array.from({ length: kept + 2 }, (_, n) => `a${n}`);
     for (const id of applied) {
       const { generation } = await r.stub.policyRead(r.bind(null));
-      await r.stub.policyPropose(r.bind(null), { change: change(generation), request_id: id });
-      const { digest } = await r.stub.policyProposal(r.bind(null), { request_id: id });
-      await r.stub.policyWrite(r.session(null), { expected_generation: generation,
-                                                  policy: defaults() as never,
-                                                  proposal: { request_id: id, digest } });
+      const { request_digest: digest } = await r.stub.policyPropose(r.bind(null), {
+        change: change(generation), request_id: id });
+      await apply(r, id, digest);
     }
     const { generation } = await r.stub.policyRead(r.bind(null));
     await r.stub.policyPropose(r.bind(null), { change: change(generation), request_id: "d" });
