@@ -83,28 +83,46 @@ goes. Nothing outside needs stamp arithmetic, so (A)'s two-part cursor buys noth
 
 How (B) holds the rule:
 
-- **A cursor** is eight random bytes, the place masked under an HMAC of them, and a tag over
-  both and the order it is in (the change feed, or one collection's seqs), under the object's
-  id key (`ledger_ids`, which mail ids already use and the export carries, so a restored owner
-  reads its cursors). Two cursors at one place differ; one made up, altered or from another
-  order is refused `invalid`. A Feistel round's HMAC input starts with a byte under 4 and the
-  cursor's with a letter, so the one key serves both.
+- **A cursor** is eight random bytes, the place and the object's incarnation masked under an
+  HMAC of them, and a tag over both and the order it is in (the change feed, one collection's
+  seqs, or one row's history), under the object's id key (`ledger_ids`, which mail ids already
+  use and the export carries). Two cursors at one place differ; one made up, altered or from
+  another order is refused `invalid`. A Feistel round's HMAC input starts with a byte under 4
+  and the cursor's with a letter, so the one key serves both. 64 hex.
+- **The incarnation** (review, #5822) is 8 random bytes in `collection_space` (migration 30,
+  not exported): made the first time a cursor is, emptied by `restored()` so the next cursor
+  makes a new one, and absent in a wiped or new object. A cursor of another incarnation is
+  the object before a restore, whose place may be past the restored clock or top and would
+  skip the restored object's next changes. A digest answers it `reset: true` with a cursor
+  after the clock: the path the spec already gives a restore (`restored` puts the floor at the
+  clock, so every reader behind it is reset). A pull and a history have no reset in the spec,
+  so they refuse it `invalid`, "from before this object was restored": read again from the
+  start.
 - **An etag** is 32 random bytes as hex: it names a version and nothing else.
 - **A revision** counts the row's writes since it was made, which whoever sees the row sees all
   of (a row keeps its privacy). A key made again starts at 1 under a new etag. `revision_floor`
   goes (migration 30): the coordinator's rule settles the conflict with the spec's "no revision
   repeats", which existed for nothing inside (history is keyed by change, an erase drops the
   key's entries, and stage finding 8 already told two rows at one revision apart by etag).
-- **History** pages by revision, which within a row's chain rises with its change.
+- **History** pages by change, as before, under a cursor in that key's own order
+  (`history\n<collection>\n<key>`), its place the oldest returned entry's change (review,
+  #5822: paged by revision, which a key made again repeats, an old `before` read the new row's
+  entries as older ones, and with `body_offset` could splice two entries' bodies, Fact 9). A
+  key made again has only entries past every old cursor's place, so an old `before` reads none
+  of them.
 
 Trade-offs taken:
 
-- A cursor is 48 characters, not a small integer, and the contract's `after` is a string,
-  left out to read from the start: a type change on three doors and the wake.
+- A cursor is 64 characters, not a small integer, and the contract's `after` and `before` are
+  strings, left out to read from the start (a history's newest page): a type change on four
+  doors and the wake.
 - A reader can no longer tell from two cursors which is later. Nothing did.
-- The expand step: the doors' release before validates `after` as an integer, and the owner
-  deploys first, so for that window a number reads from the start (a reread, as a reset). The
-  contract step takes it out (Owed).
+- The expand step: the doors' release before validates `after` and `before` as integers, and
+  the owner deploys first, so for that window a number reads from the start, and a history's
+  newest page (a reread, as a reset). The contract step takes it out (Owed).
+- The deploy window the other way (review, #5822): until the doors deploy, a string cursor
+  the new owner answered and a client sends back through the old doors is refused by their
+  integer check, briefly; the client reads again from the start once the doors serve strings.
 
 ## Problems found (untangle step 2), with the fix above each
 
@@ -121,7 +139,10 @@ Trade-offs taken:
   - `Row.seq`, `Changed.change`, `HistoryEntry.change` were shown.
   - `etag = sha256(seq:body)` was a seq in disguise.
   - A new row's revision was `revision_floor + 1`.
-  - History paged by change.
+  - History's `before` was a change.
+- **A cursor is of the object it was given by** (review). A cursor's raw place outlived a
+  restore, which loads an older clock and top, so one minted past them read past the restored
+  object's next changes.
 - **One limit check.** `pull` and `changed` each wrote out the same `limit` check (`pageLimit`).
 - **Comments and spec.** The module's head, `pull`, `changed`, `heads`, `ring`, the ledger's
   wake note and `WakeContent` named counters as cursors; the spec's primitive, bounds, digest
@@ -141,26 +162,27 @@ Trade-offs taken:
   cursor that read on past hidden deletions is not reset when they go.
 - **Bounds.** A write refused at the owner's rows' bound counts everyone's rows; the bounds
   are the owner's object's, by design.
-- **A cursor from before a restore.** A restore goes into a pending empty object, its floor at
-  the generation's clock; a cursor past that clock reads nothing written between. As before
-  this change; not a stamp.
+- **A history's first page read on.** `body_offset` with no `before` reads the row's newest
+  entry, which a write between two reads moves; a `before` from the answer before holds the
+  entry. As on main; the read-on with a `before` is held to Fact 9 here.
 
 ## As built
 
 - `owner/src/ordered.ts`: the id key (`heldIdKey`, `readIdKey`), `orderedId`/`idOrder` (moved
   from `segments.ts`), and `cursorAt`/`cursorPlace`.
 - `owner/src/collections.ts`: `Row` without `seq`, `Changed` without `change`, history entries
-  without `change` and paged by revision; random etags; revisions from 1; `pull` and `changed`
-  take and give cursors in their orders, each row carrying the cursor after it (`ReadsOn`,
-  `next`) for a door that keeps fewer; a reset answers the clock; `seen` is `clock()`;
-  `changeCursor` for the wake. `revision_floor` gone from `#erase` and `restored`.
+  without `change`; random etags; revisions from 1; `pull`, `changed` and `history` take and
+  give cursors in their orders (`cursorsOf`, of the incarnation), each item carrying the
+  cursor past it (`ReadsOn`, `next`) for a door that keeps fewer; a reset answers the clock,
+  as does a digest cursor of another incarnation; `seen` is `clock()`; `changeCursor` for the
+  wake. `revision_floor` gone from `#erase` and `restored`, which empties the incarnation.
 - `owner/src/pages.ts` `onFrom`: the cursor after a door's kept rows, used by `heads` and the
   pull door.
 - `owner/src/ledger.ts`: the claim gives the wake `after_cursor`; `wakes.ts` sends it.
-- `owner/src/schema.ts` migration 30 drops `collection_space.revision_floor` (not exported),
-  pinned in `owner/migrations.json`.
+- `owner/src/schema.ts` migration 30 drops `collection_space.revision_floor` and adds its
+  `incarnation` (not exported), pinned in `owner/migrations.json`.
 - `contract/doors.json`: `after` optional and a string on `inbox_digest`, `board_digest` and
-  `collection_list`; `before` a revision; generated files. `WakeContent.after` and the MCP
+  `collection_list`; `before` a string cursor; generated files. `WakeContent.after` and the MCP
   Events payload a string. The app reads both digests with no `after`.
 - The spec: the primitive, a new requirement "No answer shows a count of changes" with two
   scenarios, the bounds, the history, the digests, the wake.
@@ -168,8 +190,8 @@ Trade-offs taken:
 ## Owed
 
 - [ ] untangle/cursor-numbers: once the stage's doors hand only string cursors, the owner
-  refuses a number for `after` (`collections.ts` `placeOf`) and the test reading one from the
-  start goes.
+  refuses a number for `after` and `before` (`collections.ts` `cursorsOf`) and the test reading
+  one from the start goes.
 - [ ] live: after the next owner deploy, the stage's `board_digest` from the start answers a
-  48-hex cursor and rows with no `seq` or `change`, and with no board row, no rows from that
+  64-hex cursor and rows with no `seq` or `change`, and with no board row, no rows from that
   cursor, whatever the rooms hold.

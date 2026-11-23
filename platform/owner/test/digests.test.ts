@@ -18,8 +18,8 @@ import { failure, fillHistory, inFilled, inObject, ownerObject } from "./support
 
 type Live = Extract<RowHead, { deleted: false }>;
 
-/** A cursor: opaque (`ordered.ts` `cursorAt`). */
-const CURSOR = /^[0-9a-f]{48}$/;
+/** A cursor, or an etag: 64 hex, opaque (`ordered.ts` `cursorAt`) or random. */
+const CURSOR = /^[0-9a-f]{64}$/;
 
 /** A digest's rows, each a live row's head. */
 function live(rows: readonly RowHead[]): Live[] {
@@ -149,8 +149,8 @@ describe("a digest past a pruned deletion", () => {
 
 /**
  * Every answer a reader gets along one run of calls, the same calls whether or not another
- * writes rows hidden from it between them (`hidden`), each cursor, etag and time as its kind
- * alone: random or opaque, they are no reader's to compare.
+ * writes rows hidden from it between them (`hidden`), each cursor and etag (64 hex alike) and
+ * time as its kind alone: random or opaque, they are no reader's to compare.
  */
 async function answers(reader: "visitor" | "host", hidden: boolean): Promise<string> {
   const r = await rig();
@@ -203,15 +203,14 @@ async function answers(reader: "visitor" | "host", hidden: boolean): Promise<str
   }
   return JSON.stringify(seen, (key, value: unknown) => key === "at" ? "<at>"
     : value === r.owner ? "<owner>"
-    : typeof value === "string" && CURSOR.test(value) ? "<cursor>"
-    : typeof value === "string" && /^[0-9a-f]{64}$/.test(value) ? "<etag>" : value);
+    : typeof value === "string" && CURSOR.test(value) ? "<opaque>" : value);
 }
 
 describe("nothing a reader gets tells it of a change it cannot see", () => {
   it("a visiting owner's answers, its own private rows' among them, are the same whatever " +
      "the host writes privately", async () => {
     const quiet = await answers("visitor", false);
-    expect(quiet).toContain("<cursor>");
+    expect(quiet).toContain("<opaque>");
     expect(await answers("visitor", true)).toBe(quiet);
   });
 
@@ -257,7 +256,8 @@ describe("nothing a reader gets tells it of a change it cannot see", () => {
       .toEqual([]);
   });
 
-  it("a wake's is the clock before its change, and a restore resets none after it",
+  it("a wake's is the clock before its change, and a restore resets every cursor before it " +
+     "and none after it",
      async () => {
     const r = await rig();
     await inObject(r.stub, (store, state) => {
@@ -266,8 +266,12 @@ describe("nothing a reader gets tells it of a change it cannot see", () => {
       store.write(r.owner, "bob", "board", "b", "bob's own", "", true);
       store.clear(r.owner, "board", "bob");
       expect(store.clock()).toBe(before + 2);
-      // A restore puts the floor at the clock: a wake after it is never reset.
+      const held = store.changed(r.owner, { collection: "board" }, undefined, 10).cursor;
+      // A restore puts the floor at the clock: a wake after it is never reset. A cursor of the
+      // object before it is of another incarnation, so it is reset, never read as a place here.
       store.restored();
+      expect(store.changed(r.owner, { collection: "board" }, held, 10))
+        .toEqual({ cursor: expect.stringMatching(CURSOR), rows: [], reset: true });
       expect(store.changed(r.owner, { collection: "board" },
                            changeCursor(state.storage.sql, store.clock()), 10))
         .toEqual({ cursor: expect.stringMatching(CURSOR), rows: [] });
@@ -332,7 +336,7 @@ describe("the board digest", () => {
     const altered = (page.cursor[0] === "0" ? "1" : "0") + page.cursor.slice(1);
     const pulled = (await r.stub.collectionPull(r.bind(MUSE), { collection: "board",
                                                                 limit: 1 })).cursor;
-    for (const bad of [{ limit: 0 }, { limit: 1, after: "0".repeat(48) },
+    for (const bad of [{ limit: 0 }, { limit: 1, after: "0".repeat(64) },
                        { limit: 1, after: altered }, { limit: 1, after: pulled },
                        { limit: 1, head_chars: -1 }, {}]) {
       expect((await failure(() => r.stub.boardDigest(r.bind(MUSE), bad as never))).code)

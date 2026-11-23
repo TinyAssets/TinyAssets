@@ -95,7 +95,7 @@ describe("one open wake per ringing recipient", () => {
       wake_id: wake!["wake_id"], claim_id: target!.claim_id, agent_id: muse,
       command_center_id: "alpha", client: MUSE.client, family: MUSE.family, cursor: 0,
       through: 2, changes: ["mail"], after: 0,
-      after_cursor: expect.stringMatching(/^[0-9a-f]{48}$/), at: wake!["created_at"],
+      after_cursor: expect.stringMatching(/^[0-9a-f]{64}$/), at: wake!["created_at"],
       fold: 1,  // the burst's second message folded in
     });
     expect(await states(r)).toEqual(["sent"]);

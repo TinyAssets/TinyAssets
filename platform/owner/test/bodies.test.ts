@@ -419,7 +419,7 @@ describe("the placement rule, held to the owner's own limits", () => {
     }
     const first = await stub.collectionHistory(as(name), { collection: "board", row_id: "r" });
     expect([first.entries.map((e) => e.revision), first.more, first.before])
-      .toEqual([[3, 4], true, first.entries[0]!.revision]);
+      .toEqual([[3, 4], true, expect.stringMatching(/^[0-9a-f]{64}$/)]);
     const older = await stub.collectionHistory(as(name), { collection: "board", row_id: "r",
                                                            before: first.before! });
     expect([older.entries.map((e) => e.body[0]), older.more, older.before])

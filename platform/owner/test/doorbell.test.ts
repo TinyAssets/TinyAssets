@@ -176,7 +176,7 @@ function signed(id: string, stamp: string, body: string): string {
 }
 
 /** A wake's change cursor: opaque (`ordered.ts` `cursorAt`). */
-const CURSOR = /^[0-9a-f]{48}$/;
+const CURSOR = /^[0-9a-f]{64}$/;
 
 type Delivered = { eventId: string; name: string; timestamp: string; cursor: null;
                    data: { agent_id: string; changes: string[]; after: string; read: string[] } };
@@ -237,7 +237,7 @@ describe("each wake kind sends its own record's shape, its secret the gateway's 
     });
     expect(JSON.parse(sent!.body)).toEqual({
       text: expect.stringMatching(new RegExp(`^TinyAssets: new board for agent ${claude} in ` +
-        `alpha. Read just the change: board_digest with after=[0-9a-f]{48}[.]$`)) });
+        `alpha. Read just the change: board_digest with after=[0-9a-f]{64}[.]$`)) });
   });
 
   it("Grok's webhook routine: the routine's key as a bearer, the wake as JSON", async () => {

@@ -189,7 +189,7 @@
           "row_id": { "type": "string", "description": "The row's id" }
         },
         "optional": {
-          "before": { "type": "integer", "description": "Entries before this revision: the before an answer gave" },
+          "before": { "type": "string", "description": "Entries before this cursor: the before an answer gave" },
           "body_offset": { "type": "integer", "description": "The first item's body from this byte: a body_next_offset an answer gave (0 when omitted)" }
         }
       },

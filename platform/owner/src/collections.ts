@@ -119,7 +119,7 @@ export interface Row {
   readonly content_id?: string;
 }
 
-interface HistoryEntry {
+export interface HistoryEntry {
   readonly revision: number;
   readonly op: string;
   readonly writer: string;
@@ -128,20 +128,25 @@ interface HistoryEntry {
   readonly content_id?: string;
 }
 
+/**
+ * An item of a page, with the cursor that reads on past it (`next`), for a door that keeps
+ * fewer of the page's items than the store gave (`pages.ts` `onFrom`); no answer shows it.
+ */
+export type ReadsOn<T> = T & { readonly next: string };
+
 /** A row's kept history, oldest first, and the cursor to read the older entries by. */
-export interface History {
+export interface HistoryPage {
   readonly entries: HistoryEntry[];
   /** Whether older entries are kept that this page did not return. */
   readonly more: boolean;
-  /** The revision to read before (`before`) for them: the page's oldest; null if none are left. */
-  readonly before: number | null;
+  /** The cursor to read before (`before`) for them, past the page's oldest; null if none are left. */
+  readonly before: string | null;
 }
 
-/**
- * An item of a feed's page, with the cursor that reads on after it (`next`), for a door that
- * keeps fewer of the page's items than the store gave (`pages.ts` `onFrom`); no answer shows it.
- */
-export type ReadsOn<T> = T & { readonly next: string };
+/** A history page as the store reads it: each entry with the cursor for the ones before it. */
+export interface History extends Omit<HistoryPage, "entries"> {
+  readonly entries: ReadsOn<HistoryEntry>[];
+}
 
 /** A pull's rows past its cursor, and the cursor that reads on after them. */
 export interface Page {
@@ -197,27 +202,60 @@ function seqsOf(collection: string): string {
   return `seqs\n${collection}`;
 }
 
+/** The order a history's cursors are in: that key's entries, by change. */
+function historyOf(collection: string, rowId: string): string {
+  return `history\n${collection}\n${rowId}`;
+}
+
+/** A pull's or a history's refusal of a cursor of the object before a restore. */
+const RESTORED = "the cursor is from before this object was restored: read again from the " +
+  "start, the cursor left out";
+
+/** The object's cursors, in the caller's unit (`cursorsOf`). */
+interface Cursors {
+  /** A cursor at `place` in `order`, of this incarnation. */
+  at(order: string, place: number): string;
+  /**
+   * Where the cursor `given` (the request's `field`) reads from in `order`: `none` when it is
+   * left out, or a number, which the doors' release before hands for the numbers cursors were
+   * (`untangle/cursor-numbers` takes that out); null for a cursor of an earlier incarnation
+   * (the object before a restore); refused for anything else.
+   */
+  from(order: string, given: unknown, field: string, none: number): number | null;
+}
+
 /**
- * Where a cursor `after` reads from in `order`: 0 for none, the start. A number is read as
- * none too, for the doors' release before, which hands the numbers cursors were
- * (`untangle/cursor-numbers` takes it out), so its readers read again whole. Anything else is
- * refused.
+ * The object's cursors, in the caller's unit: under its id key (`ledger_ids`, which the export
+ * carries), of its incarnation (`collection_space`, not exported: made the first time a cursor
+ * is, and again after a restore; a wiped or new object has none yet), so a cursor of the object
+ * before a restore is told apart, never read as a place in the restored one.
  */
-function placeOf(key: Uint8Array, order: string, after: unknown): number {
-  if (after === undefined || typeof after === "number") {
-    return 0;
+function cursorsOf(sql: OwnerStorage["sql"]): Cursors {
+  const key = heldIdKey(sql);
+  let incarnation = sql.exec<{ incarnation: string }>(
+    "SELECT incarnation FROM collection_space").one().incarnation;
+  if (incarnation === "") {
+    incarnation = randomHex(8);
+    sql.exec("UPDATE collection_space SET incarnation = ?", incarnation);
   }
-  const place = typeof after === "string" ? cursorPlace(key, order, after) : null;
-  if (place === null) {
-    throw new Refusal("invalid", "after is a cursor an answer gave, or left out to read from " +
-                      "the start");
-  }
-  return place;
+  return {
+    at: (order, place) => cursorAt(key, order, place, incarnation),
+    from: (order, given, field, none) => {
+      if (given === undefined || typeof given === "number") {
+        return none;
+      }
+      const read = typeof given === "string" ? cursorPlace(key, order, given) : null;
+      if (read === null) {
+        throw new Refusal("invalid", `${field} is a cursor an answer gave, or left out`);
+      }
+      return read.incarnation === incarnation ? read.place : null;
+    },
+  };
 }
 
 /** The change feed's cursor after `change` (a wake's, `Ledger`), in the caller's unit. */
 export function changeCursor(sql: OwnerStorage["sql"], change: number): string {
-  return cursorAt(heldIdKey(sql), CHANGES, change);
+  return cursorsOf(sql).at(CHANGES, change);
 }
 
 /**
@@ -507,16 +545,19 @@ export class Collections {
   pull(caller: string, collection: string, after: unknown, limit: unknown): Page {
     name(collection, "collection");
     pageLimit(limit);
-    const key = heldIdKey(this.#sql);
+    const cursors = cursorsOf(this.#sql);
     const order = seqsOf(collection);
-    const from = placeOf(key, order, after);
+    const from = cursors.from(order, after, "after", 0);
+    if (from === null) {
+      throw new Refusal("invalid", RESTORED);
+    }
     const found = this.#sql.exec<StoredRow>(
       "SELECT * FROM collection_rows WHERE collection = ? AND seq > ? " +
         "AND (private = 0 OR writer = ?) ORDER BY seq LIMIT ?",
       collection, from, caller, limit,
     ).toArray();
     const rows = paged(found, PAGE_BYTES);
-    const at = (seq: number) => cursorAt(key, order, seq);
+    const at = (seq: number) => cursors.at(order, seq);
     return { cursor: at(rows.length < found.length || found.length === limit
                ? rows.at(-1)!.seq : Math.max(from, this.#top(collection))),
              rows: rows.map((row) => ({ ...shown(row), next: at(row.seq) })) };
@@ -535,16 +576,17 @@ export class Collections {
   changed(caller: string, where: { collection: string } | { prefix: string }, after: unknown,
           limit: unknown): Changes {
     pageLimit(limit);
-    const key = heldIdKey(this.#sql);
-    const from = placeOf(key, CHANGES, after);
-    const at = (change: number) => cursorAt(key, CHANGES, change);
+    const cursors = cursorsOf(this.#sql);
+    const from = cursors.from(CHANGES, after, "after", 0);
+    const at = (change: number) => cursors.at(CHANGES, change);
     const space = this.#sql.exec<{ erasure_floor: number; clock: number }>(
       "SELECT erasure_floor, (SELECT change FROM collection_clock) AS clock " +
         "FROM collection_space").one();
-    if (from > 0 && from < space.erasure_floor) {
-      // A deletion past this reader is gone from the history: whether it could have seen
-      // it cannot be told, so it is told to read again, loudly, never left holding a deleted
-      // row, and goes on from the clock, since the whole read covers every change before it.
+    if (from === null || (from > 0 && from < space.erasure_floor)) {
+      // The object before a restore, or a deletion past this reader gone from the history:
+      // what it holds cannot be told, so it is told to read again, loudly, never left holding
+      // a deleted row, and goes on from the clock, since the whole read covers every change
+      // before it.
       return { cursor: at(space.clock), rows: [], reset: true };
     }
     // A prefix is the range from itself to the name just past every name it starts.
@@ -605,28 +647,33 @@ export class Collections {
   }
 
   /**
-   * A row's kept history since it was made, oldest first, before the revision `before` when
-   * it is given (an answer's `before`); none for a row `get` would not show. A page holds the
-   * newest entries, at most `maxPull`, whose bodies fit `PAGE_BYTES`, at least one (the door
-   * fits it to one answer); `more` and the cursor name the older ones it left.
+   * A row's kept history since it was made, oldest first, before the cursor `before` when it
+   * is given (an answer's `before`, in this key's order: its place an entry's change, so a
+   * cursor from a key's history before the key was made again reads none of the new one's);
+   * none for a row `get` would not show. A page holds the newest entries, at most `maxPull`,
+   * whose bodies fit `PAGE_BYTES`, at least one (the door fits it to one answer); `more` and
+   * the cursor name the older ones it left.
    */
   history(caller: string, collection: string, rowId: string, before: unknown = null):
       History {
-    if (before !== null && (typeof before !== "number" || !Number.isSafeInteger(before))) {
-      throw new Refusal("invalid", "before is a history entry's revision");
-    }
     const row = this.#visible(caller, collection, rowId);
     if (row === undefined) {
       return { entries: [], more: false, before: null };
     }
-    // The row's chain is its key's entries: an erase took every older one.
-    const found = this.#sql.exec<{ revision: number; op: string; writer: string; at: number;
-                                   body_json: string; body_bytes: number;
-                                   content_id: string | null }>(
-      "SELECT revision, op, writer, at, body_json, body_bytes, content_id FROM " +
-        "collection_history WHERE collection = ? AND key = ? AND revision < ? " +
-        "ORDER BY revision DESC LIMIT ?", collection, rowId, before ?? row.revision + 1,
-      LIMITS.maxPull + 1,
+    const cursors = cursorsOf(this.#sql);
+    const order = historyOf(collection, rowId);
+    const from = cursors.from(order, before ?? undefined, "before", row.change + 1);
+    if (from === null) {
+      throw new Refusal("invalid", RESTORED);
+    }
+    // The row's chain is its key's entries: an erase took every older one. In one key,
+    // revision and change rise together, so the key's index holds them in change order.
+    const found = this.#sql.exec<{ change: number; revision: number; op: string;
+                                   writer: string; at: number; body_json: string;
+                                   body_bytes: number; content_id: string | null }>(
+      "SELECT change, revision, op, writer, at, body_json, body_bytes, content_id FROM " +
+        "collection_history WHERE collection = ? AND key = ? AND change < ? " +
+        "ORDER BY revision DESC LIMIT ?", collection, rowId, from, LIMITS.maxPull + 1,
     ).toArray();
     const page = paged(found.slice(0, LIMITS.maxPull), PAGE_BYTES);
     const more = page.length < found.length;
@@ -634,9 +681,10 @@ export class Collections {
       entries: page.reverse().map((e) => ({
         revision: e.revision, op: e.op, writer: e.writer, at: e.at, body: e.body_json,
         ...(e.content_id === null ? {} : { content_id: e.content_id }),
+        next: cursors.at(order, e.change),
       })),
       more,
-      before: more ? page[0]!.revision : null,
+      before: more ? cursors.at(order, page[0]!.change) : null,
     };
   }
 
@@ -731,12 +779,13 @@ export class Collections {
 
   /**
    * In a unit, once a restore has loaded the rows (`restore.ts`): the seq floor past every
-   * seq they name, so none is given again, and the change feed's floor at the clock, so every
-   * reader's cursor is behind it and reads again whole.
+   * seq they name, so none is given again, the change feed's floor at the clock, so every
+   * reader's cursor is behind it and reads again whole, and no incarnation, so the next cursor
+   * made is of a new one and none from before is read as a place here (`cursorsOf`).
    */
   restored(): void {
     this.#sql.exec(
-      "UPDATE collection_space SET " +
+      "UPDATE collection_space SET incarnation = '', " +
         "seq_floor = max(seq_floor, coalesce((SELECT max(seq) FROM collection_seqs), 0), " +
         "coalesce((SELECT max(seq) FROM collection_rows), 0)), erasure_floor = " +
         "max(erasure_floor, (SELECT change FROM collection_clock))");
@@ -820,11 +869,11 @@ export interface GetRequest extends KeyRequest {
   readonly etag?: string;
 }
 /**
- * A history read: a row's key, and the change to read before for older entries (an answer's
+ * A history read: a row's key, and the cursor to read before for older entries (an answer's
  * `before`); with `body_offset`, the page's newest entry's body from that byte.
  */
 export interface HistoryRequest extends KeyRequest {
-  readonly before?: number;
+  readonly before?: string;
   readonly body_offset?: number;
 }
 export interface DeleteRequest {
@@ -941,7 +990,8 @@ export const collectionsDoors = Object.freeze({
    * and `before` name the older ones; `body_offset` reads the page's newest
    * entry's body from that byte.
    */
-  async collectionHistory(o: CollectionsDoorNeeds, door: Door<HistoryRequest>): Promise<History> {
+  async collectionHistory(o: CollectionsDoorNeeds, door: Door<HistoryRequest>):
+      Promise<HistoryPage> {
     return o.bodies.reading(() => {
       const { account: { caller }, r } = door.check();
       const offset = bodyOffset(r["body_offset"]);
@@ -952,12 +1002,14 @@ export const collectionsDoors = Object.freeze({
                offsetOf: (contentId) => contentId === newest ? offset : 0 };
     }, ({ kept, offset }, windows) => {
       const fitted = kept.entries.length === 0 ? [] : fitPage(
-        jsonBytes({ entries: [], more: true, before: kept.before }),
-        windowedAll([...kept.entries].reverse(), windows, offset),
+        jsonBytes({ entries: [], more: true, before: kept.entries[0]!.next }),
+        windowedAll([...kept.entries].reverse().map(({ next: _next, ...entry }) => entry),
+                    windows, offset),
         ({ item, window }, room, first) => bodied(item, window, room, first));
       const entries = (fitted as HistoryEntry[]).reverse();
       return entries.length === kept.entries.length ? { ...kept, entries }
-        : { entries, more: true, before: entries[0]!.revision };
+        : { entries, more: true,
+            before: kept.entries[kept.entries.length - entries.length]!.next };
     });
   },
   /**

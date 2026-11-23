@@ -21,16 +21,22 @@ describe("ordered values", () => {
     expect(ids.size).toBe(10);
   });
 
-  it("give cursors that carry their place in their order, and say nothing of it", () => {
+  it("give cursors that carry their place and incarnation in their order, and say nothing " +
+     "of either", () => {
     const key = idKey();
-    for (const place of [0, 1, 2 ** 40, Number.MAX_SAFE_INTEGER]) {
-      const [one, two] = [cursorAt(key, "changes", place), cursorAt(key, "changes", place)];
-      expect(one).toMatch(/^[0-9a-f]{48}$/);
+    const incarnation = "0123456789abcdef";
+    // A migrated history keys its older entries below 0.
+    for (const place of [-3, 0, 1, 2 ** 40, Number.MAX_SAFE_INTEGER]) {
+      const [one, two] = [cursorAt(key, "changes", place, incarnation),
+                          cursorAt(key, "changes", place, incarnation)];
+      expect(one).toMatch(/^[0-9a-f]{64}$/);
       expect([cursorPlace(key, "changes", one), cursorPlace(key, "changes", two)])
-        .toEqual([place, place]);
+        .toEqual([{ place, incarnation }, { place, incarnation }]);
+      expect(cursorPlace(key, "changes", cursorAt(key, "changes", place, "f".repeat(16))))
+        .toEqual({ place, incarnation: "f".repeat(16) });
       // Two cursors at one place differ where the place is: it is masked under each one's
       // own random bytes, never written out.
-      expect(one.slice(16, 32)).not.toBe(two.slice(16, 32));
+      expect(one.slice(16, 48)).not.toBe(two.slice(16, 48));
       // Another order's, another key's, or one altered: none is read.
       expect(cursorPlace(key, "another order", one)).toBeNull();
       expect(cursorPlace(idKey(), "changes", one)).toBeNull();
