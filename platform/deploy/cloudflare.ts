@@ -466,14 +466,24 @@ export class Cloudflare {
     return versions[0]!.version;
   }
 
-  /** The tag of the Worker `script`'s version `version` (`workers/tag`), or null when untagged. */
-  async tag(account: string, script: string, version: string): Promise<string | null> {
+  /**
+   * What Cloudflare notes of the Worker `script`'s version `version`: its tag (`workers/tag`),
+   * and what made it (`workers/triggered_by`: `upload`, `secret` for a secret change,
+   * `rollback`, `promotion`), each null when it names none.
+   */
+  async annotations(account: string, script: string, version: string):
+      Promise<{ readonly tag: string | null; readonly trigger: string | null }> {
     const { result } = await this.#ok(
       `reading the version ${version} of ${script}`,
       `/accounts/${account}/workers/scripts/${script}/versions/${version}`);
-    const tag = (result as { annotations?: Record<string, unknown> } | null)?.annotations?.[
-      "workers/tag"];
-    return typeof tag === "string" && tag !== "" ? tag : null;
+    const noted = (result as { annotations?: Record<string, unknown> } | null)?.annotations;
+    const text = (value: unknown) => typeof value === "string" && value !== "" ? value : null;
+    return { tag: text(noted?.["workers/tag"]), trigger: text(noted?.["workers/triggered_by"]) };
+  }
+
+  /** The tag of the Worker `script`'s version `version` (`workers/tag`), or null when untagged. */
+  async tag(account: string, script: string, version: string): Promise<string | null> {
+    return (await this.annotations(account, script, version)).tag;
   }
 
   /**

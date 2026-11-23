@@ -1855,7 +1855,7 @@ const rollout = step<"cloudflare" | "account" | "ids" | "deployed" | "setting" |
       workers.push(rolled);
       lines.push(rolledLine(rolled, setting));
     }
-    say(servedHold(run, workers));
+    say(await servedHold(got, run, workers));
     // Read after the split check, so a re-run attempt stops on a split as its first would.
     const held = namespace === undefined ? undefined
       : await got.cloudflare.value(got.account, namespace, key);
@@ -1880,31 +1880,79 @@ const rollout = step<"cloudflare" | "account" | "ids" | "deployed" | "setting" |
   });
 
 /**
- * The run's Workers held to what the versions the stage serves hand them and take from them
- * (`handed.ts`), each serving version read from git at the commit its tag names: from each
- * Worker's 100% until a later one's, that one's version before talks to it (`WORKERS`). Any
- * refusal stops the run before any change, each named; so does a serving version whose tag names
- * no commit, or one this checkout lacks: what it hands is unknown. A Worker no version of which
- * serves (`rolled`'s first deploy) holds nothing. The plan's line names each commit read.
+ * The version whose code the Worker `name`'s serving version `version` runs, with its tag: itself
+ * when its tag names a commit (`taggedAs`); else, when Cloudflare notes it was made by a secret
+ * change (`workers/triggered_by` `secret`: `wrangler secret put`, as `retire` sets a keyring, or
+ * a secret edited in the dashboard), which makes a version of the latest one's code, refused
+ * unless that one is deployed, and deploys it at once, the version its deployments listing
+ * served alone at 100% just before it first did, and so on back. Null for any other: its code
+ * is unknown.
  */
-function servedHold(run: Run, rolled: readonly Rolled[]): string {
-  const sides = new Map<string, Before>();
-  const read: string[] = [];
-  const then = (worker: string): Before | null => {
-    const { name, before } = rolled[WORKERS.indexOf(worker)]!;
-    if (before === null) {
+async function codeOf({ cloudflare, account }: Pick<Values, "cloudflare" | "account">,
+                      name: string, version: string):
+    Promise<{ readonly version: string; readonly tag: string } | null> {
+  let history: readonly Serving[][] | null = null;
+  let from = 0;
+  for (let at = version; ;) {
+    const { tag, trigger } = await cloudflare.annotations(account, name, at);
+    if (taggedAs(tag) !== null) {
+      return { version: at, tag: tag! };
+    }
+    if (trigger !== "secret") {
       return null;
     }
-    const commit = taggedAs(before.tag)?.commit;
-    if (commit === undefined) {
+    history ??= await cloudflare.deployments(account, name);
+    const alone = (each: readonly Serving[] | undefined, id?: string) => each !== undefined
+      && each.length === 1 && each[0]!.percentage === 100 && (id === undefined
+        || each[0]!.version === id);
+    const first = history.findLastIndex((each, index) => index >= from && alone(each, at));
+    const before = first < 0 ? undefined : history[first + 1];
+    if (!alone(before)) {
+      return null;
+    }
+    at = before![0]!.version;
+    from = first + 1;
+  }
+}
+
+/**
+ * The run's Workers held to what the versions the stage serves hand them and take from them
+ * (`handed.ts`), each serving version read from git at the commit its code's tag names
+ * (`codeOf`): from each Worker's 100% until a later one's, that one's version before talks to it
+ * (`WORKERS`). Any refusal stops the run before any change, each named; so does a serving
+ * version whose code is unknown, or a commit this checkout lacks. A Worker no version of which
+ * serves (`rolled`'s first deploy) holds nothing. The plan's line names each commit read.
+ */
+async function servedHold(got: Pick<Values, "cloudflare" | "account">, run: Run,
+                          rolled: readonly Rolled[]): Promise<string> {
+  const commits = new Map<string, string>();
+  const read: string[] = [];
+  for (const { name, before } of rolled) {
+    if (before === null) {
+      continue;
+    }
+    const code = await codeOf(got, name, before.version);
+    if (code === null) {
       throw new Error(`${name} serves ${before.version}, tagged ${before.tag ?? "with nothing"}, ` +
-                      "which names no commit: what it hands and takes is unknown, so nothing " +
-                      "is changed");
+                      "which names no commit, and Cloudflare notes it as no secret change of a " +
+                      "version that does: what it hands and takes is unknown, so nothing is " +
+                      "changed. Deploy a version this kit tagged on it (wrangler versions " +
+                      "deploy <id>), then plan again");
+    }
+    const { commit } = taggedAs(code.tag)!;
+    commits.set(name, commit);
+    read.push(`${name} at ${commit}${code.version === before.version ? ""
+      : ` (${before.version}, a secret change of ${code.version})`}`);
+  }
+  const sides = new Map<string, Before>();
+  const then = (worker: string): Before | null => {
+    const commit = commits.get(NAMES[worker]!);
+    if (commit === undefined) {
+      return null;
     }
     if (!sides.has(commit)) {
       sides.set(commit, sideAt(commit, run.io.fileAt));
     }
-    read.push(`${name} at ${commit}`);
     return sides.get(commit)!;
   };
   const problems = handedProblems(then, TREE);

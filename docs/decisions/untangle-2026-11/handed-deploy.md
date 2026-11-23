@@ -18,6 +18,17 @@ other strict cross-Worker parser is data under the same rule, which runs both wa
   (`ci/history.ts` `fileAt`, which fails loudly on a commit the checkout lacks, never "no
   file"); the job's token is `contents: read`. The GitHub contents API would need the token in
   the plan job, which holds only the Cloudflare token: git is the one way, read-only.
+- **A version a secret change makes** (review). `retire` sets a keyring with `wrangler secret
+  put`, and a secret edited in the dashboard does the same: Cloudflare makes a version and
+  deploys it at once. Wrangler 4.154.0's source (its published package, read in a scratch
+  folder): `secret put` sends only the secret (`PUT .../scripts/<name>/secrets`), no
+  annotations, and the API refuses it unless the latest version is deployed
+  (`throwIfLatestVersionNotDeployed`); `versions secret put` instead PATCHes the latest version
+  with its own `--tag` and `--message` and deploys nothing. Wrangler's version listing reads
+  `workers/triggered_by` (`secret` shown as "Secret Change"), so Cloudflare notes how a version
+  was made. Whether it copies the tag onto a secret change is not in wrangler's source, and the
+  deploy logs show no such version: every run's serving versions since run 45038596195 are the
+  versions the run before deployed, each tagged. So the kit cannot count on a tag there.
 - **The apply job makes the plan again before any change** (`approved`), so a stop in
   `rollout`'s plan stops the apply job before its namespaces, secrets or deploys too.
 - **The strict cross-Worker parsers, by the deploy order** (codemode, files, gateway, sandbox,
@@ -64,6 +75,13 @@ other strict cross-Worker parser is data under the same rule, which runs both wa
   commit the checkout lacks, stops the run: what it hands is unknown. No version serving is the
   one "no constraint". The plan's line names each commit read, so the apply job's plan is held
   to it too.
+- **A secret change's version is read as the version it was made from** (`codeOf`): a serving
+  version whose tag names no commit, which Cloudflare notes as `triggered_by: secret`, runs the
+  code of the version its deployments listing served alone at 100% just before it first did
+  (a secret change is made from the latest version, refused unless it is deployed, and deploys at
+  once), and so on back to a tagged one. Anything else untagged stops the run, naming how out: a
+  version this kit tagged deployed on it. Not `versions secret put` in `retire`: it patches the
+  latest version, not the serving one, and still leaves a hand edit in the dashboard a dead end.
 - **The shapes file at an earlier commit** is `handed.json`, or at a commit before it
   `bindings.json`'s shapes, each the doors' to the owner, as its `about` said: the stage serves
   ecaccf90c, which has only that. A commit with neither throws.
@@ -76,7 +94,7 @@ other strict cross-Worker parser is data under the same rule, which runs both wa
     contract step (a `dropped` entry taken out) passed whether or not the serving doors still
     sent it, and its wait was a decision log's.
 - **Every strict cross-Worker field list is data, held both ways** (`handed.json`, `taken`).
-  - 25 literal key lists in the loose doors' modules, the gateway's inputs and the answers'
+  - 25 literal key lists (24 shapes) in the loose doors' modules, the gateway's inputs and the answers'
     parsers, which no guard could read at an earlier commit.
   - The rule ran one way only (the owner from the doors); an answer's parser deploys after its
     sender, so its rule runs the other way.
@@ -91,7 +109,8 @@ other strict cross-Worker parser is data under the same rule, which runs both wa
 
 - A deploy plan stops before any change when the run's Workers refuse what a serving version
   hands or a serving version refuses what they hand, naming each shape and field; or when a
-  serving version's tag names no commit this checkout has.
+  serving version's code is unknown (untagged, and no secret change of a tagged version) or its
+  commit is not in this checkout.
 - `tierName` holds its request to a plain object, as every other parser does (`keyed`).
 
 ## Left, each with its reason
@@ -103,6 +122,10 @@ other strict cross-Worker parser is data under the same rule, which runs both wa
   shapes** are not the deploy order's: the tool table's, the runner protocol's, `forward`'s.
 - **Types are not held to the data**, as in #5808: a JSON module's strings widen. A sender
   whose literal gains a field the data lacks is refused by its parser's own tests.
+- **The rollout's other rules still read a secret change's version by its own tag**
+  (`atOnce`, `forwardOnly`, the rollout record's `before`): untagged, it goes to 100% at once
+  and a rollback stops at it, as before this PR; the record's tag is held to Cloudflare's own,
+  so `codeOf` resolves for the hold alone.
 - **The sandbox's input checks** list no keys (an unknown key is ignored); a newly required
   field there is the same skew, with no list to hold.
 

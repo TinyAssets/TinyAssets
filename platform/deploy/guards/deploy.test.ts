@@ -388,8 +388,11 @@ function world(options: WorldOptions = {}) {
   const locks = new Map<string, unknown[]>(Object.entries(BUCKET_LOCKS).map(([bucket, days]) =>
     [bucket, [...options.locks?.[bucket] ?? (held ? [{ id: "kept", enabled: true,
       condition: { type: "Age", maxAgeSeconds: days * 86_400 } }] : [])]]));
-  /** Each version the account holds, by id: its Worker and its tag. */
-  const versions = new Map<string, { script: string; tag: string | null }>();
+  /**
+   * Each version the account holds, by id: its Worker, its tag and, for one a secret change
+   * made, `secret` (`workers/triggered_by`).
+   */
+  const versions = new Map<string, { script: string; tag: string | null; trigger?: string }>();
   /** Each Worker's active deployment, by script: a held account's one version before. */
   const deployments = new Deployed();
   for (const [script, serving] of Object.entries(options.serving ?? (held ? HELD_SERVING : {}))) {
@@ -459,8 +462,9 @@ function world(options: WorldOptions = {}) {
       const held = versions.get(versioned[2]!);
       return held === undefined || held.script !== versioned[1]
         ? json({ success: false, errors: [{ code: 10007 }] }, 404)
-        : json({ success: true, result: { id: versioned[2], annotations: held.tag === null ? {}
-          : { "workers/tag": held.tag, "workers/message": COMMIT } } });
+        : json({ success: true, result: { id: versioned[2], annotations: {
+          ...held.tag === null ? {} : { "workers/tag": held.tag, "workers/message": COMMIT },
+          ...held.trigger === undefined ? {} : { "workers/triggered_by": held.trigger } } } });
     }
     const given = method === "POST" ? JSON.parse(body!) as Record<string, string> : {};
     if (path === `${account}/storage/kv/namespaces` && method === "POST") {
@@ -731,6 +735,12 @@ function world(options: WorldOptions = {}) {
       if (args[0] === "secret") {
         secretsPut[`${basename(join(argv[argv.length - 1]!, ".."))}:${args[2]}`] =
           options_.input ?? "";
+        // As Cloudflare does: a version of the latest one's code, untagged, noted as a secret
+        // change, deployed at once.
+        const script = args[args.indexOf("--name") + 1]!;
+        const id = version(script, null);
+        versions.set(id, { script, tag: null, trigger: "secret" });
+        deploy(script, [{ version: id, percentage: 100 }]);
       }
       if (args[0] === "triggers") {
         if (killed()) {
@@ -2718,8 +2728,40 @@ describe("the rollout record and mode rollback", () => {
     const doors = (tag: string | null) => world({ held: true, serving: { ...HELD_SERVING,
       [DOORS]: [{ version: "before-doors", percentage: 100, tag }] } });
     await stops(doors(null), `${DOORS} serves before-doors, tagged with nothing, which names no ` +
-                "commit: what it hands and takes is unknown, so nothing is changed");
+                "commit, and Cloudflare notes it as no secret change of a version that does: " +
+                "what it hands and takes is unknown, so nothing is changed. Deploy a version " +
+                "this kit tagged on it (wrangler versions deploy <id>), then plan again");
     await stops(doors("a".repeat(12)), `${"a".repeat(12)} is not in this checkout`);
+  });
+
+  it("reads a version a secret change made, untagged, as the tagged version it was made from",
+     async () => {
+    const gateway = NAMES["gateway"]!;
+    const hold = (gw: string) => holdLine(WORKERS.map((worker) => `${NAMES[worker]} at ${BEFORE}${
+      worker === "gateway" ? gw : ""}`).join(", "));
+    const plan = async (w: ReturnType<typeof world>) =>
+      (await runMode(w, "dark", ["--public"], PUBLIC)).plan;
+    const changed = (w: ReturnType<typeof world>, id: string, trigger?: string) => {
+      w.versions.set(id, { script: gateway, tag: null, ...trigger === undefined ? {} : { trigger } });
+      w.deployments.set(gateway, [{ version: id, percentage: 100 }]);
+    };
+    // `retire` sets the keyring with `wrangler secret put`, which deploys an untagged version.
+    const w = world({ held: true });
+    changed(w, "gw-secret", "secret");
+    expect(await plan(w)).toContain(hold(" (gw-secret, a secret change of before-gateway)"));
+    // A secret change of a secret change, back to the tagged version.
+    changed(w, "gw-again", "secret");
+    expect(await plan(w)).toContain(hold(" (gw-again, a secret change of before-gateway)"));
+    // An untagged version anything else made, or a secret change after a split, is unknown.
+    const unknown = `${gateway} serves gw-upload, tagged with nothing, which names no commit`;
+    const upload = world({ held: true });
+    changed(upload, "gw-upload", "upload");
+    await expect(plan(upload)).rejects.toThrow(unknown);
+    const split = world({ held: true });
+    split.deployments.set(gateway, [{ version: "gw-new", percentage: 10 },
+                                    { version: "before-gateway", percentage: 90 }]);
+    changed(split, "gw-upload", "secret");
+    await expect(plan(split)).rejects.toThrow(unknown);
   });
 
   it("plans an optional secret the doors lack, and the doors' way back, as the apply job's to " +
@@ -4914,6 +4956,10 @@ describe("modes rotation and retire", () => {
       `wrangler secret put GATEWAY_KEYRING --name ${NAMES["gateway"]}`,
       expect.stringMatching(/^node canary\.ts/)]);
     expect(Object.values(w.secretsPut)).toEqual([SHRUNK]);
+    // The version the secret change made is untagged: the next deploy reads it as the one before.
+    expect((await runMode(w, "dark", ["--public"], PUBLIC)).plan.join("\n")).toContain(
+      `${NAMES["gateway"]} at ${BEFORE} (0f7e3a3c-1b2d-4e5f-8a9b-000000000001, a secret change ` +
+      "of before-gateway)");
   });
 
   it("retires a files kid only from a pass begun after the latest restore from the " +
