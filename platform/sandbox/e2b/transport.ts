@@ -8,7 +8,8 @@
  * - the platform API, `api.e2b.app`, by the project's API key (`X-API-Key`), through `api`
  *   alone, so every refusal is one `E2bError` with E2B's own `error_code`; here, the calls
  *   every caller makes of a sandbox it holds: its network's replacement
- *   (`PUT /sandboxes/{id}/network`) and its kill;
+ *   (`PUT /sandboxes/{id}/network`) and its kill; and the team's list (`GET /v2/sandboxes`),
+ *   which the sandbox Worker's erasure and the kit's mode retire read;
  * - a sandbox's own daemon, envd, on the shared sandbox host `sandbox.e2b.app`, routed by
  *   `E2b-Sandbox-Id` and `E2b-Sandbox-Port`, by the sandbox's envd token
  *   (`X-Access-Token`), as root (HTTP Basic): a file upload (`POST /files`, the bytes as
@@ -78,6 +79,12 @@ export function sandboxId(id: string): string {
     throw new Error("an E2B sandbox id is lowercase letters and digits");
   }
   return id;
+}
+
+/** A sandbox as E2B's list names it: its id and its metadata. */
+export interface Listed {
+  readonly sandboxID: string;
+  readonly metadata: Readonly<Record<string, unknown>>;
 }
 
 /** A sandbox E2B made or resumed, as envd is reached. */
@@ -184,6 +191,35 @@ export class E2bTransport {
 
   async kill(id: string): Promise<void> {
     await this.api("DELETE", `/sandboxes/${sandboxId(id)}`, undefined, [204, 404]);
+  }
+
+  /**
+   * Every sandbox of the team, running or paused, with its metadata (`GET /v2/sandboxes`),
+   * page by page (`x-next-token`) to the end; only those E2B's `metadata` query matches
+   * (`key=value`, each URL-encoded) when one is given.
+   */
+  async sandboxes(metadata?: string):
+      Promise<Listed[]> {
+    const listed: Listed[] = [];
+    let next: string | null = null;
+    do {
+      const query = new URLSearchParams({ ...(metadata === undefined ? {} : { metadata }),
+                                          state: "running,paused" });
+      if (next !== null) {
+        query.set("nextToken", next);
+      }
+      const { json: page, headers } = await this.api("GET", `/v2/sandboxes?${query}`);
+      if (!Array.isArray(page) || !page.every((each) => object(each)
+                                              && typeof each["sandboxID"] === "string")) {
+        throw new E2bError(502, null, "E2B's list is out of shape");
+      }
+      for (const each of page as { sandboxID: string; metadata?: unknown }[]) {
+        listed.push({ sandboxID: sandboxId(each.sandboxID),
+                      metadata: object(each.metadata) ? each.metadata : {} });
+      }
+      next = headers.get("x-next-token");
+    } while (next !== null && next !== "");
+    return listed;
   }
 
   #envd(handle: Handle): Record<string, string> {

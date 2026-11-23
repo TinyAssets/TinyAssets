@@ -15,6 +15,7 @@ import {
   ID as PROVIDER, keyExchangeSource, type Source, source as gatewaySource,
 } from "../../contract/src/egress-scope";
 import { HEX64 } from "../../contract/src/ids";
+import { MODEL_ID as MODEL_PATTERN } from "../../contract/src/model-record";
 import {
   type EngineEvents, type EventMatcher, PATTERN_FLAGS,
 } from "../../contract/src/run-events";
@@ -1484,7 +1485,7 @@ export function sourceRecord(value: unknown): SourceRecord {
     : check.keys(copy, "the record",
                  [...base, ...GATEWAY_KEYS.filter((key) => key !== "models"), "engines",
                   ...(connect.includes("oauth") ? ["oauth"] : [])],
-                 [...optional, "models"]);
+                 [...optional, "models", "not_interactive"]);
   const record: Record<string, unknown> = {
     id,
     display_name: check.text(fields["display_name"], TEXT, "display_name"),
@@ -1523,6 +1524,14 @@ export function sourceRecord(value: unknown): SourceRecord {
     check.fail("engines names each CLI record once");
   }
   record["engines"] = Object.freeze(engines);
+  if (fields["not_interactive"] !== undefined) {
+    // A model pattern is a model id's characters (`*` among them), the gateway's rule.
+    const patterns = check.strings(fields["not_interactive"], "not_interactive", MODEL_PATTERN, 16);
+    if (patterns.length === 0 || new Set(patterns).size !== patterns.length) {
+      check.fail("not_interactive lists model patterns, at least one, each once");
+    }
+    record["not_interactive"] = Object.freeze(patterns);
+  }
   if (connect.includes("oauth")) {
     const oauth = oauthSpec(check, fields["oauth"]);
     record["oauth"] = oauth;

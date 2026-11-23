@@ -61,7 +61,7 @@ async function sandboxOf(r: Gated): Promise<Binding> {
   const { start } = await ownerRun(r.stub, r.bind(), { engine: "pi", credential: "api_key",
                                                        connection, scopes: [] });
   RUN = start.run;
-  const token = verifyToken(env.ROUTING_MAC_KEY, "egress",
+  const token = verifyToken(env.ROUTING_KEYRING, "egress",
                             egressTokenOf(start.network!.network)!)!.hash;
   return r.bind({ sandbox: { kind: "egress", token,
                              generation: generationOf(start.network!.network)!,

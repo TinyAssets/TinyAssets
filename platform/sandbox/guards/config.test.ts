@@ -84,7 +84,7 @@ configTests(CONFIG, {
                                                   { binding: "OUT", queue: "r" }] } }],
     ["no ring", { queues: undefined }],
     ["another var", { vars: { E2B_TEMPLATE: "t", OWNER: "alice" } }],
-    ["another secret", { secrets: { required: ["E2B_API_KEY", "ROUTING_MAC_KEY"] } }],
+    ["another secret", { secrets: { required: ["E2B_API_KEY", "ROUTING_KEYRING"] } }],
     ["no strictly-public fetch", { compatibility_flags: ["nodejs_compat", "disable_ctx_exports"] }],
     ["a workers.dev URL", { workers_dev: true }],
   ],

@@ -152,7 +152,7 @@ type Binder = { readonly bind: (extra?: Partial<Binding>) => Binding };
 export function sandboxOf(r: Binder, start: SandboxStart,
                           presented: { secret?: string; runner?: string } = {},
                           run?: string): Binding {
-  const token = verifyToken(env.ROUTING_MAC_KEY, "egress", leaseTokens(start).egress)!.hash;
+  const token = verifyToken(env.ROUTING_KEYRING, "egress", leaseTokens(start).egress)!.hash;
   return r.bind({ sandbox: { kind: "egress", token, generation: 1, ...presented },
                   ...(run === undefined ? {} : { run }) });
 }
@@ -180,9 +180,9 @@ export function runnerSandbox(r: Binder, start: SandboxStart): Binding {
 /** The sandbox's sync agent's binding, by its lease's sync token. */
 export function syncOf(r: Binder, start: SandboxStart): Binding {
   return r.bind({ sandbox: { kind: "sync",
-                             token: verifyToken(env.ROUTING_MAC_KEY, "sync",
+                             token: verifyToken(env.ROUTING_KEYRING, "sync",
                                                 leaseTokens(start).sync)!.hash,
-                             egress: verifyToken(env.ROUTING_MAC_KEY, "egress",
+                             egress: verifyToken(env.ROUTING_KEYRING, "egress",
                                                  leaseTokens(start).egress)!.hash } });
 }
 

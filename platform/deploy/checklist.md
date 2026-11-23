@@ -122,7 +122,7 @@ It never counts as "absent".
    once). Values come from the environment's secrets: each
    Worker's `secrets.required` (its `wrangler.jsonc`), and on the doors, if set, each shared
    app's signing secret (`platform/doors/shared-apps.json`). A secret two Workers require
-   (the routing key, the doors' and the owner's) is set on both or neither. The plan job
+   (the routing keyring, the doors' and the owner's) is set on both or neither. The plan job
    holds no secret, so for an optional one the doors lack (a shared app's, the canary
    clock's) it says "if the run is given it", and the apply job says whether it is; so does
    the doors' rollout line, since a secret the run sets makes them forward-only (step 4).
@@ -136,7 +136,8 @@ It never counts as "absent".
    adding a key: run `keyring-add` on your copy
    of the stored keyring, store the result, then run with `rotate` naming it. The
    kit refuses a rotated keyring with fewer than two keys, or whose active key is not among
-   them. **Residual:** Cloudflare never shows a held secret, so the kit cannot read the
+   them; a shared one only one Worker holds (a run stopped between them) is set on both
+   again as `production` holds it. **Residual:** Cloudflare never shows a held secret, so the kit cannot read the
    deployed keyring back. A two-key ring that dropped the deployed key would pass its check
    and make every sealed credential (or, for `FILES_KEYRING`, every chunk) unreadable. `keyring-add` keeps every old key by
    construction, so rotate only with it, on your copy of the stored keyring. Mode `rotation`
@@ -188,7 +189,11 @@ It never counts as "absent".
 
    **Then the control record, written only when the API answered that it is absent.** It starts
    with everything closed: outside access off, maintenance admitting no owner, inbound events
-   off. It also holds your tier numbers. It is `platform/deploy/control.json`, as is. If the
+   off. It also holds your tier numbers and the sandbox's numbers, without which no sandbox
+   starts (`sandbox_unconfigured`): E2B Hobby's, the lowest plan's, so they hold on any plan
+   (a 3,600 s runtime ceiling, 20 sandboxes at once, and a 600 s renewal window). On a
+   larger E2B plan, raise the first two to its own with mode `control` (Pro: 86,400 and
+   100); E2B's API key cannot read them. It is `platform/deploy/control.json`, as is. If the
    record is there, the kit leaves it alone. If the read fails, the whole run stops.
 6. **One WorkOS redirect URI, registered if WorkOS's listing lacks it:** the doors'
    callback (`signin.callback` in `platform/contract/identity.json`), with the checks in
@@ -581,6 +586,26 @@ It never counts as "absent".
      names the words, `retire-<keyring>-<kids>`, and changes nothing. Dispatch it again with
      `confirm` those words: it sets the stored ring on the keyring's Workers, then runs the
      canary.
+- **Rotating `ROUTING_KEYRING`, and retiring the old kid,** your steps in order. The owner
+  mints each sandbox's tokens and seals its route under the active kid, and the doors, deployed
+  after it, verify and open them under any kid they hold. So a new key reaches both before it
+  is made active, or the doors would refuse what the owner minted between its deploy and
+  theirs. The kit cannot check this order (it never sees a held secret): keep it.
+  1. `keyring-stage` on your offline copy of the stored ring: the new kid is added, the old
+     one stays active. Store the result, then dispatch `dark` with `rotate` naming it.
+  2. `keyring-activate` on the same copy: the new kid is made active. Store it, then dispatch
+     `dark` with `rotate` naming it again. The owner now mints under the new kid; every older
+     one still verifies.
+  3. Nothing sweeps the old kid's values: each sandbox's route is in its E2B metadata, set
+     once at its create, and E2B keeps a paused sandbox indefinitely; its lease's tokens are
+     minted no earlier. So the old kid is in use until every sandbox created before step 2 is
+     killed (an erasure, or by hand). Keeping it costs nothing: retire only when you need to.
+  4. `keyring-retire` on your copy, then store `<file>.retire` as the `production` secret.
+  5. Dispatch **`retire`** with `keyring` `ROUTING_KEYRING`. Its apply job lists every
+     sandbox E2B holds, running or paused, and stops, changing nothing, while any route among
+     them does not open under the stored ring. Otherwise it names the words,
+     `retire-ROUTING_KEYRING-but-<kid kept>`; dispatch it again with `confirm` those words: it
+     sets the stored ring on the doors, then the owner, then runs the canary.
 - **Later deploys change the Workers one after another, never at once.** The kit deploys
   them in turn, each after the Workers it binds (`WORKERS` in `deploy/facts.ts`), so
   between two of them old and new versions serve together. A change to a contract between

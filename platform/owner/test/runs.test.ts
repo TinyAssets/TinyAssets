@@ -98,7 +98,7 @@ describe("a run", () => {
     const token = egressTokenOf(start.network!.network)!;
     const leases = JSON.stringify(await r.sql("SELECT * FROM sandbox_leases"));
     expect(leases).not.toContain(token.split(".")[2]);
-    expect(leases).toContain(verifyToken(env.ROUTING_MAC_KEY, "egress", token)!.hash);
+    expect(leases).toContain(verifyToken(env.ROUTING_KEYRING, "egress", token)!.hash);
     expect(await r.sql("SELECT lease_id, epoch FROM runs WHERE id = ?", run.run_id))
       .toEqual([{ lease_id: lease!["lease_id"], epoch: lease!["epoch"] }]);
     // Its grant: the run's own secret's hash, never the secret, which only its URLs carry.
@@ -746,7 +746,7 @@ describe("simultaneous runs", () => {
     expect(JSON.stringify(onB.start.config.env)).not.toContain(a);
     const egress = (start: SandboxStart) => r.bind({ sandbox: {
       kind: "egress", generation: 1, secret: hashed(secretOf(start)), token: verifyToken(
-        env.ROUTING_MAC_KEY, "egress", egressTokenOf(onA.start.network!.network)!)!.hash } });
+        env.ROUTING_KEYRING, "egress", egressTokenOf(onA.start.network!.network)!)!.hash } });
     const call = (run: string, connection: string,
                   as = run === onA.run.run_id ? onA.start : onB.start) =>
       r.stub.egressOpen(egress(as), {
@@ -1055,6 +1055,35 @@ describe("auto and the owner's sign-ins", () => {
     await defineAgent(r.stub, r.bind(), "keyed", { ...AUTO_AGENT, connection });
     expect((await ownerRun(r.stub, r.bind(), undefined, "keyed")).run)
       .toMatchObject({ credential: "api_key" });
+  });
+
+  it("never picks on its own a model the key's source record marks not interactive; one the " +
+     "agent names runs", async () => {
+    // The stage finding of 2026-11-23: an OpenRouter key whose catalog lists Claude Fable
+    // only as its batch variants and as `~…-latest`. The models are put on the fake upstream's
+    // source; the rule reads the connection's source record, OpenRouter's.
+    const [base] = await catalog(OPENAI);
+    const listed = (...ids: string[]) => ids.map((id) => ({ ...base!, id }));
+    const BATCH = "anthropic/claude-fable-5.1:batch";
+    const r = await gated();
+    await r.connect("sk-good", OPENAI, "OpenRouter",
+                    listed(BATCH, "~anthropic/claude-fable-latest"), "openrouter_user_models_v1");
+    await defineAgent(r.stub, r.bind(), "helper", AUTO_AGENT);
+    expect((await ownerRun(r.stub, r.bind(), undefined, "helper")).run)
+      .toMatchObject({ credential: "api_key", model: "~anthropic/claude-fable-latest" });
+    expect((await ownerRun(r.stub, r.bind(), { ...AUTO_AGENT, model: BATCH }, "pinned")).run)
+      .toMatchObject({ credential: "api_key", model: BATCH });
+    // A key listing only batch variants: `auto` has no source, and an agent naming the
+    // connection on its engine still runs on it.
+    const s = await gated();
+    const only = await s.connect("sk-good", OPENAI, "Batch only", listed(BATCH),
+                                 "openrouter_user_models_v1");
+    await defineAgent(s.stub, s.bind(), "helper", AUTO_AGENT);
+    expect((await failure(() => ownerRun(s.stub, s.bind(), undefined, "helper"))).message)
+      .toMatch(/^no_source/);
+    expect((await ownerRun(s.stub, s.bind(), { engine: "pi", connection: only, scopes: [] },
+                           "named")).run)
+      .toMatchObject({ engine: "pi", credential: "api_key" });
   });
 
   it("takes a sign-in report only from the sandbox, for engines that sign in, each once",

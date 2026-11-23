@@ -70,7 +70,9 @@ section, .card {
 small { display: block; font-size: 13px; }
 
 #notice:empty { display: none; }
-#notice { max-width: 960px; margin: 12px auto 0; padding: 0 16px; }
+/* Held at the top of the view, so an action's answer is seen wherever its button is. */
+#notice { max-width: 960px; margin: 12px auto 0; padding: 0 16px; position: sticky; top: 12px;
+          z-index: 1; }
 .message { padding: 10px 12px; border-radius: 6px; border: 1px solid var(--line);
            background: var(--paper); display: flex; gap: 12px; align-items: center;
            flex-wrap: wrap; }

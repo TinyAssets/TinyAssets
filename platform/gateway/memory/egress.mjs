@@ -26,7 +26,7 @@
 //   pool's wait is refused `busy`.
 // Run: `npm run test:memory -w gateway`. Exits non-zero on any failed check, printing every
 // figure.
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, request } from "node:http";
 import { createRequire } from "node:module";
@@ -184,7 +184,7 @@ const doors = workerConfig(DOORS);
 const gateway = workerConfig(GATEWAY);
 const flags = (config) => (config.compatibility_flags ?? []).map((flag) => `"${flag}"`)
   .join(", ");
-const routing = randomBytes(32).toString("base64url");
+const routing = JSON.stringify(newKeyring());
 writeFileSync(join(work, "config.capnp"), `using Workerd = import "/workerd/workerd.capnp";
 const config :Workerd.Config = (
   v8Flags = ["--expose-gc"],
@@ -200,7 +200,7 @@ const doors :Workerd.Worker = (
   compatibilityDate = "${doors.compatibility_date}",
   compatibilityFlags = [${flags(doors)}],
   bindings = [
-    (name = "ROUTING_MAC_KEY", text = "${routing}"),
+    (name = "ROUTING_KEYRING", text = ${routing}),
     (name = "CONTROL", kvNamespace = (name = "leg", entrypoint = "Control")),
     (name = "OWNER", durableObjectNamespace = (className = "LegOwner", serviceName = "leg")),
     (name = "EGRESS", service = (name = "gateway", entrypoint = "EgressGateway")),
@@ -224,7 +224,7 @@ const leg :Workerd.Worker = (
     (name = "DRIVER", service = "driver"),
     (name = "CONNECT", service = (name = "gateway", entrypoint = "ConnectGateway")),
     (name = "OWNER", durableObjectNamespace = "LegOwner"),
-    (name = "ROUTING_MAC_KEY", text = "${routing}") ],
+    (name = "ROUTING_KEYRING", text = ${routing}) ],
 );
 `);
 
