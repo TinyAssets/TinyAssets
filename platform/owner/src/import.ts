@@ -325,14 +325,14 @@ function there(o: ImportDoorNeeds, path: string,
  */
 function rowThere(o: ImportDoorNeeds, owner: string,
                   row: Extract<ImportRow, { kind: "collection" }>): boolean {
-  const held = o.collections.get(owner, row.collection, row.row_id).row;
+  const held = o.collections.get(owner, row.collection, row.row_id, row.private === 1).row;
   if (held === null) {
     return false;
   }
   const bytes = new TextEncoder().encode(row.body);
-  const same = held.private === (row.private === 1) && (held.content_id === undefined
+  const same = held.content_id === undefined
     ? held.body === row.body
-    : held.content_id === chunkedId(bytes.byteLength, cut(bytes).map((chunk) => chunk.sha256)));
+    : held.content_id === chunkedId(bytes.byteLength, cut(bytes).map((chunk) => chunk.sha256));
   if (!same) {
     throw conflict(`the row ${row.row_id} of ${row.collection} holds another body`);
   }

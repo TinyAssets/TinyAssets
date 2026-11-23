@@ -94,9 +94,9 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
   collectionHistory(binding: Binding, request: DoorRequest<"collectionHistory">):
     Promise<DoorAnswer<"collectionHistory">>;
   /**
-   * Write one collection row against its current etag. A new row (expected_etag "") is refused when
-   * the row exists, so creating one claims an act: on the board, the first agent to create the row
-   * named for an act holds it, and a conflict means another agent has it.
+   * Write one collection row against its current etag. A new public row (expected_etag "", private
+   * false) is refused when the row exists, so creating one claims an act: on the board, the first
+   * agent to create the row named for an act holds it, and a conflict means another agent has it.
    */
   collectionWrite(binding: Binding, request: DoorRequest<"collectionWrite">):
     Promise<DoorAnswer<"collectionWrite">>;
@@ -413,7 +413,7 @@ type Loose =
       | "admissionSet" | "wakeEvents" | "signinEvents" | "tierSet" | "egressOpen" | "egressReserve"
       | "egressBeat" | "egressSettle";
 /** The doors the doors call no more, which the object still takes, its types with it. */
-type Dropped = "registerProposal";
+type Dropped = never;
 /** What `DoorTypes` may say of a door, by its row. */
 type Parts<D> = "answer" | (D extends keyof DoorRequests ? "values" | "handed"
   : D extends Loose ? "loose" : never);

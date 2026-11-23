@@ -113,15 +113,16 @@ const ID = (column: string) => (n: number) => `length(${column}) = ${n}`;
 const CAPTURE = /^CREATE TRIGGER \w+_logged_(?:insert|update|delete) /;
 const CAPTURE_UPDATE = /^CREATE TRIGGER \w+_logged_update /;
 /** The capture triggers the migrations make, and the updates among them. */
-const CAPTURES = 149;
-const UPDATES = 51;
+const CAPTURES = 155;
+const UPDATES = 53;
 /** The triggers that count a content's chunk list's rows from its size. */
 const CHUNK_LIST = new RegExp("^CREATE TRIGGER (?:file_contents_(?:added|removed)|" +
   "file_scope_contents_(?:added|removed)|file_content_chunks_planned) ");
 
 /** Each frozen bound, at every place the SQL spells it, with how many times. */
 export const SPELLED: Readonly<Record<string, readonly Place[]>> = Object.freeze({
-  PLACE_BYTES: [...PLACED("collection_rows", "body"), ...PLACED("collection_history", "body_json", 2),
+  PLACE_BYTES: [...PLACED("collection_rows", "body", 2),
+                ...PLACED("collection_history", "body_json", 3),
                 ...PLACED("message_bodies", "body")],
   GC_GRACE_S: TRIGGER("file_chunks_released",
                       (n) => `gc_after = unixepoch('subsec') + ${n} WHERE sha256 = NEW.sha256`),
@@ -235,8 +236,8 @@ export const SPELLED: Readonly<Record<string, readonly Place[]>> = Object.freeze
  * - 1000 the open model calls' bound, twice in migration 1's `model_reservations_open`, whose
  *   table migration 26 drops: frozen text, as a dropped table's other statements are.
  */
-const SHARED: Values = Object.freeze({ 16: 9, 35: 1, 36: 13, 64: 285, 256: 8, 1000: 2, 1024: 5,
-                                       4096: 252 });
+const SHARED: Values = Object.freeze({ 16: 9, 35: 1, 36: 13, 64: 287, 256: 8, 1000: 2, 1024: 5,
+                                       4096: 356 });
 
 /**
  * The owner modules' names and charges the SQL spells: each place's statements, how many
@@ -245,7 +246,7 @@ const SHARED: Values = Object.freeze({ 16: 9, 35: 1, 36: 13, 64: 285, 256: 8, 10
  * charge.
  */
 export const NAMED: readonly (readonly [Head, number, string])[] = Object.freeze([
-  ["CREATE TABLE collection_rows", 1, `filer = '${OWNER}' OR (length(filer) = 71 AND ` +
+  ["CREATE TABLE collection_rows", 2, `filer = '${OWNER}' OR (length(filer) = 71 AND ` +
     `filer GLOB '${CLIENT_WRITER}')`],
   ["CREATE TABLE collection_usage", 1, `who = '${CLIENTS}' OR (length(who) = 71 AND who GLOB ` +
     `'${CLIENT_WRITER}')`],
@@ -463,7 +464,7 @@ describe("the owner's frozen bounds", () => {
       }
     }
     // Every place of every bound, the products of two counted with each.
-    expect(places).toBe(645);
+    expect(places).toBe(671);
   });
 
   it("see a bound changed without its SQL, a place more or less, or a number left over", () => {

@@ -151,8 +151,6 @@ export interface DoorRows {
     { readonly module: "files"; readonly caller: "account"; readonly gate: "door" };
   readonly registerAgent:
     { readonly module: "ledger"; readonly caller: "session"; readonly gate: "synced" };
-  readonly registerProposal:
-    { readonly module: "registrations"; readonly caller: "owner"; readonly gate: "door" };
   readonly registerProposals:
     { readonly module: "registrations"; readonly caller: "owner"; readonly gate: "door" };
   readonly registerDecline:
@@ -397,9 +395,9 @@ export interface DoorMethods<H> {
   collectionHistory(binding: Binding, request: RequestIn<H, "collectionHistory">):
     Promise<AnswerIn<H, "collectionHistory">>;
   /**
-   * Write one collection row against its current etag. A new row (expected_etag "") is refused when
-   * the row exists, so creating one claims an act: on the board, the first agent to create the row
-   * named for an act holds it, and a conflict means another agent has it.
+   * Write one collection row against its current etag. A new public row (expected_etag "", private
+   * false) is refused when the row exists, so creating one claims an act: on the board, the first
+   * agent to create the row named for an act holds it, and a conflict means another agent has it.
    */
   collectionWrite(binding: Binding, request: RequestIn<H, "collectionWrite">):
     Promise<AnswerIn<H, "collectionWrite">>;
@@ -595,8 +593,6 @@ export interface DoorMethods<H> {
     Promise<AnswerIn<H, "fileUploadStored">>;
   registerAgent(binding: Binding, request: RequestIn<H, "registerAgent">):
     Promise<AnswerIn<H, "registerAgent">>;
-  registerProposal(binding: Binding, request: RequestIn<H, "registerProposal">):
-    Promise<AnswerIn<H, "registerProposal">>;
   registerProposals(binding: Binding): Promise<AnswerIn<H, "registerProposals">>;
   registerDecline(binding: Binding, request: RequestIn<H, "registerDecline">):
     Promise<AnswerIn<H, "registerDecline">>;

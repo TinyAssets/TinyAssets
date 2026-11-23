@@ -1,13 +1,16 @@
 /**
  * The one revision primitive, in the owner's own object (ADR-032).
  *
- * Rows are keyed by `(collection, row_id)`. Each write is a compare-and-swap
+ * Rows are keyed by `(collection, space, row_id)`. Each write is a compare-and-swap
  * on the row's etag (random, so it names a version and nothing else), and each commit takes
  * the collection's next `seq`, so a reader pulls after a cursor, or gets one row by its key.
  * The board is `collection = "board"`; a Tier A app room is `collection = "room:<app>:<room>"`.
  * Payloads are stored and returned verbatim. A private row is visible to, and
- * writable by, its writer alone. The rows are bounded by what they take in the object, laid
- * out as SQLite lays them, names and index entries included (`maxRowsCharge`), and an
+ * writable by, its writer alone, in a key space of its writer's own (`space`, '' for the
+ * public rows), so a caller addresses only rows it may see: no write, read or conflict meets a
+ * row hidden from it, and a public row's key, a claim's, is one for everyone. The rows are
+ * bounded by what they take in the object, laid out as SQLite lays them, names and index
+ * entries included (`maxRowsCharge`), and an
  * outside writer (a client, or a visiting owner) by the owner's own share of it; past a
  * bound a write is refused. Only the owner deletes a row, or clears a collection or one
  * writer's rows in it (the object enforces that at its RPC door).
@@ -15,8 +18,6 @@
  * Each write, and each delete or clear of a row, also takes the owner-wide clock's next
  * change (`collection_clock`), so one cursor covers many collections (`changed`): a main
  * agent's digests read the board and every room in one call, deletions included.
- * A row keeps the privacy it was made with, so a row turns private only by being deleted and
- * made again, which its delete reports.
  *
  * The clock and the seqs count every change, private ones too, so no answer shows either: a
  * cursor is opaque (`ordered.ts` `cursorAt`, under the object's id key), and a row shows its
@@ -180,8 +181,8 @@ type Entry = { readonly change: number; readonly erased: 0 | 1 };
  */
 export type Changed =
   | (Row & { readonly collection: string; readonly deleted: false })
-  | { readonly collection: string; readonly row_id: string; readonly deleted: true;
-      readonly op: string; readonly writer: string };
+  | { readonly collection: string; readonly row_id: string; readonly private: boolean;
+      readonly deleted: true; readonly op: string; readonly writer: string };
 
 /**
  * Rows changed after a cursor, and the cursor that reads on after them; `reset` when a
@@ -203,8 +204,16 @@ function seqsOf(collection: string): string {
 }
 
 /** The order a history's cursors are in: that key's entries, by change. */
-function historyOf(collection: string, rowId: string): string {
-  return `history\n${collection}\n${rowId}`;
+function historyOf(collection: string, space: string, rowId: string): string {
+  return `history\n${collection}\n${space}\n${rowId}`;
+}
+
+/** The key space of a caller's row: its own for a private row, the public rows' ('') else. */
+function spaceOf(caller: string, isPrivate: unknown): string {
+  if (typeof isPrivate !== "boolean") {
+    throw new Refusal("invalid", "private is true or false");
+  }
+  return isPrivate ? caller : "";
 }
 
 /** A pull's or a history's refusal of a cursor of the object before a restore. */
@@ -268,12 +277,12 @@ function conflict(current: Row | null): Refusal {
 
 type StoredRow = {
   collection: string;
+  space: string;
   row_id: string;
   revision: number;
   seq: number;
   etag: string;
   writer: string;
-  private: number;
   body: string;
   updated_at: number;
   creator: string;
@@ -308,7 +317,7 @@ function shown(row: StoredRow): Row {
     revision: row.revision,
     etag: row.etag,
     writer: row.writer,
-    private: Boolean(row.private),
+    private: row.space !== "",
     body: row.body,
     ...(row.content_id === null ? {} : { content_id: row.content_id }),
   };
@@ -322,12 +331,12 @@ function shown(row: StoredRow): Row {
  */
 export function changedSql(where: "collection" | "prefix"): string {
   const test = where === "collection" ? "collection = ?" : "collection >= ? AND collection < ?";
-  return "SELECT collection, row_id, revision, seq, etag, writer, private, body, change, " +
+  return "SELECT collection, space, row_id, revision, seq, etag, writer, body, change, " +
     "body_bytes, content_id, 0 AS deleted, '' AS op FROM collection_rows " +
     "INDEXED BY collection_changes " +
-    `WHERE change > ? AND ${test} AND (private = 0 OR writer = ?) ` +
-    "UNION ALL SELECT collection, key, revision, 0, '', writer, 0, '', change, 0, NULL, 1, op " +
-    "FROM collection_erasures NOT INDEXED " +
+    `WHERE change > ? AND ${test} AND space IN ('', ?) ` +
+    "UNION ALL SELECT collection, coalesce(private_writer, ''), key, revision, 0, '', writer, " +
+    "'', change, 0, NULL, 1, op FROM collection_erasures NOT INDEXED " +
     `WHERE change > ? AND ${test} AND (private_writer IS NULL OR private_writer = ?) ` +
     "ORDER BY change LIMIT ?";
 }
@@ -399,24 +408,19 @@ export class Collections {
     name(collection, "collection");
     name(rowId, "row_id");
     checkBody(body);
-    if (typeof expectedEtag !== "string" || typeof isPrivate !== "boolean") {
+    if (typeof expectedEtag !== "string") {
       throw new Refusal("invalid", "invalid collection write");
     }
+    const space = spaceOf(caller, isPrivate);
     if (typeof historyOp !== "string" || codePoints(historyOp) > 32
         || !IDENTIFIER.test(historyOp)) {
       throw new Refusal("invalid", "history_op is a name of at most 32 characters");
     }
     const sql = this.#sql;
+    const key = "WHERE collection = ? AND space = ? AND row_id = ?";
     return this.#storage.transactionSync(() => {
-      const row = sql.exec<StoredRow>(
-        "SELECT * FROM collection_rows WHERE collection = ? AND row_id = ?", collection, rowId,
-      ).toArray()[0];
-      if (row !== undefined && row.private && row.writer !== caller) {
-        throw new Refusal("refused", "a private row is its writer's own");
-      }
-      if (row !== undefined && Boolean(row.private) !== isPrivate) {
-        throw new Refusal("invalid", "a row keeps the privacy it was created with");
-      }
+      const row = sql.exec<StoredRow>(`SELECT * FROM collection_rows ${key}`, collection, space,
+                                      rowId).toArray()[0];
       if ((row === undefined ? "" : row.etag) !== expectedEtag) {
         throw conflict(row === undefined ? null : shown(row));
       }
@@ -435,31 +439,29 @@ export class Collections {
         // An upsert on the row's key alone: a seq collision fails loudly on
         // UNIQUE (collection, seq) instead of replacing another row.
         sql.exec(
-          "INSERT INTO collection_rows (collection, row_id, revision, seq, etag, writer, " +
-            "private, body, updated_at, creator, body_bytes, content_id, filer, change) " +
+          "INSERT INTO collection_rows (collection, space, row_id, revision, seq, etag, " +
+            "writer, body, updated_at, creator, body_bytes, content_id, filer, change) " +
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
-            "ON CONFLICT (collection, row_id) DO UPDATE SET " +
+            "ON CONFLICT (collection, space, row_id) DO UPDATE SET " +
             "revision = excluded.revision, seq = excluded.seq, etag = excluded.etag, " +
-            "writer = excluded.writer, private = excluded.private, body = excluded.body, " +
+            "writer = excluded.writer, body = excluded.body, " +
             "updated_at = excluded.updated_at, body_bytes = excluded.body_bytes, " +
             "content_id = excluded.content_id, filer = excluded.filer, " +
             "change = excluded.change",
-          collection, rowId, revision, seq, randomHex(32), caller,
-          isPrivate ? 1 : 0, kept, at, caller, bytes, contentId, filer, change,
+          collection, space, rowId, revision, seq, randomHex(32), caller,
+          kept, at, caller, bytes, contentId, filer, change,
         );
         sql.exec(
-          "INSERT INTO collection_history (change, collection, key, revision, op, body_json, " +
-            "at, writer, prev, body_bytes, content_id, filer) " +
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-          change, collection, rowId, revision, historyOp, kept, at, caller,
+          "INSERT INTO collection_history (change, collection, space, key, revision, op, " +
+            "body_json, at, writer, prev, body_bytes, content_id, filer) " +
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          change, collection, space, rowId, revision, historyOp, kept, at, caller,
           row === undefined ? null : row.change, bytes, contentId, filer,
         );
         this.#prune();
         this.#bound(before, filer);
-        const stored = sql.exec<StoredRow>(
-          "SELECT * FROM collection_rows WHERE collection = ? AND row_id = ?", collection,
-          rowId,
-        ).one();
+        const stored = sql.exec<StoredRow>(`SELECT * FROM collection_rows ${key}`, collection,
+                                           space, rowId).one();
         // The writer has the body it wrote: shown whole, as an inline one is.
         const { content_id: _placed, ...written } = shown(stored);
         return { ...written, body: body as string };
@@ -512,11 +514,11 @@ export class Collections {
    */
   rowsPage(offset: number, limit: number): { collection: string; row_id: string; private: 0 | 1;
                                             body: string; content_id: string | null }[] {
-    return this.#sql.exec<{ collection: string; row_id: string; private: number; body: string;
+    return this.#sql.exec<{ collection: string; row_id: string; space: string; body: string;
                             content_id: string | null }>(
-      "SELECT collection, row_id, private, body, content_id FROM collection_rows " +
-        "ORDER BY collection, row_id LIMIT ? OFFSET ?", limit, offset)
-      .toArray().map((row) => ({ ...row, private: row.private === 1 ? 1 : 0 }));
+      "SELECT collection, row_id, space, body, content_id FROM collection_rows " +
+        "ORDER BY collection, row_id, space LIMIT ? OFFSET ?", limit, offset)
+      .toArray().map(({ space, ...row }) => ({ ...row, private: space === "" ? 0 : 1 }));
   }
 
   /**
@@ -553,7 +555,7 @@ export class Collections {
     }
     const found = this.#sql.exec<StoredRow>(
       "SELECT * FROM collection_rows WHERE collection = ? AND seq > ? " +
-        "AND (private = 0 OR writer = ?) ORDER BY seq LIMIT ?",
+        "AND space IN ('', ?) ORDER BY seq LIMIT ?",
       collection, from, caller, limit,
     ).toArray();
     const rows = paged(found, PAGE_BYTES);
@@ -602,8 +604,8 @@ export class Collections {
       cursor: at(rows.length < found.length || found.length === limit
         ? rows.at(-1)!.change : Math.max(from, space.clock)),
       rows: rows.map((row): ReadsOn<Changed> => row.deleted === 1
-        ? { collection: row.collection, row_id: row.row_id, deleted: true, op: row.op,
-            writer: row.writer, next: at(row.change) }
+        ? { collection: row.collection, row_id: row.row_id, private: row.space !== "",
+            deleted: true, op: row.op, writer: row.writer, next: at(row.change) }
         : { ...shown(row), collection: row.collection, deleted: false, next: at(row.change) }),
     };
   }
@@ -617,7 +619,7 @@ export class Collections {
     const list = JSON.stringify(collections);
     return this.#sql.exec(
       "SELECT 1 FROM collection_rows INDEXED BY collection_changes WHERE change > ? " +
-        "AND private = 0 AND collection IN (SELECT value FROM json_each(?)) " +
+        "AND space = '' AND collection IN (SELECT value FROM json_each(?)) " +
         "UNION ALL SELECT 1 FROM collection_erasures NOT INDEXED " +
         "WHERE change > ? AND private_writer IS NULL " +
         "AND collection IN (SELECT value FROM json_each(?)) LIMIT 1",
@@ -631,18 +633,21 @@ export class Collections {
       .change;
   }
 
-  #visible(caller: string, collection: string, rowId: string): StoredRow | undefined {
+  /** The row at a caller's key: the public row's, or with `isPrivate` the caller's own. */
+  #visible(caller: string, collection: string, rowId: string, isPrivate: unknown):
+      StoredRow | undefined {
     name(collection, "collection");
     name(rowId, "row_id");
     return this.#sql.exec<StoredRow>(
-      "SELECT * FROM collection_rows WHERE collection = ? AND row_id = ? " +
-        "AND (private = 0 OR writer = ?)", collection, rowId, caller,
+      "SELECT * FROM collection_rows WHERE collection = ? AND space = ? AND row_id = ?",
+      collection, spaceOf(caller, isPrivate), rowId,
     ).toArray()[0];
   }
 
   /** One row by its key, as `pull` would show it to this caller, or null. */
-  get(caller: string, collection: string, rowId: string): { row: Row | null } {
-    const row = this.#visible(caller, collection, rowId);
+  get(caller: string, collection: string, rowId: string, isPrivate: unknown):
+      { row: Row | null } {
+    const row = this.#visible(caller, collection, rowId, isPrivate);
     return { row: row === undefined ? null : shown(row) };
   }
 
@@ -654,14 +659,14 @@ export class Collections {
    * whose bodies fit `PAGE_BYTES`, at least one (the door fits it to one answer); `more` and
    * the cursor name the older ones it left.
    */
-  history(caller: string, collection: string, rowId: string, before: unknown = null):
-      History {
-    const row = this.#visible(caller, collection, rowId);
+  history(caller: string, collection: string, rowId: string, isPrivate: unknown,
+          before: unknown): History {
+    const row = this.#visible(caller, collection, rowId, isPrivate);
     if (row === undefined) {
       return { entries: [], more: false, before: null };
     }
     const cursors = cursorsOf(this.#sql);
-    const order = historyOf(collection, rowId);
+    const order = historyOf(collection, row.space, rowId);
     const from = cursors.from(order, before ?? undefined, "before", row.change + 1);
     if (from === null) {
       throw new Refusal("invalid", RESTORED);
@@ -672,8 +677,9 @@ export class Collections {
                                    writer: string; at: number; body_json: string;
                                    body_bytes: number; content_id: string | null }>(
       "SELECT change, revision, op, writer, at, body_json, body_bytes, content_id FROM " +
-        "collection_history WHERE collection = ? AND key = ? AND change < ? " +
-        "ORDER BY revision DESC LIMIT ?", collection, rowId, from, LIMITS.maxPull + 1,
+        "collection_history WHERE collection = ? AND space = ? AND key = ? AND change < ? " +
+        "ORDER BY revision DESC LIMIT ?", collection, row.space, rowId, from,
+      LIMITS.maxPull + 1,
     ).toArray();
     const page = paged(found.slice(0, LIMITS.maxPull), PAGE_BYTES);
     const more = page.length < found.length;
@@ -690,14 +696,14 @@ export class Collections {
 
   /**
    * Delete the rows `where` matches: each row's entries go, and its deletion is kept in
-   * `collection_erasures`, naming the head of the chain it ended (`prev`).
+   * `collection_erasures`, naming the head of the chain it ended (`prev`). Answers how many of
+   * them the caller could see, so no count tells it of another writer's private rows.
    */
   #erase(caller: string, collection: string, op: string, where: string,
          params: unknown[]): number {
     const sql = this.#sql;
-    const rows = sql.exec<{ row_id: string; revision: number; private: number;
-                            writer: string; change: number }>(
-      "SELECT row_id, revision, private, writer, change FROM collection_rows " +
+    const rows = sql.exec<{ space: string; row_id: string; revision: number; change: number }>(
+      "SELECT space, row_id, revision, change FROM collection_rows " +
         "WHERE collection = ?" + where, collection, ...params,
     ).toArray();
     // The high-water seq stays where the rows had it, so no cursor goes back.
@@ -706,15 +712,15 @@ export class Collections {
         "DO UPDATE SET seq = excluded.seq", collection, this.#top(collection),
     );
     const at = clock();
-    for (const { row_id: rowId, revision, private: hidden, writer, change } of rows) {
-      sql.exec("DELETE FROM collection_history WHERE collection = ? AND key = ?",
-               collection, rowId);
+    for (const { space, row_id: rowId, revision, change } of rows) {
+      sql.exec("DELETE FROM collection_history WHERE collection = ? AND space = ? AND key = ?",
+               collection, space, rowId);
       sql.exec("INSERT INTO collection_erasures (change, collection, key, revision, op, at, " +
                  "writer, private_writer, prev) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                this.#tick(), collection, rowId, revision + 1, op, at, caller,
-               hidden ? writer : null, change);
-      sql.exec("DELETE FROM collection_rows WHERE collection = ? AND row_id = ?",
-               collection, rowId);
+               space === "" ? null : space, change);
+      sql.exec("DELETE FROM collection_rows WHERE collection = ? AND space = ? AND row_id = ?",
+               collection, space, rowId);
     }
     // A collection left with no row gives its seq to the floor and goes, so the seqs kept
     // are the collections with rows.
@@ -725,7 +731,7 @@ export class Collections {
       sql.exec("DELETE FROM collection_seqs WHERE collection = ?", collection);
     }
     this.#prune();
-    return rows.length;
+    return rows.filter(({ space }) => space === "" || space === caller).length;
   }
 
   /**
@@ -735,18 +741,18 @@ export class Collections {
    * nothing. Like a clear, a delete never lowers the collection's `seq` and a pull
    * never shows it.
    */
-  delete(caller: string, collection: string, rowId: string, expectedEtag: unknown):
-      { deleted: number } {
+  delete(caller: string, collection: string, rowId: string, isPrivate: unknown,
+         expectedEtag: unknown): { deleted: number } {
     if (typeof expectedEtag !== "string") {
       throw new Refusal("invalid", "invalid collection delete");
     }
     name(rowId, "row_id");
     name(collection, "collection");
+    const space = spaceOf(caller, isPrivate);
     return this.#storage.transactionSync(() => {
-      if (!this.#erase(caller, collection, "delete",
-                       " AND row_id = ? AND etag = ? AND (private = 0 OR writer = ?)",
-                       [rowId, expectedEtag, caller])) {
-        throw conflict(this.get(caller, collection, rowId).row);
+      if (!this.#erase(caller, collection, "delete", " AND space = ? AND row_id = ? AND etag = ?",
+                       [space, rowId, expectedEtag])) {
+        throw conflict(this.get(caller, collection, rowId, isPrivate).row);
       }
       return { deleted: 1 };
     });
@@ -756,7 +762,7 @@ export class Collections {
    * Delete a collection's rows, or every row `writer` created or last wrote.
    *
    * The owner's act alone. Matching creator or writer removes an abuser's rows even
-   * after another account took them over.
+   * after another account took them over, their private rows too, which `deleted` leaves out.
    */
   clear(caller: string, collection: string, writer: unknown): { deleted: number } {
     name(collection, "collection");
@@ -856,9 +862,11 @@ export interface PullRequest {
   readonly after?: string;
   readonly limit: number;
 }
+/** A row's key: with `private`, the caller's own row of that id (not when left out). */
 interface KeyRequest {
   readonly collection: string;
   readonly row_id: string;
+  readonly private?: boolean;
 }
 /**
  * A row read: its key; with `body_offset`, its body from that byte (a `body_next_offset` an
@@ -876,9 +884,7 @@ export interface HistoryRequest extends KeyRequest {
   readonly before?: string;
   readonly body_offset?: number;
 }
-export interface DeleteRequest {
-  readonly collection: string;
-  readonly row_id: string;
+export interface DeleteRequest extends KeyRequest {
   readonly expected_etag: string;
 }
 export interface ClearRequest {
@@ -954,7 +960,8 @@ export const collectionsDoors = Object.freeze({
       if (offset > 0 && r["etag"] === undefined) {
         throw new Refusal("invalid", "body_offset reads on a row's body: name its etag");
       }
-      const got = o.collections.get(caller, r["collection"] as string, r["row_id"] as string);
+      const got = o.collections.get(caller, r["collection"] as string, r["row_id"] as string,
+                                    r["private"] ?? false);
       if (r["etag"] !== undefined && got.row?.etag !== r["etag"]) {
         throw new Refusal("row_changed",
                           "row_changed: the row is no longer the one at that etag: read it " +
@@ -996,7 +1003,8 @@ export const collectionsDoors = Object.freeze({
       const { account: { caller }, r } = door.check();
       const offset = bodyOffset(r["body_offset"]);
       const kept = o.collections.history(caller, r["collection"] as string,
-                                             r["row_id"] as string, r["before"] ?? null);
+                                         r["row_id"] as string, r["private"] ?? false,
+                                         r["before"] ?? null);
       const newest = kept.entries.at(-1)?.content_id;
       return { value: { kept, offset }, contents: contentsOf(kept.entries),
                offsetOf: (contentId) => contentId === newest ? offset : 0 };
@@ -1048,7 +1056,8 @@ export const collectionsDoors = Object.freeze({
         const { account, r } = door.check();
         const before = o.collections.clock();
         const value = conflicted(() => o.collections.delete(
-          account.caller, r["collection"] as string, r["row_id"] as string, r["expected_etag"],
+          account.caller, r["collection"] as string, r["row_id"] as string,
+          r["private"] ?? false, r["expected_etag"],
         ));
         ring(o, account, r["collection"] as string, before);
         return { value, contents: conflictShown<typeof value>().contents(value) };
