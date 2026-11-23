@@ -32,7 +32,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { keyed } from "../../contract/src/checks";
-import { declared, inShard, problems as recordProblems, RECORDED, shardOf } from "../record";
+import { dealt, declared, problems as recordProblems, RECORDED, shardOf } from "../record";
 import { largeTests } from "../timeouts";
 import { PLATFORM, REPO } from "../paths";
 import { type Data, json, workflow } from "../workflows";
@@ -451,14 +451,18 @@ describe("platform-recorders", () => {
     "job if": (job) => { job.if = "github.event_name == 'merge_group'"; },
     "job continue-on-error": (job) => { job["continue-on-error"] = true; },
     "a shard dropped": (job) => { job.strategy.matrix.shard.pop(); },
-    "a shard twice": (job) => { job.strategy.matrix.shard[1] = "1/4"; },
-    "a shard excluded": (job) => { job.strategy.matrix.exclude = [{ shard: "1/4" }]; },
+    "a shard twice": (job) => { job.strategy.matrix.shard[1] = job.strategy.matrix.shard[0]; },
+    "a shard excluded": (job) => {
+      job.strategy.matrix.exclude = [{ shard: job.strategy.matrix.shard[0] }];
+    },
     "the check swallowed": (job) => { job.steps[2].run += " || true"; },
     "the check's step skipped": (job) => { job.steps[2].if = "false"; },
     "the check's step allowed to fail": (job) => { job.steps[2]["continue-on-error"] = true; },
     "a shell that runs nothing": (job) => { job.steps[2].shell = "true {0}"; },
     "a default shell that runs nothing": (job) => { job.defaults = { run: { shell: "true {0}" } }; },
-    "another shard's check": (job) => { job.steps[2].env.SHARD = "1/4"; },
+    "another shard's check": (job) => {
+      job.steps[2].env.SHARD = job.strategy.matrix.shard[0];
+    },
     "a step after the check": (job) => { job.steps.push({ run: "true" }); },
     "a write permission": (job) => { job.permissions.contents = "write"; },
   };
@@ -493,13 +497,23 @@ describe("platform-recorders", () => {
     }
   });
 
-  it("puts each test in one shard, by its name alone", () => {
-    const names = Array.from({ length: 400 }, (_, i) => `rv rpc: the table's doors > door d${i}`);
-    for (const count of [1, 4, 7]) {
+  it("deals each test either side lists to one shard, as many to each, of each block", () => {
+    const block = (name: string, size: number) =>
+      Array.from({ length: size }, (_, i) => `${name} > door d${i}`);
+    const base = [...block("rpc: every door", 90), ...block("rv rpc: admission", 41)];
+    const head = [...base.slice(3), ...block("rv rpc: the table's doors", 57), "rpc: a new door"];
+    const every = new Set([...base, ...head]);
+    for (const count of [1, 4, 6, 7]) {
       const shards = Array.from({ length: count }, (_, i) => shardOf(`${i + 1}/${count}`));
-      const per = shards.map((shard) => names.filter((name) => inShard(name, shard)).length);
-      expect(per.reduce((a, b) => a + b)).toBe(names.length);
-      expect(Math.min(...per), `${count} shards: ${per}`).toBeGreaterThan(names.length / count / 2);
+      const dealtTo = shards.map((shard) => dealt([...base, ...head], shard));
+      expect(dealtTo.flat().sort()).toEqual([...every].sort());
+      expect(shards.map((shard) => dealt([...head].reverse().concat(base), shard)))
+        .toEqual(dealtTo);
+      for (const prefix of ["", "rpc: every door >", "rv rpc: admission >"]) {
+        const per = dealtTo.map((names) => names.filter((name) => name.startsWith(prefix)).length);
+        expect(Math.max(...per) - Math.min(...per), `${count} shards of ${prefix}: ${per}`)
+          .toBeLessThanOrEqual(1);
+      }
     }
     for (const bad of ["0/4", "5/4", "4", "a/b"]) {
       expect(() => shardOf(bad), bad).toThrow();

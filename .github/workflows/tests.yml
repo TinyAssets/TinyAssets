@@ -432,6 +432,10 @@ jobs:
   # change to compare. Each shard records its part of base and head at once. Required through
   # `required-tests`' needs; held by platform/ci/guards/legs.test.ts.
   #
+  # The count: past 7 minutes a shard, it rises before the watchdog moves. Six puts the
+  # slowest shard under the run's slowest other leg at the cost of two shards' setup, about
+  # 150 runner-seconds a run (docs/decisions/untangle-2026-11/recorder-shards.md).
+  #
   # timeout-minutes is a watchdog: the queue's ceiling (`required-tests`' watchdog), since
   # about 6 x the slowest shard, as `platform-tests`', would be past it. The slowest shard
   # took 513 s (merge-group run 44924361778), in 300 Tests runs from 2026-11-21 to
@@ -446,7 +450,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1/4, 2/4, 3/4, 4/4]
+        shard: [1/6, 2/6, 3/6, 4/6, 5/6, 6/6]
     steps:
       - uses: actions/checkout@v4
         with:
