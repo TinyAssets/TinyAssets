@@ -23,6 +23,7 @@ import { RUN_STARTS_NONE, SANDBOX_ONLY } from "../src/owner-do";
 import { INLINE_BYTES, QUEUE_BYTES, QUEUE_ROWS, SLOT_WAIT_MS } from "../../contract/src/limits";
 import { slotBusy } from "../../contract/src/slots";
 import { clock } from "../src/clock";
+import { periods } from "../src/money";
 import { NO_CONVERSATION, NO_RUN, NO_SOURCE, QUEUE_FULL, RUN_ENDED, SESSION_REFUSED,
          SIGNIN_LAPSED, TIER_RUNS, UNATTENDED_REFUSED } from "../src/runs";
 import { PLATFORM_TIER_ONLY } from "../src/admission";
@@ -1102,6 +1103,47 @@ describe("auto and the owner's sign-ins", () => {
       .toBe(unpicked);
     expect((await ownerRun(s.stub, s.bind(), { ...named, model: BATCH }, "named")).run)
       .toMatchObject({ engine: "pi", credential: "api_key", model: BATCH });
+  });
+
+  it("tells the owner, once for each agent and model, of a run given a model its agent does " +
+     "not name, with the remedy", async () => {
+    const [base] = await catalog(OPENAI);
+    const r = await gated();
+    // Each key's models, as its setup check and the gateway's catalog list them.
+    const keyOn = async (display: string, id: string) => {
+      const models = [{ ...base!, id }];
+      await r.gateway.arm("models", { answer: { models } });
+      return r.connect("sk-good", OPENAI, display, models, "openrouter_user_models_v1");
+    };
+    const weaker = await keyOn("Weaker", "gpt-5.1-codex");
+    const told = async () => (await r.stub.noticeList(r.bind())).notices
+      .filter((notice) => notice.type === "model_chosen").map((notice) => notice.detail)
+      .reverse();
+    const words = (model: string, name: string, connection: string) => "engine: its runs are " +
+      `given ${model} on ${name} (${connection}), chosen for it because its agent.json names ` +
+      "no model; name a model in agent.json to pin one";
+    const engine = { engine: "pi", scopes: [] };
+    await ownerRun(r.stub, r.bind(), engine, "engine");
+    await ownerRun(r.stub, r.bind(), engine, "engine");
+    expect(await told()).toEqual([words("gpt-5.1-codex", "Weaker", weaker)]);
+    // An agent that names its model is not told, nor is a run refused once its model is
+    // chosen (a stronger key's, over the owner's cap).
+    await ownerRun(r.stub, r.bind(), { ...engine, model: "gpt-5.1-codex" }, "pinned");
+    const stronger = await keyOn("Stronger", "~anthropic/claude-fable-latest");
+    const { generation, policy } = await r.stub.policyRead(r.bind());
+    await r.stub.policyWrite(r.session(), { expected_generation: generation, policy: {
+      ...policy, models: { ...policy.models, daily_cost: 100 } } });
+    const day = `d:${periods(clock()).day}`;
+    await r.sql("INSERT INTO model_spend (period, source, cost) VALUES (?, 'openrouter', 100)",
+                day);
+    expect((await failure(() => ownerRun(r.stub, r.bind(), engine, "engine"))).message)
+      .toBe("owner_limit: daily_cost is spent");
+    expect(await told()).toEqual([words("gpt-5.1-codex", "Weaker", weaker)]);
+    // Its runs given another model, the stronger key's: the owner told again.
+    await r.sql("DELETE FROM model_spend");
+    await ownerRun(r.stub, r.bind(), engine, "engine");
+    expect(await told()).toEqual([words("gpt-5.1-codex", "Weaker", weaker),
+                                  words("~anthropic/claude-fable-latest", "Stronger", stronger)]);
   });
 
   it("picks on a key that pays for nothing only a model its source serves such a key and its " +
