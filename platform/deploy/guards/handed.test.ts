@@ -101,7 +101,8 @@ describe("an answer, whose sender deploys before its parser", () => {
     expect(held(side({ started: STARTED }), side({}))).toEqual([]);
   });
 
-  it("reads each Worker's own version before: the answer's parser's, the request's sender's", () => {
+  it("reads each Worker's own version before: the answer's parser's, the request's sender's",
+     () => {
     const sides: Readonly<Record<string, Before>> = {
       owner: side({ started: { ...STARTED, required: ["started", "code"] } }),
       doors: side({ account: ACCOUNT }) };

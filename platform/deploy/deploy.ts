@@ -1825,9 +1825,10 @@ const secretsLater = step<Secrets, "deployed" | "setting">((ctx, got) =>
  * account's Workers listing holds read as the one version it serves, and that version's tag.
  * A Worker that serves two (a split) stops the run before any deploy (`Cloudflare.serving`).
  * The run's Workers are held to what those versions hand and take (`servedHold`), before the
- * record and on every attempt. Written on an applied run when the run's record is not there yet, and kept as it is when it
- * is (a re-run attempt keeps the versions its first attempt read); a refused write stops the
- * run before any deploy. The plan names, Worker by Worker, where a rollback of the run stops.
+ * record and on every attempt. Written on an applied run when the run's record is not there
+ * yet, and kept as it is when it is (a re-run attempt keeps the versions its first attempt
+ * read); a refused write stops the run before any deploy. The plan names, Worker by Worker,
+ * where a rollback of the run stops.
  * The Workers as read now are what the deploy goes on from (`workers`).
  */
 const rollout = step<"cloudflare" | "account" | "ids" | "deployed" | "setting" | "migrations",
@@ -1911,9 +1912,9 @@ function servedHold(run: Run, rolled: readonly Rolled[]): string {
     throw new Error(`the run's Workers and the versions the stage serves refuse what the other ` +
                     `hands across the deploy, so nothing is changed: ${problems.join("; ")}`);
   }
-  return `hold the run's Workers to what the serving versions hand and take (contract/handed.json, ` +
-    `contract/doors.json), read from git: ${read.length === 0 ? "none serves yet"
-      : read.join(", ")}: none refuses the other`;
+  return "hold the run's Workers to what the serving versions hand and take " +
+    `(contract/handed.json, contract/doors.json), read from git: ${read.length === 0
+      ? "none serves yet" : read.join(", ")}: none refuses the other`;
 }
 
 /** The doors' smoke at a share below 100 (`canary.ts --smoke`), as a plan names it. */

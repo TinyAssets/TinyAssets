@@ -345,7 +345,8 @@ export class SandboxTime {
 /** A billed event as the doors handed it, checked whole: anything else fails loudly. */
 function billedEvent(value: unknown): BilledEvent {
   const id = (v: unknown) => typeof v === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(v);
-  if (!keyed(value, ...taken("billed_event")) || !id(value["id"]) || !id(value["execution_id"]) || !id(value["sandbox_id"])
+  if (!keyed(value, ...taken("billed_event"))
+      || !id(value["id"]) || !id(value["execution_id"]) || !id(value["sandbox_id"])
       || !whole(value["at"], 0)
       || typeof value["authority"] !== "string" || !AUTHORITY.test(value["authority"])
       || (value["kind"] !== "paused" && value["kind"] !== "killed")

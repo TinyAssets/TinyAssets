@@ -238,8 +238,9 @@ export async function startOutcome(job: "a run" | "a sign-in", start: () => Prom
  */
 export async function networkOutcome(reapply: () => Promise<unknown>):
     Promise<"applied" | "at_resume" | "failed"> {
-  const got = await sandboxAnswer(reapply, ["state"], (value) => keyed(value, ...taken("network_answer"))
-    ? NETWORK_STATES.find((each) => each === value["state"]) : undefined);
+  const got = await sandboxAnswer(reapply, ["state"], (value) =>
+      keyed(value, ...taken("network_answer"))
+        ? NETWORK_STATES.find((each) => each === value["state"]) : undefined);
   if (got.kind === "answered") {
     return got.answer === "lost" ? "failed" : got.answer;
   }
