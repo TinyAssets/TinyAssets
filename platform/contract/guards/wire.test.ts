@@ -104,9 +104,16 @@ describe("a sealed route", () => {
     const sealed = await sealRoute(KEY, { owner, authority: "a".repeat(64) });
     expect(routeShaped(sealed)).toBe(true);
     expect(await openRoute(KEY, sealed)).toEqual({ owner, authority: "a".repeat(64) });
-    for (const bad of [`${sealed}${"A".repeat(1024)}`, "ta_route", null]) {
+    for (const bad of [`${sealed}${"A".repeat(1024)}`, "", "a route", `${sealed}\n`, null]) {
       expect(routeShaped(bad)).toBe(false);
     }
+  });
+
+  it("is taken by the sandbox Worker in any format the owner seals", () => {
+    // The format before the ring (kid-less, base64url of a nonce, the sealed route and its
+    // tag): the sandbox deploys before the owner, so it takes what the owner's version before
+    // seals.
+    expect(routeShaped(Buffer.alloc(12 + 40 + 16, 7).toString("base64url"))).toBe(true);
   });
 
   it("is sealed under the ring's active kid and opens under any ring that holds it", async () => {

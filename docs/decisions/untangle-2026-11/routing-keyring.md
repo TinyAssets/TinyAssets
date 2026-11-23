@@ -121,8 +121,9 @@ first (Fact 14), on `origin/main` at `c21c166d0`.
    the active kid and writes it in the token; `verifyToken` refuses a kid the ring lacks and
    checks the MAC under that kid's key (domain `ta-sandbox-token-v3`). `sealRoute` and
    `openRoute` are the envelope's `sealBlob` and `openBlob` under the route's domain, async;
-   `routeShaped` is the sandbox Worker's shape check (`parseBlob` within the longest route,
-   `blobMax` of a 512-code-point owner and a 64-hex authority). `tokenShaped` and
+   `routeShaped` is the sandbox Worker's check: a route's text within the longest route
+   (`blobMax` of a 512-code-point owner and a 64-hex authority), never its grammar (merging
+   main, below). `tokenShaped` and
    `KEY_MIN_BYTES` are gone.
 2. **The doors and the owner** read `ROUTING_KEYRING` (configs, generated env, guards' rules);
    the owner awaits its seals, the doors their opens.
@@ -151,7 +152,10 @@ first (Fact 14), on `origin/main` at `c21c166d0`.
   lifecycle events are answered `unrouted`, their billing uncounted, until the sandbox is
   killed). Pre-cutover only probe and canary owners' sandboxes can exist; kill them after the
   deploy if their billing matters.
-- A deploy stops at the apply job's input check until `production` holds `ROUTING_KEYRING`.
+- A deploy stops at the apply job's input check until `production` holds `ROUTING_KEYRING`
+  (it does: founder step, below).
+- From the owner's 100% until the doors', the doors' version before refuses the tokens the
+  owner's new version mints and leaves its new routes unrouted (merging main, below).
 - `retire` reads E2B's key for every keyring (its row's inputs), used only for a sandboxed one.
 
 ### Left, each with its reason
@@ -175,18 +179,46 @@ first (Fact 14), on `origin/main` at `c21c166d0`.
   any of the four. A founder question (keep an offline copy, against the setup's stdin-only rule,
   or make the rings with `keyring-new`), not an owed build.
 
+## Merging main (2026-11-23)
+
+Main brought the staged rollout (#5790), the forward mark (#5788), the cross-Worker hold
+(#5808, #5809: `contract/handed.json`, `servedHold`), `codeOf` and the rollback's read of its
+targets (#5810). Asked whether the routing formats are a shape `handed.json` must declare:
+
+- **They are not, and cannot be.** `handed.json` lists the fields of the RPC shapes a strict
+  parser reads. A token or route is one field's value: `handed-deploy.md`'s research puts value
+  checks that list no keys (the sandbox's start and sign-in checks) and stored shapes outside
+  it, and no field of any shape changes here.
+- **But the one strict cross-Worker reader of a route in deploy order would refuse.** The
+  sandbox deploys before the owner (codemode, files, gateway, sandbox, owner, doors), and its
+  start and sign-in checks read the route's envelope grammar (`parseBlob`). From the sandbox's
+  100% until the owner's, and for good if a run stopped between, every start and sign-in the
+  owner's version before sends (a kid-less route) would be refused: #5808's rule broken. Fixed
+  at the root: the sandbox only carries the route to E2B, so `routeShaped` holds its text
+  (base64url and dots) and bound (`routeMax`), never its grammar, and takes a route in any
+  format the owner seals. The format is the owner's and the doors' alone.
+- **The owner and the doors need no `forward` entry.** Both configs now require
+  `ROUTING_KEYRING`, which neither held, so the run sets it on both: `atOnce` sends each to
+  100% at once and `forwardOnly` stops a rollback at the doors, the first it takes back, so
+  neither goes back alone. `platform.json` `forward` is for a change no config shows.
+- **Left:** from the owner's 100% until the doors', the doors' version before verifies only the
+  old token and route. The owner's new tokens are refused and its new routes go unrouted for
+  that window, which closes when the doors serve; a run stopped between fails loudly and is
+  rerun. Closing it would take the two-format downgrade path the research refused.
+
 ## Founder step
 
-Before the next `dark`: `python scripts/platform_setup.py secrets` (it sets `ROUTING_KEYRING`
-in `production`, every other secret already set). Then, optionally, delete the `production`
-secret `ROUTING_MAC_KEY`, and the Worker secret `ROUTING_MAC_KEY` on `tinyassets-doors` and
-`tinyassets-owner`. Names only; no value is shown or needed.
+Done 2026-11-23 06:34:55Z: the founder ran `python scripts/platform_setup.py secrets` from this
+branch, and `production` holds `ROUTING_KEYRING`. Still the founder's, after this merges and its
+`dark` passes: deleting the `production` secret `ROUTING_MAC_KEY`, and the Worker secret
+`ROUTING_MAC_KEY` on `tinyassets-doors` and `tinyassets-owner`. Names only; no value is shown or
+needed.
 
 ## Owed
 
 - [ ] `untangle/keyring-record`: the kit records each keyring it sets (its kids and their keys'
   hashes) in the control namespace, and refuses a `--rotate` whose ring drops a recorded kid, or
   activates, on a keyring two Workers hold, a kid the last-set ring did not hold.
-- [ ] live: after the founder's step, the next `dark` sets `ROUTING_KEYRING` on the doors and the
+- [ ] live: the next `dark` sets `ROUTING_KEYRING` on the doors and the
   owner (its plan names both), and the canary passes; a later `retire --keyring ROUTING_KEYRING`
   apply job lists E2B's sandboxes and names its words without changing anything.

@@ -1687,7 +1687,7 @@ describe("a sign-in", () => {
   it("refuses a sign-in that is not one: its id, its hosts, plain HTTP", async () => {
     const who = owner();
     for (const bad of [signin({ id: "run_x" }), signin({ hosts: undefined }),
-                       signin({ route: undefined }), signin({ route: "short" }),
+                       signin({ route: undefined }), signin({ route: "a route" }),
                        signin({ urls: { events: `http://${EGRESS_HOST}/x`,
                                         signin: start().urls.signin } })]) {
       const { got, causes } = await faulted(() => stub(who).signin(bad as never));

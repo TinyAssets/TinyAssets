@@ -40,7 +40,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 import { sha256Hex } from "./digest.ts";
 import {
-  blobMax, type Domain, openBlob, parseBlob, parseRing, type Ring, sealBlob,
+  blobMax, type Domain, openBlob, parseRing, type Ring, sealBlob,
 } from "./envelope.ts";
 import { AUTHORITY } from "./ids.ts";
 import { principal, utf8Text } from "./text.ts";
@@ -158,9 +158,17 @@ const ROUTE: Domain = Object.freeze({ salt: "tinyassets/route/v1", info: "route"
  */
 export const ROUTE_METADATA = "ta_route";
 
-/** Whether `sealed` has a sealed route's form, unopened: what the sandbox Worker checks. */
+/** A sealed route's characters: base64url, and the envelope's dots. */
+const ROUTE_TEXT = /^[A-Za-z0-9_.-]+$/;
+
+/**
+ * Whether `sealed` can be a sealed route, unopened: what the sandbox Worker checks. It only
+ * carries the route to E2B, so it holds the route's text and bound, never the envelope's
+ * grammar: the sandbox deploys before the owner, and takes whatever route the owner's version
+ * before seals.
+ */
 export function routeShaped(sealed: unknown): boolean {
-  return parseBlob(sealed, routeMax()) !== null;
+  return typeof sealed === "string" && sealed.length <= routeMax() && ROUTE_TEXT.test(sealed);
 }
 
 /**
