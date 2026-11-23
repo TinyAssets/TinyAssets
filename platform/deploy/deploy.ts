@@ -33,7 +33,8 @@
  * - `rollback`: the rollout record `--record` names, which `dark` and `routes` keep before
  *   their first Worker deploy (`RolloutRecord`): the run's Workers taken back to the versions
  *   they served before it, callers first, each read back, stopping at the first the run made
- *   forward-only (`forwardOnly`); the record held whole to Cloudflare before any change. Its
+ *   forward-only (`forwardOnly`); the record held whole to Cloudflare before any change, and
+ *   refused there for a version no later plan could read (`servedHold`). Its
  *   routes are `handback`'s.
  * - `h2`: H2's probes alone, once a probe owner exists.
  * - `pair`: the pinned template with the runner this checkout ships and the probes beside
@@ -1915,6 +1916,10 @@ async function codeOf({ cloudflare, account }: Pick<Values, "cloudflare" | "acco
   }
 }
 
+/** What a version whose tag names no commit is, `codeOf` finding none it was made from. */
+const UNKNOWN_CODE = "which names no commit, and Cloudflare notes it as no secret change of a " +
+  "version that does: what it hands and takes is unknown";
+
 /**
  * The run's Workers held to what the versions the stage serves hand them and take from them
  * (`handed.ts`), each serving version read from git at the commit its code's tag names
@@ -1934,8 +1939,7 @@ async function servedHold(got: Pick<Values, "cloudflare" | "account">, run: Run,
     const code = await codeOf(got, name, before.version);
     if (code === null) {
       throw new Error(`${name} serves ${before.version}, tagged ${before.tag ?? "with nothing"}, ` +
-                      "which names no commit, and Cloudflare notes it as no secret change of a " +
-                      "version that does: what it hands and takes is unknown, so nothing is " +
+                      `${UNKNOWN_CODE}, so nothing is ` +
                       "changed. Upload the commit it should run as a new version tagged as this " +
                       "kit tags it (wrangler versions upload --tag <its first 12 digits>, which " +
                       "keeps its secrets), deploy that at 100%, then plan again: an older " +
@@ -3339,7 +3343,9 @@ async function servedBefore({ cloudflare, account }: Pick<Values, "cloudflare" |
  * does a record that is not Cloudflare's word: its Workers not this tree's, in its deploy
  * order; its tag before, counts or forward count not Cloudflare's tags; or, for a Worker it
  * takes back, its version before one Cloudflare's deployments listing never has it serving
- * just before a run of the commit (`servedBefore`). The record's namespace is bound,
+ * just before a run of the commit (`servedBefore`). So does a version it takes a Worker back
+ * to whose code is unknown (`codeOf`) or whose commit's side is (`sideAt`): every later plan
+ * reads it (`servedHold`), and none could deploy forward from it. The record's namespace is bound,
  * writable, by the doors, owner and sandbox; tags and deployments only the deploy's token
  * writes.
  */
@@ -3439,6 +3445,26 @@ const rollbackAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => 
     throw new Error(`nothing can be rolled back: ${stop.name} stays on run ${record.run}'s ` +
                     `version (${stop.reason}). Roll forward with a fix, or close the control ` +
                     "record's gates (--mode control); nothing is changed");
+  }
+  for (const { name, before } of back) {
+    const code = await codeOf(got, name, before!.version);
+    let unknown: string | null = UNKNOWN_CODE;
+    if (code !== null) {
+      try {
+        sideAt(taggedAs(code.tag)!.commit, run.io.fileAt);
+        unknown = null;
+      } catch (error) {
+        unknown = (error as Error).message;
+      }
+    }
+    if (unknown !== null) {
+      throw new Error(`${name}'s version before run ${record.run} is ${before!.version}, tagged ${
+        before!.tag ?? "with nothing"}, ${unknown}; every plan after a rollback to it would ` +
+        "stop there, so nothing is rolled back. Roll forward with a fix, or close the control " +
+        "record's gates (--mode control); a rollback by hand (wrangler versions deploy " +
+        `${before!.version}@100% --name ${name}, checklist.md) leaves the kit planning nothing until that ` +
+        "Worker serves a version this kit tagged of a commit holding contract/handed.json");
+    }
   }
   if (!run.apply) {
     return;
