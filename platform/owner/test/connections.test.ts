@@ -1154,6 +1154,45 @@ describe("what a key can pay for", () => {
   });
 });
 
+describe("how strong its models are", () => {
+  const OPENROUTER = "openrouter_user_models_v1";
+  const kept = (r: Gated) =>
+    r.sql("SELECT scores, due IS NOT NULL AS due FROM connection_strength");
+
+  it("is read once a connection is active, its own models' scores kept, read again daily",
+     async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-good", OPENAI, "OpenRouter", undefined, OPENROUTER);
+    const [own] = (await r.stub.connectionList(r.session())).connections[0]!.models;
+    await r.gateway.arm("strength", { answer: { scores: [
+      { id: own!, score: 13.6 }, { id: "vendor/not-its-model", score: 60 }] } });
+    await r.sql("DELETE FROM connection_strength");
+    await lanes(r);
+    expect(await kept(r)).toEqual([{ scores: JSON.stringify([[own, 13.6]]), due: 1 }]);
+    // The read its record names, with the connection's blob.
+    const [sent] = (await r.gateway.calls()).filter((call) => call.method === "strength");
+    expect((sent!.args as unknown[]).slice(1)).toEqual([
+      connection, 1, expect.any(String),
+      { url: "https://openrouter.ai/api/v1/models/user", rows: ["data"], id: ["id"],
+        score: ["benchmarks", "artificial_analysis", "intelligence_index"] }]);
+    // An answer of another shape keeps what was read, and is read again later.
+    await r.gateway.arm("strength", { answer: { scores: [{ id: own!, score: "high" }] } });
+    await r.sql("UPDATE connection_strength SET due = 0");
+    await lanes(r);
+    expect(await kept(r)).toEqual([{ scores: JSON.stringify([[own, 13.6]]), due: 1 }]);
+    await r.stub.connectionRevoke(r.session(), { connection });
+    expect(await kept(r)).toEqual([]);
+  });
+
+  it("is nothing, and never read again, where its sealed endpoints hold no such read",
+     async () => {
+    const r = await gated();
+    await r.connect("sk-good", OPENAI, "OpenRouter", undefined, OPENROUTER);
+    await lanes(r);
+    expect(await kept(r)).toEqual([{ scores: null, due: 0 }]);
+  });
+});
+
 describe("the plaintext key", () => {
   it("never reaches the object's storage, its gateway calls or its logs", async () => {
     const r = await gated();

@@ -58,6 +58,8 @@
                              "required": ["code", "redirect_uri", "verifier"], "optional": [] },
     "credit_read": { "from": "owner", "to": "gateway", "required": ["none_when", "url"],
                      "optional": [] },
+    "strength_read": { "from": "owner", "to": "gateway",
+                       "required": ["id", "rows", "score", "url"], "optional": [] },
     "ring_request": { "from": "owner", "to": "gateway",
                       "required": ["body", "event_id", "headers"], "optional": [] },
     "metering": { "from": "owner", "to": "gateway",

@@ -22,7 +22,8 @@
  * first token). A request with an `id` is recorded as it arrives, read back from
  * `https://status.test/cancelled?id=<id>` (`arrived`), so a test acts once the provider has
  * it; `auth.test` is a token endpoint; `keys.test` is a key-exchange endpoint (OpenRouter's
- * PKCE flow); `credit.test/key` a key's limits (`keyLimits`); `evil.test` records
+ * PKCE flow); `credit.test/key` a key's limits (`keyLimits`); `models.test/models` a
+ * vendor's model listing (`modelListing`); `evil.test` records
  * everything it receives, read back from `https://status.test/evil`, so a test sees whether
  * a redirect was followed. It is test code: its module state (the cancel registry, the evil log) is the fake's, never the
  * gateway's. `doorbell.test`, and Claude's `/fire` path on `api.anthropic.com`, are a
@@ -257,6 +258,29 @@ function keyLimits(request: Request): Response {
     : Response.json({ data: { label: "sk-or-v1-...", usage: 0, ...data } });
 }
 
+/**
+ * A vendor's model listing (`models.test/models`, in OpenRouter's `GET /api/v1/models/user`
+ * shape), by the key sent: `sk-listed` lists a scored model, one with no benchmarks and one
+ * whose score is null; `sk-unscored` scores none; `sk-odd` is an answer of another shape;
+ * any other is refused.
+ */
+function modelListing(request: Request): Response {
+  const key = request.headers.get("authorization")?.replace(/^Bearer /, "");
+  const scored = (id: string, score: number | null) =>
+    ({ id, benchmarks: { design_arena: [], artificial_analysis: { intelligence_index: score } } });
+  const data = {
+    "sk-listed": [scored("nvidia/nemotron-3.5-super-vl:free", 13.6),
+                  { id: "cohere/north-mini-code:free" },
+                  scored("google/gemma-4-26b-a4b-it:free", null)],
+    "sk-unscored": [{ id: "cohere/north-mini-code:free" }],
+  }[key ?? ""];
+  if (key === "sk-odd") {
+    return Response.json({ models: [] });
+  }
+  return data === undefined ? Response.json({ error: "no" }, { status: 401 })
+    : Response.json({ data });
+}
+
 /** A key-exchange endpoint (OpenRouter's PKCE flow): JSON in, `{key}` out. */
 async function keyExchange(request: Request): Promise<Response> {
   const body = JSON.parse(await request.text()) as Record<string, string>;
@@ -431,6 +455,9 @@ export default {
     }
     if (url.hostname === "credit.test" && url.pathname === "/key") {
       return keyLimits(request);
+    }
+    if (url.hostname === "models.test" && url.pathname === "/models") {
+      return modelListing(request);
     }
     if (url.hostname === "auth.test") {
       if (url.pathname === "/revoke") {

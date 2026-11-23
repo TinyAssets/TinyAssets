@@ -8,8 +8,11 @@
  * - The order: by tier; within a tier, a plan before a key (the owner pays for the plan
  *   already, so a plan in the top tier wins over every metered key); then by entry, newer ids
  *   first within an entry. A model no entry matches is unknown and comes after every tier,
- *   ordered the same way, its keys by their catalog output price, highest first: the one
- *   order an unranked model has, and `auto` tells the owner when it runs one (`runs.ts`).
+ *   ordered the same way, its keys by the score its source's vendor lists it at (`strength`,
+ *   `connections.ts`), highest first, a scored one before an unscored one, then by their
+ *   catalog output price, highest first: the order an unranked model has, and `auto` tells
+ *   the owner when it runs one (`runs.ts`). So on a key that pays only for free models, all
+ *   priced at zero and none ranked, the vendor's strongest comes first, not the first id.
  *   Then the older connection (or sign-in), then the connection, then the model id.
  * - With no connected source, nothing ranks: there is no platform-paid default (a founder
  *   call).
@@ -32,6 +35,8 @@ export interface Usable {
   readonly models: readonly ModelRecord[];
   /** Whether its key can pay for a priced model: false, it reported not; null, not known. */
   readonly pays: boolean | null;
+  /** Its models' scores, as its source's vendor lists them, higher stronger; by model id. */
+  readonly scores: ReadonlyMap<string, number>;
 }
 
 /** An engine signed in, as `auto` ranks it. */
@@ -59,6 +64,8 @@ export interface Candidate {
 
 interface Sorted {
   readonly candidate: Candidate;
+  /** A key's model's score, as its vendor lists it; null for one unscored, and for a plan. */
+  readonly score: number | null;
   /** A key's catalog output price; a plan has none. */
   readonly price: number;
   readonly since: number;
@@ -76,17 +83,20 @@ export function ranked(keys: readonly Usable[], plans: readonly Plan[], ranking:
       candidate: { connection: connection.connection, source: connection.source,
                    provider: connection.provider, model: model.id,
                    place: ranking.place(connection.provider, model.id) },
-      price: model.cost.output, since: connection.created_at }))),
+      score: connection.scores.get(model.id) ?? null, price: model.cost.output,
+      since: connection.created_at }))),
     ...plans.map((plan) => ({
       candidate: { connection: null, source: plan.engine, provider: plan.provider,
                    model: plan.model, place: ranking.place(plan.provider, plan.model) },
-      price: 0, since: plan.since })),
+      score: null, price: 0, since: plan.since })),
   ];
   const tier = (one: Sorted) => one.candidate.place?.tier ?? Number.MAX_SAFE_INTEGER;
   const entry = (one: Sorted) => one.candidate.place?.entry ?? Number.MAX_SAFE_INTEGER;
   const keyed = (one: Sorted) => one.candidate.connection === null ? 0 : 1;
+  const scored = (a: Sorted, b: Sorted) => a.score === b.score ? 0 : a.score === null ? 1
+    : b.score === null ? -1 : b.score - a.score;
   all.sort((a, b) => tier(a) - tier(b) || keyed(a) - keyed(b) || entry(a) - entry(b)
-    || (a.candidate.place === null ? b.price - a.price
+    || (a.candidate.place === null ? scored(a, b) || b.price - a.price
       : b.candidate.model.localeCompare(a.candidate.model, "en", { numeric: true }))
     || a.since - b.since
     || text(a.candidate.connection, b.candidate.connection)

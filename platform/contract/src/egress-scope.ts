@@ -2,8 +2,9 @@
  * Where a sealed credential may go: the source values the binder
  * hands the gateway to seal (the pi-ai provider and API, the base URL, how the secret is
  * sent, the endpoints it may reach, an OAuth client), the egress scope a committed
- * connection keeps, the rules that judge a request against them, and the read of what a
- * key can pay for (`CreditRead`). The gateway seals and
+ * connection keeps, the rules that judge a request against them, and the reads of what a
+ * key can pay for (`CreditRead`) and of how strong each model is (`StrengthRead`). The
+ * gateway seals and
  * opens by these (`gateway/src/credential.ts`), the source records are checked by them
  * (`sources/src/check.ts`), and the owner's object admits a sandbox call by them
  * (`owner/src/egress.ts`), so the three can never disagree.
@@ -449,47 +450,59 @@ const PATH_KEY = /^[A-Za-z0-9_-]{1,64}$/;
 const PATH_MAX = 8;
 const NO_CREDIT_MAX = 8;
 
-function noCredit(value: unknown): NoCredit {
-  const path = object(value) ? value["path"] : undefined;
-  if (!Array.isArray(path) || path.length < 1 || path.length > PATH_MAX
-      || !path.every((key) => typeof key === "string" && PATH_KEY.test(key))) {
+/** A path through a read's JSON answer (`valueAtPath`): 1 to `PATH_MAX` plain keys. */
+function answerPath(value: unknown): readonly string[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > PATH_MAX
+      || !value.every((key) => typeof key === "string" && PATH_KEY.test(key))) {
     throw new Refusal("invalid_request");
   }
-  const kept = Object.freeze([...path] as string[]);
+  return Object.freeze([...value] as string[]);
+}
+
+/**
+ * A read's URL: an `https:` URL written as the URL parser writes it, with no query or
+ * fragment. The gateway sends it only where the sealed endpoints allow a `GET` (`allows`),
+ * so it reaches nothing a sandbox's read could not.
+ */
+function readUrl(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new Refusal("invalid_request");
+  }
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Refusal("invalid_request");
+  }
+  if (url.protocol !== "https:" || url.href !== value || url.search !== "" || url.hash !== "") {
+    throw new Refusal("invalid_request");
+  }
+  return url.href;
+}
+
+function noCredit(value: unknown): NoCredit {
+  const path = answerPath(object(value) ? value["path"] : undefined);
   if (keyed(value, ["path", "equals"]) && typeof value["equals"] === "boolean") {
-    return Object.freeze({ path: kept, equals: value["equals"] });
+    return Object.freeze({ path, equals: value["equals"] });
   }
   if (keyed(value, ["path", "at_most"]) && typeof value["at_most"] === "number"
       && Number.isFinite(value["at_most"])) {
-    return Object.freeze({ path: kept, at_most: value["at_most"] });
+    return Object.freeze({ path, at_most: value["at_most"] });
   }
   throw new Refusal("invalid_request");
 }
 
 /**
- * A credit read's `url` and `none_when`, checked (`invalid_request`): an `https:` URL written
- * as the URL parser writes it, with no query or fragment, and one to `NO_CREDIT_MAX` tests.
- * The gateway sends it only where the sealed endpoints allow a `GET` (`allows`), so it
- * reaches nothing a sandbox's read could not. Which other keys it may come with is its
- * holder's: a source record's (`sources/src/check.ts`) or the owner's call (`credit_read`).
+ * A credit read's `url` (`readUrl`) and `none_when`, checked (`invalid_request`): one to
+ * `NO_CREDIT_MAX` tests. Which other keys it may come with is its holder's: a source
+ * record's (`sources/src/check.ts`) or the owner's call (`credit_read`).
  */
 export function creditRead(value: unknown): CreditRead {
-  if (!object(value) || typeof value["url"] !== "string"
-      || !Array.isArray(value["none_when"]) || value["none_when"].length < 1
+  if (!object(value) || !Array.isArray(value["none_when"]) || value["none_when"].length < 1
       || value["none_when"].length > NO_CREDIT_MAX) {
     throw new Refusal("invalid_request");
   }
-  let url: URL;
-  try {
-    url = new URL(value["url"]);
-  } catch {
-    throw new Refusal("invalid_request");
-  }
-  if (url.protocol !== "https:" || url.href !== value["url"] || url.search !== ""
-      || url.hash !== "") {
-    throw new Refusal("invalid_request");
-  }
-  return Object.freeze({ url: url.href,
+  return Object.freeze({ url: readUrl(value["url"]),
                          none_when: Object.freeze(value["none_when"].map(noCredit)) });
 }
 
@@ -508,6 +521,62 @@ export function paysBy(read: CreditRead, body: unknown): boolean | null {
       : typeof value === "number" && value <= test.at_most;
   }
   return !none;
+}
+
+/**
+ * Where a source's vendor lists how strong each model is, from its source record
+ * (`strength`): a `GET` of `url` with the sealed secret, whose JSON answer holds a list of
+ * rows at `rows`, each a model's id at `id` and its score at `score`, higher stronger.
+ */
+export interface StrengthRead {
+  readonly url: string;
+  readonly rows: readonly string[];
+  readonly id: readonly string[];
+  readonly score: readonly string[];
+}
+
+/**
+ * A strength read's `url` (`readUrl`) and its three paths, checked (`invalid_request`).
+ * Which other keys it may come with is its holder's, as a credit read's are
+ * (`strength_read`).
+ */
+export function strengthRead(value: unknown): StrengthRead {
+  if (!object(value)) {
+    throw new Refusal("invalid_request");
+  }
+  return Object.freeze({ url: readUrl(value["url"]), rows: answerPath(value["rows"]),
+                         id: answerPath(value["id"]), score: answerPath(value["score"]) });
+}
+
+/** One model's score, as a strength read's answer gives it. */
+export interface ModelScore {
+  readonly id: string;
+  readonly score: number;
+}
+
+/**
+ * The scores a strength answer `body` gives, by `read`: each row's id with its score, a
+ * finite number; a row with none (a vendor omits the score of a model it has not scored) is
+ * left out. Null for an answer of another shape: no list at `rows`, a row with no id, or not
+ * one score in it.
+ */
+export function scoresBy(read: StrengthRead, body: unknown): ModelScore[] | null {
+  const rows = valueAtPath(body, read.rows);
+  if (!Array.isArray(rows)) {
+    return null;
+  }
+  const scores: ModelScore[] = [];
+  for (const row of rows) {
+    const id = valueAtPath(row, read.id);
+    if (typeof id !== "string") {
+      return null;
+    }
+    const score = valueAtPath(row, read.score);
+    if (typeof score === "number" && Number.isFinite(score)) {
+      scores.push(Object.freeze({ id, score }));
+    }
+  }
+  return scores.length === 0 ? null : scores;
 }
 
 /**

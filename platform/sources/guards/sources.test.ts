@@ -155,6 +155,23 @@ describe("the source records", () => {
     expect(() => sourceRecord({ ...claude, credit })).toThrow(SourceRecordError);
   });
 
+  it("say where a vendor lists how strong each model is only as a gateway source's read at a " +
+     "GET its endpoints allow", () => {
+    const strength = openrouter["strength"] as Record<string, unknown>;
+    const at = (change: Record<string, unknown>) =>
+      sourceRecord({ ...openrouter, strength: { ...strength, ...change } });
+    expect(at({}).strength).toEqual(strength);
+    for (const bad of [{ url: "https://openrouter.ai/api/v1/elsewhere" },
+                       { url: "https://evil.test/api/v1/models/user" },
+                       { url: "https://openrouter.ai/api/v1/models/user?all=1" },
+                       { rows: [] }, { id: "id" }, { score: ["a.b"] },
+                       { score: Array.from({ length: 9 }, () => "x") },
+                       { cite: "http://openrouter.ai/docs" }, { extra: 1 }]) {
+      expect(() => at(bad), JSON.stringify(bad)).toThrow(SourceRecordError);
+    }
+    expect(() => sourceRecord({ ...claude, strength })).toThrow(SourceRecordError);
+  });
+
   it("take an issuer, bare or with a path, and its RFC 9207 flag", () => {
     for (const issuer of ["https://auth.openai.com", "https://auth.openai.com/tenant"]) {
       const record = sourceRecord({ ...rfc6749, oauth: {
