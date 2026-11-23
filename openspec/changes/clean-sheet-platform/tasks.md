@@ -836,7 +836,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [ ] 12. A run past E2B's ceiling waits with a clear message (`untangle/runs-wait-message`).
   - [ ] 13. An unreadable control record served from the last good copy, only the writes that
     need a fresh one refused (`untangle/control-last-good`).
-  - [ ] 14. A Cloudflare-side kill switch beside the GitHub one (`untangle/kill-switch-cloudflare`).
+  - [x] 14. A Cloudflare-side kill switch beside the GitHub one (`untangle/kill-switch-cloudflare`,
+    done: `kill-switch-cloudflare.md`; its stage toggle is owed live there).
   - [ ] 15. Gradual deploys: a percentage, the canary the promote gate, and a rollback mode but
     across a Durable Object migration (`untangle/gradual-deploy`).
   - [ ] 16. The postmaster for cross-owner traffic, researched first (`untangle/postmaster`).
