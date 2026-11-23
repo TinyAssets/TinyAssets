@@ -6,8 +6,12 @@
     "api_key"
   ],
   "provider": "openai",
-  "api": "openai-responses",
-  "base_url": "https://api.openai.com/v1",
+  "apis": [
+    {
+      "api": "openai-responses",
+      "base_url": "https://api.openai.com/v1"
+    }
+  ],
   "auth": {
     "header": "authorization",
     "scheme": "Bearer"

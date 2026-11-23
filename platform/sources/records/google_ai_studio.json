@@ -6,8 +6,12 @@
     "api_key"
   ],
   "provider": "google",
-  "api": "google-generative-ai",
-  "base_url": "https://generativelanguage.googleapis.com/v1beta",
+  "apis": [
+    {
+      "api": "google-generative-ai",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta"
+    }
+  ],
   "auth": {
     "header": "x-goog-api-key",
     "scheme": ""

@@ -128,8 +128,9 @@ export default class Tools extends WorkerEntrypoint<Env> {
     const catalog = builtinCatalog();
     for (const record of catalog.provider("anthropic")!.getModels()
       .filter((candidate) => candidate.api === "anthropic-messages")) {
-      if (await learnMeter(catalog, upstream, KEY,
-                           meteredRecord(catalog, upstream, record.id)!) !== null) {
+      const [row] = upstream.apis;
+      if (await learnMeter(catalog, upstream, row!, KEY,
+                           meteredRecord(catalog, upstream, row!, record.id)!) !== null) {
         return Response.json({ model: record.id });
       }
     }

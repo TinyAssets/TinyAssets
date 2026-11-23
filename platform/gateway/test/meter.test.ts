@@ -12,7 +12,8 @@ import {
 } from "../../contract/src/api-rules";
 import { builtinCatalog } from "../src/catalog";
 import {
-  egressTarget, meteredCall, meteredModel, type Upstream,
+  egressTarget, type Endpoint, type Meter, meteredCall, meteredModel, type ModelScope, scopeApi,
+  type Upstream,
 } from "../../contract/src/egress-scope";
 import {
   clamped, describes, learnMeter, meteredRecord, meteredUsage, Meters, sentHeaders, snapshotOf,
@@ -23,11 +24,22 @@ import { bundledRecords } from "../../sources/src/catalog";
 import { sourceRecord } from "../../sources/src/check";
 
 const GROQ = Object.freeze({
-  provider: "groq", api: "openai-completions", base_url: "https://api.groq.com/openai/v1",
+  provider: "groq",
+  apis: [{ api: "openai-completions", base_url: "https://api.groq.com/openai/v1" }],
   auth: { header: "authorization", scheme: "Bearer" } });
 const OPENROUTER = Object.freeze({
-  provider: "openrouter", api: "openai-completions", base_url: "https://openrouter.ai/api/v1",
+  provider: "openrouter",
+  apis: [{ api: "openai-completions", base_url: "https://openrouter.ai/api/v1" }],
   auth: { header: "authorization", scheme: "Bearer" } });
+/** Each one-API source above, with its API: the meter's arguments. */
+const ANTHROPIC_API = [ANTHROPIC.upstream, ANTHROPIC.upstream.apis[0]!] as const;
+const GOOGLE_API = [GOOGLE.upstream, GOOGLE.upstream.apis[0]!] as const;
+const OPENROUTER_API = [OPENROUTER, OPENROUTER.apis[0]!] as const;
+const GROQ_API = [GROQ, GROQ.apis[0]!] as const;
+/** The bundled OpenRouter record's upstream, and its Messages API. */
+const ROUTER = sourceRecord(bundledRecords().find((record) =>
+  (record as { id: string }).id === "openrouter_user_models_v1")).upstream!;
+const ROUTER_MESSAGES = ROUTER.apis.find((row) => row.api === "anthropic-messages")!;
 const SSE = new Headers({ "content-type": "text/event-stream" });
 /** A call that listed fallback models; a router's call. */
 const LISTED = Object.freeze({ fallbacks: true, routed: false });
@@ -62,12 +74,22 @@ function streamOf(text: string): ReadableStream<Uint8Array> {
   return new Response(text).body!;
 }
 
+/** A source's scope, each API's meter as `meters` has it (none learned, by default). */
+function scoped(upstream: Upstream, endpoints: readonly Endpoint[],
+                meters: readonly (Meter | null)[] = []): ModelScope {
+  return { apis: upstream.apis.map((row, index) => ({ ...row, meter: meters[index] ?? null })),
+           endpoints };
+}
+
+/** A source's provider and first API, as the clamp takes a call's. */
+const spoken = (upstream: Upstream) =>
+  ({ provider: upstream.provider, api: upstream.apis[0]!.api });
+
 describe("the engines' own calls against the API rules", () => {
   const records = bundledRecords().map(sourceRecord);
   const scopeOf = (id: string) => {
     const { upstream, endpoints } = records.find((record) => record.id === id)!;
-    return { api: upstream!.api, base_url: upstream!.base_url, endpoints: endpoints!,
-             meter: null };
+    return scoped(upstream!, endpoints!);
   };
 
   it("lets Claude Code count tokens unmetered, on the page that says the count is free", () => {
@@ -96,18 +118,17 @@ describe("the engines' own calls against the API rules", () => {
   it("never lets a free call be a source's metered model call", async () => {
     let compared = 0;
     for (const record of records.filter((entry) => entry.upstream !== undefined)) {
-      const rules = apiRules(record.upstream!.api);
-      const calls = (rules?.free ?? []).filter((call) =>
-        call.provider === record.upstream!.provider);
-      if (calls.length === 0) {
-        continue;
-      }
-      const meter = await new Meters(builtinCatalog(), record.upstream!, "k").any();
-      for (const call of calls) {
-        expect(meteredCall({ ...scopeOf(record.id), meter }, call.method, call.path),
-               `${record.id} ${call.path}`).toBe(false);
-        expect(meter!.path === call.path && meter!.method === call.method).toBe(false);
-        compared += 1;
+      const upstream = record.upstream!;
+      const meters = await Promise.all(upstream.apis.map((row) =>
+        new Meters(builtinCatalog(), upstream, row, "k").any()));
+      for (const row of upstream.apis) {
+        const calls = (apiRules(row.api)?.free ?? []).filter((call) =>
+          call.provider === upstream.provider);
+        for (const call of calls) {
+          expect(meteredCall(scoped(upstream, record.endpoints!, meters), call.method, call.path),
+                 `${record.id} ${call.path}`).toBe(false);
+          compared += 1;
+        }
       }
     }
     expect(compared).toBeGreaterThan(0);
@@ -120,8 +141,9 @@ describe("the engines' own calls against the API rules", () => {
     expect(freeCall(rules, "google", "POST", path)).toBe(false);
     // Sealed, but neither free nor the model call the gateway meters: egress_unmetered.
     const { upstream } = records.find((record) => record.id === "google_ai_studio")!;
-    const meter = await new Meters(builtinCatalog(), upstream!, "k").any();
-    expect(meteredCall({ ...scopeOf("google_ai_studio"), meter }, "POST", path)).toBe(false);
+    const meter = await new Meters(builtinCatalog(), upstream!, upstream!.apis[0]!, "k").any();
+    expect(meteredCall(scoped(upstream!, scopeOf("google_ai_studio").endpoints, [meter]), "POST",
+                       path)).toBe(false);
   });
 
   it("refuses Codex's web search (a billed server tool) and its Responses WebSocket", () => {
@@ -140,56 +162,66 @@ describe("the engines' own calls against the API rules", () => {
 describe("the meter pi-ai's adapter teaches", () => {
   const keys = bundledRecords().map(sourceRecord)
     .filter((record) => record.connect.includes("api_key"));
+  /** Each API of each API-key source, by name. */
+  const spokenBy = keys.flatMap((record) => record.upstream!.apis.map((row) =>
+    [`${record.id} ${row.api}`, record, row] as const));
   it("has the Anthropic, OpenAI and xAI keys among the API-key sources", () => {
     expect(keys.map((record) => record.id)).toEqual(expect.arrayContaining([
       "anthropic", "openai", "xai"]));
   });
 
+  // On its first API: the header it is sent in on every call and read is the source's one
+  // (OpenRouter's Messages API, where pi-ai sends `x-api-key`, takes the bearer key its
+  // OpenAPI declares for every path).
   it.each(keys.map((record) => [record.id, record] as const))(
     "seals the %s source's key in the header pi-ai sends it in, by its scheme",
     async (id, { upstream }) => {
-      const headers = await sentHeaders(builtinCatalog(), upstream!, "sk-probe-key");
+      const headers = await sentHeaders(builtinCatalog(), upstream!, upstream!.apis[0]!,
+                                        "sk-probe-key");
       expect(headers, id).not.toBeNull();
       const { header, scheme } = upstream!.auth;
       expect(headers!.get(header), id).toBe(scheme === "" ? "sk-probe-key"
         : `${scheme} sk-probe-key`);
     });
 
-  it.each(keys.map((record) => [record.id, record] as const))(
-    "meters the %s source's model call, on one of its sealed endpoints",
-    async (id, { upstream, endpoints }) => {
-      expect(apiRules(upstream!.api), id).not.toBeNull();
-      const meter = await new Meters(builtinCatalog(), upstream!, "sk-x").any();
+  it.each(spokenBy)(
+    "meters the %s call, on one of its sealed endpoints, as that API's",
+    async (id, { upstream, endpoints }, row) => {
+      const meters = await Promise.all(upstream!.apis.map((each) =>
+        new Meters(builtinCatalog(), upstream!, each, "sk-x").any()));
+      const meter = meters[upstream!.apis.indexOf(row)]!;
       expect(meter, id).not.toBeNull();
-      const path = meter!.path.replace("{model}", "model-a");
-      const scope = { api: upstream!.api, base_url: upstream!.base_url, endpoints: endpoints!,
-                      meter };
-      expect(meteredCall(scope, meter!.method, path), id).toBe(true);
-      expect(egressTarget(scope, meter!.method, path), id).not.toBeNull();
+      const path = meter.path.replace("{model}", "model-a");
+      const scope = scoped(upstream!, endpoints!, meters);
+      expect(scopeApi(scope, meter.method, path)?.api, id).toBe(row.api);
+      expect(egressTarget(scope, meter.method, path), id).not.toBeNull();
     });
 
   /**
    * A declared endpoint on each API a declared endpoint may speak: each API with a row is
    * one some source record speaks (`api-rules.ts` `APIS`).
    */
-  const declaredOn = [...new Set(keys.map((record) => record.upstream!.api))]
-    .filter(declaredApi).map((api): readonly [string, { upstream: Upstream }] => [
+  const declaredOn = [...new Set(keys.flatMap((record) =>
+    record.upstream!.apis.map((row) => row.api)))]
+    .filter(declaredApi).map((api) => [
       `declared ${api}`, { upstream: {
-        provider: "custom", api, base_url: "https://llm.example.com/v1",
+        provider: "custom", apis: [{ api, base_url: "https://llm.example.com/v1" }],
         auth: { header: "authorization", scheme: "Bearer" },
         models: [{ id: "local-1", name: "Local", reasoning: false, input: ["text"],
                    contextWindow: 32000, maxTokens: 4096,
-                   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] } }]);
-  it.each([...keys.map((record) => [record.id, record] as const), ...declaredOn])(
-    "learns the %s source's call through the fetch it hands pi-ai, never the global one",
-    async (id, { upstream }) => {
+                   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] } as Upstream },
+      { api, base_url: "https://llm.example.com/v1" }] as const);
+  it.each([...spokenBy, ...declaredOn])(
+    "learns the %s call through the fetch it hands pi-ai, never the global one",
+    async (id, { upstream }, row) => {
       const reached: string[] = [];
       vi.stubGlobal("fetch", async (input: RequestInfo | URL): Promise<Response> => {
         reached.push(input instanceof Request ? input.url : String(input));
         throw new Error("the global fetch");
       });
       try {
-        expect(await new Meters(builtinCatalog(), upstream!, "sk-x").any(), id).not.toBeNull();
+        expect(await new Meters(builtinCatalog(), upstream!, row, "sk-x").any(), id)
+          .not.toBeNull();
       } finally {
         vi.unstubAllGlobals();
       }
@@ -208,7 +240,7 @@ describe("the meter pi-ai's adapter teaches", () => {
     ["Google Generative AI", GOOGLE.upstream,
      { method: "POST", model_field: null, output_field: ["generationConfig", "maxOutputTokens"] }],
   ])("for %s", async (_what, upstream, expected) => {
-    const meter = await new Meters(builtinCatalog(), upstream, "sk-x").any();
+    const meter = await new Meters(builtinCatalog(), upstream, upstream.apis[0]!, "sk-x").any();
     expect(meter).toMatchObject(expected);
     expect(meter!.output_field.length).toBeGreaterThan(0);
   });
@@ -216,12 +248,13 @@ describe("the meter pi-ai's adapter teaches", () => {
   it("learns each model's call once in a call: the path choice's meter is its model's own",
      async () => {
     const catalog = builtinCatalog();
-    const meters = new Meters(catalog, ANTHROPIC.upstream, "sk-x");
+    const meters = new Meters(catalog, ...ANTHROPIC_API, "sk-x");
     const any = await meters.any();
     let chosen: Parameters<Meters["of"]>[0] | undefined;
     for (const record of catalog.provider("anthropic")!.getModels()
       .filter((model) => model.api === "anthropic-messages")) {
-      if (await learnMeter(catalog, ANTHROPIC.upstream, "sk-x", record) !== null) {
+      if (await learnMeter(catalog, ...ANTHROPIC_API, "sk-x",
+                           record) !== null) {
         chosen = record;
         break;
       }
@@ -232,15 +265,15 @@ describe("the meter pi-ai's adapter teaches", () => {
   });
 
   it("names Google's model in the path, and reads it back", async () => {
-    const meter = (await new Meters(builtinCatalog(), GOOGLE.upstream, "AIza-x").any())!;
+    const meter = (await new Meters(builtinCatalog(), ...GOOGLE_API,
+                                    "AIza-x").any())!;
     expect(meter.path).toMatch(/^\/v1beta\/models\/\{model\}:streamGenerateContent$/);
     const path = "/v1beta/models/model-a:streamGenerateContent";
     expect(meteredModel(meter, "POST", path, {})).toBe("model-a");
-    expect(meteredCall({ api: GOOGLE.upstream.api, base_url: GOOGLE.upstream.base_url, endpoints: GOOGLE.endpoints, meter },
-                       "POST", path)).toBe(true);
+    const scope = scoped(GOOGLE.upstream, GOOGLE.endpoints, [meter]);
+    expect(meteredCall(scope, "POST", path)).toBe(true);
     expect(meteredModel(meter, "POST", "/v1beta/models/a/b:streamGenerateContent", {})).toBeNull();
     // The owner's open holds the path to one model segment too, as the gateway reads it.
-    const scope = { api: GOOGLE.upstream.api, base_url: GOOGLE.upstream.base_url, endpoints: GOOGLE.endpoints, meter };
     for (const other of ["/v1beta/models/a/b:streamGenerateContent",
                          "/v1beta/models/a:b:streamGenerateContent",
                          "/v1beta/models/:streamGenerateContent"]) {
@@ -250,22 +283,22 @@ describe("the meter pi-ai's adapter teaches", () => {
   });
 
   it("reads the model from the body, and clamps the output cap there", async () => {
-    const meter = (await new Meters(builtinCatalog(), ANTHROPIC.upstream, "sk-x").any())!;
+    const meter = (await new Meters(builtinCatalog(), ...ANTHROPIC_API, "sk-x").any())!;
     expect(meteredModel(meter, "POST", "/v1/messages", { model: "model-x" })).toBe("model-x");
     expect(meteredModel(meter, "POST", "/v1/messages", {})).toBeNull();
     expect(meteredModel(meter, "POST", "/v1/models", { model: "model-x" })).toBeNull();
-    const api = "anthropic-messages";
+    const api = ANTHROPIC.upstream;
     const tier = { service_tier: "standard_only" };
-    expect(clamped(meter, { model: "m", max_tokens: 50_000 }, 1000, api))
+    expect(clamped(meter, { model: "m", max_tokens: 50_000 }, 1000, spoken(api)))
       .toEqual({ model: "m", max_tokens: 1000, ...tier });
-    expect(clamped(meter, { model: "m", max_tokens: 10 }, 1000, api))
+    expect(clamped(meter, { model: "m", max_tokens: 10 }, 1000, spoken(api)))
       .toEqual({ model: "m", max_tokens: 10, ...tier });
-    expect(clamped(meter, { model: "m" }, 1000, api)).toEqual({ model: "m", max_tokens: 1000,
-                                                               ...tier });
-    expect(clamped(meter, { model: "m", max_tokens: "lots" }, 1000, api))
+    expect(clamped(meter, { model: "m" }, 1000, spoken(api)))
       .toEqual({ model: "m", max_tokens: 1000, ...tier });
-    const google = (await new Meters(builtinCatalog(), GOOGLE.upstream, "AIza-x").any())!;
-    expect(clamped(google, { contents: [] }, 7, "google-generative-ai"))
+    expect(clamped(meter, { model: "m", max_tokens: "lots" }, 1000, spoken(api)))
+      .toEqual({ model: "m", max_tokens: 1000, ...tier });
+    const google = (await new Meters(builtinCatalog(), ...GOOGLE_API, "AIza-x").any())!;
+    expect(clamped(google, { contents: [] }, 7, spoken(GOOGLE.upstream)))
       .toEqual({ contents: [], generationConfig: { maxOutputTokens: 7 } });
   });
 
@@ -273,7 +306,7 @@ describe("the meter pi-ai's adapter teaches", () => {
     const catalog = builtinCatalog();
     const [first] = catalog.provider("anthropic")!.getModels()
       .filter((model) => model.api === "anthropic-messages");
-    const model = meteredRecord(catalog, ANTHROPIC.upstream, first!.id)!;
+    const model = meteredRecord(catalog, ...ANTHROPIC_API, first!.id)!;
     const body = sse([
       ["message_start", { type: "message_start", message: { id: "m1", type: "message",
         role: "assistant", model: first!.id, content: [], stop_reason: null,
@@ -300,7 +333,7 @@ describe("the meter pi-ai's adapter teaches", () => {
     const catalog = builtinCatalog();
     const [first] = catalog.provider("anthropic")!.getModels()
       .filter((model) => model.api === "anthropic-messages");
-    const model = meteredRecord(catalog, ANTHROPIC.upstream, first!.id)!;
+    const model = meteredRecord(catalog, ...ANTHROPIC_API, first!.id)!;
     const json = await meteredUsage(catalog, ANTHROPIC.upstream, "sk-x", model, 200,
                                     new Headers({ "content-type": "application/json" }),
                                     streamOf(JSON.stringify({ usage: { input_tokens: 1 } })));
@@ -309,7 +342,7 @@ describe("the meter pi-ai's adapter teaches", () => {
                                    new Headers({ "content-type": "text/event-stream" }),
                                    new ReadableStream({ start(c) { c.error(new Error("cut")); } }));
     expect(cut).toBeNull();
-    expect(meteredRecord(catalog, ANTHROPIC.upstream, "no-such-model")).toBeNull();
+    expect(meteredRecord(catalog, ...ANTHROPIC_API, "no-such-model")).toBeNull();
   });
 });
 
@@ -319,7 +352,7 @@ describe("what a metered call could escape its reservation by", () => {
     const catalog = builtinCatalog();
     const [first] = catalog.provider("groq")!.getModels()
       .filter((model) => model.api === "openai-completions" && model.cost.output > 0);
-    const model = meteredRecord(catalog, GROQ, first!.id)!;
+    const model = meteredRecord(catalog, ...GROQ_API, first!.id)!;
     // What a CLI that did not ask for `stream_options.include_usage` gets back.
     expect(await meteredUsage(catalog, GROQ, "gsk-x", model, 200, SSE,
                               streamOf(completion(first!.id, null)))).toBeNull();
@@ -332,13 +365,13 @@ describe("what a metered call could escape its reservation by", () => {
     expect(reported!.cost).toBeGreaterThan(0);
     // The gateway asks for it, as pi-ai's own streaming call does; a call that does not
     // stream is left as it is.
-    const meter = (await new Meters(catalog, GROQ, "gsk-x").any())!;
-    expect(clamped(meter, { model: "m", stream: true }, 10, "openai-completions"))
+    const meter = (await new Meters(catalog, ...GROQ_API, "gsk-x").any())!;
+    expect(clamped(meter, { model: "m", stream: true }, 10, spoken(GROQ)))
       .toMatchObject({ stream: true, stream_options: { include_usage: true } });
     expect(clamped(meter, { model: "m", stream: true, stream_options: { include_usage: false } },
-                   10, "openai-completions"))
+                   10, spoken(GROQ)))
       .toMatchObject({ stream_options: { include_usage: true } });
-    expect(clamped(meter, { model: "m" }, 10, "openai-completions")["stream_options"])
+    expect(clamped(meter, { model: "m" }, 10, spoken(GROQ))["stream_options"])
       .toBeUndefined();
   });
 
@@ -347,7 +380,7 @@ describe("what a metered call could escape its reservation by", () => {
     const catalog = builtinCatalog();
     const models = catalog.provider("openrouter")!.getModels()
       .filter((model) => model.api === "openai-completions");
-    const router = meteredRecord(catalog, OPENROUTER, "openrouter/auto")!;
+    const router = meteredRecord(catalog, ...OPENROUTER_API, "openrouter/auto")!;
     expect(router.cost.input + router.cost.output).toBe(0);
     const paid = models.find((model) => model.cost.output > 0)!;
     const free = models.find((model) => model.id.endsWith(":free"))!;
@@ -358,7 +391,7 @@ describe("what a metered call could escape its reservation by", () => {
                     totalTokens: 250_000,
                     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
     expect(routed).toMatchObject({ served: paid.id });
-    expect(routed!.cost).toBeCloseTo(calculateCost(meteredRecord(catalog, OPENROUTER,
+    expect(routed!.cost).toBeCloseTo(calculateCost(meteredRecord(catalog, ...OPENROUTER_API,
                                                                  paid.id)!, usage).total, 9);
     expect(routed!.cost).toBeGreaterThan(0);
     // Served by a model the catalog does not price, with no word of what served it, or
@@ -372,7 +405,7 @@ describe("what a metered call could escape its reservation by", () => {
     // A free model named alone is priced as itself, whether or not its answer names it.
     for (const served of [free.id, null]) {
       expect(await meteredUsage(catalog, OPENROUTER, "sk-or-x",
-                                meteredRecord(catalog, OPENROUTER, free.id)!, 200, SSE,
+                                meteredRecord(catalog, ...OPENROUTER_API, free.id)!, 200, SSE,
                                 streamOf(completion(served, BIG))), String(served))
         .toEqual({ tokens: 250_000, cost: 0 });
     }
@@ -381,9 +414,9 @@ describe("what a metered call could escape its reservation by", () => {
       .sort((a, b) => a.cost.output - b.cost.output).filter((_m, i, all) =>
         i === 0 || i === all.length - 1);
     const fallback = await meteredUsage(catalog, OPENROUTER, "sk-or-x",
-                                        meteredRecord(catalog, OPENROUTER, cheap!.id)!, 200, SSE,
-                                        streamOf(completion(dear!.id, BIG)));
-    expect(fallback!.cost).toBeCloseTo(calculateCost(meteredRecord(catalog, OPENROUTER,
+                                        meteredRecord(catalog, ...OPENROUTER_API, cheap!.id)!,
+                                        200, SSE, streamOf(completion(dear!.id, BIG)));
+    expect(fallback!.cost).toBeCloseTo(calculateCost(meteredRecord(catalog, ...OPENROUTER_API,
                                                                    dear!.id)!, usage).total, 9);
   });
 
@@ -391,7 +424,7 @@ describe("what a metered call could escape its reservation by", () => {
     const catalog = builtinCatalog();
     const paid = catalog.provider("openrouter")!.getModels()
       .find((model) => model.api === "openai-completions" && model.cost.output > 0)!;
-    const model = meteredRecord(catalog, OPENROUTER, paid.id)!;
+    const model = meteredRecord(catalog, ...OPENROUTER_API, paid.id)!;
     const billed = await meteredUsage(catalog, OPENROUTER, "sk-or-x", model, 200, SSE,
                                       streamOf(completion(paid.id, { ...BIG, cost: 0.42,
                                                                      is_byok: false })));
@@ -407,7 +440,7 @@ describe("what a metered call could escape its reservation by", () => {
     const dear = catalog.provider("openrouter")!.getModels()
       .filter((each) => each.api === "openai-completions")
       .reduce((a, b) => (b.cost.output > a.cost.output ? b : a));
-    const router = meteredRecord(catalog, OPENROUTER, "openrouter/auto")!;
+    const router = meteredRecord(catalog, ...OPENROUTER_API, "openrouter/auto")!;
     for (const [named, served, pricing] of [[model, dear.id, LISTED], [router, dear.id, ROUTED],
                                             [router, "someone/unlisted", ROUTED]] as const) {
       expect(await meteredUsage(catalog, OPENROUTER, "sk-or-x", named, 200, SSE,
@@ -415,6 +448,37 @@ describe("what a metered call could escape its reservation by", () => {
                                                               is_byok: false })), pricing))
         .toEqual({ tokens: 250_000, cost: 0.42, served });
     }
+  });
+
+  it("settles an OpenRouter Messages call at its bill, else at the catalog's price, and one " +
+     "that names another id unbilled as unknown", async () => {
+    const catalog = builtinCatalog();
+    const model = meteredRecord(catalog, ROUTER, ROUTER_MESSAGES, "anthropic/claude-opus-5.5")!;
+    const answer = (served: string, cost: object) => streamOf(sse([
+      ["message_start", { type: "message_start", message: {
+        id: "gen-1", type: "message", role: "assistant", model: served, content: [],
+        stop_reason: null, usage: { input_tokens: 1000, output_tokens: 0,
+                                    service_tier: "standard" } } }],
+      ["content_block_start", { type: "content_block_start", index: 0,
+                                content_block: { type: "text", text: "" } }],
+      ["content_block_delta", { type: "content_block_delta", index: 0,
+                                delta: { type: "text_delta", text: "hi" } }],
+      ["content_block_stop", { type: "content_block_stop", index: 0 }],
+      ["message_delta", { type: "message_delta", delta: { stop_reason: "end_turn" },
+                          usage: { input_tokens: 1000, output_tokens: 100, ...cost } }],
+      ["message_stop", { type: "message_stop" }]]));
+    const settle = (served: string, cost: object) =>
+      meteredUsage(catalog, ROUTER, "sk-or-x", model, 200, SSE, answer(served, cost));
+    expect(await settle(model.id, { cost: 0.0123, is_byok: false }))
+      .toEqual({ tokens: 1100, cost: 0.0123 });
+    const usage = { input: 1000, output: 100, cacheRead: 0, cacheWrite: 0, totalTokens: 1100,
+                    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+    expect(await settle(model.id, {}))
+      .toEqual({ tokens: 1100, cost: calculateCost(model, usage).total });
+    // Anthropic's own dated id is neither the catalog's nor its snapshot: billed, the bill.
+    expect(await settle("claude-opus-5-5-20261101", {})).toBeNull();
+    expect(await settle("claude-opus-5-5-20261101", { cost: 0.0123, is_byok: false }))
+      .toEqual({ tokens: 1100, cost: 0.0123, served: "claude-opus-5-5-20261101" });
   });
 
   it("meters an API only while its rules describe pi-ai's own call", () => {
@@ -436,9 +500,9 @@ describe("what a metered call could escape its reservation by", () => {
                     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
     const [named] = catalog.provider("groq")!.getModels()
       .filter((model) => model.api === "openai-completions" && model.cost.output > 0);
-    const record = meteredRecord(catalog, GROQ, named!.id)!;
+    const record = meteredRecord(catalog, ...GROQ_API, named!.id)!;
     const snapshot = `${named!.id}-2026-01-01`;
-    expect(meteredRecord(catalog, GROQ, snapshot)).toBeNull();
+    expect(meteredRecord(catalog, ...GROQ_API, snapshot)).toBeNull();
     // A concrete, priced model, answered by its dated snapshot: the named model's price.
     const dated = await meteredUsage(catalog, GROQ, "gsk-x", record, 200, SSE,
                                      streamOf(completion(snapshot, BIG)));
@@ -449,7 +513,7 @@ describe("what a metered call could escape its reservation by", () => {
     expect(await meteredUsage(catalog, GROQ, "gsk-x", record, 200, SSE,
                               streamOf(completion(snapshot, BIG)), LISTED)).toBeNull();
     // A router's answer shaped as its own snapshot: a router's price is no model's.
-    const router = meteredRecord(catalog, OPENROUTER, "openrouter/auto")!;
+    const router = meteredRecord(catalog, ...OPENROUTER_API, "openrouter/auto")!;
     expect(await meteredUsage(catalog, OPENROUTER, "sk-or-x", router, 200, SSE,
                               streamOf(completion(`${router.id}-2026-01-01`, BIG)), ROUTED))
       .toBeNull();
@@ -459,11 +523,11 @@ describe("what a metered call could escape its reservation by", () => {
       .sort((a, b) => a.cost.output - b.cost.output);
     const [cheap, dear] = [listed[0]!, listed.at(-1)!];
     const priced = await meteredUsage(catalog, OPENROUTER, "sk-or-x",
-                                      meteredRecord(catalog, OPENROUTER, cheap.id)!, 200, SSE,
-                                      streamOf(completion(dear.id, BIG)), LISTED);
+                                      meteredRecord(catalog, ...OPENROUTER_API, cheap.id)!,
+                                      200, SSE, streamOf(completion(dear.id, BIG)), LISTED);
     expect(priced).toMatchObject({ served: dear.id });
-    expect(priced!.cost).toBeCloseTo(calculateCost(meteredRecord(catalog, OPENROUTER, dear.id)!,
-                                                   usage).total, 9);
+    expect(priced!.cost).toBeCloseTo(calculateCost(
+      meteredRecord(catalog, ...OPENROUTER_API, dear.id)!, usage).total, 9);
     // The named model answering as itself records nothing.
     expect(await meteredUsage(catalog, GROQ, "gsk-x", record, 200, SSE,
                               streamOf(completion(named!.id, BIG))))
@@ -472,18 +536,22 @@ describe("what a metered call could escape its reservation by", () => {
 
   it("clamps every output-cap alias the API reads, and refuses several choices", async () => {
     const catalog = builtinCatalog();
-    const meter = (await new Meters(catalog, GROQ, "gsk-x").any())!;
+    const meter = (await new Meters(catalog, ...GROQ_API, "gsk-x").any())!;
     const field = meter.output_field.join(".");
     const other = field === "max_tokens" ? "max_completion_tokens" : "max_tokens";
-    const sent = clamped(meter, { model: "m", [other]: 100_000 }, 1_000, "openai-completions");
+    const sent = clamped(meter, { model: "m", [other]: 100_000 }, 1_000, spoken(GROQ));
     expect(sent[field]).toBe(1_000);
     expect(sent[other]).toBe(1_000);
-    expect(clamped(meter, { model: "m" }, 1_000, "openai-completions")[other]).toBeUndefined();
+    expect(clamped(meter, { model: "m" }, 1_000, spoken(GROQ))[other]).toBeUndefined();
     const completions = apiRules("openai-completions")!;
     expect(fallbackList(completions, { models: ["a", "b"] })).toBe(true);
     expect(fallbackList(completions, { models: [] })).toBe(false);
     expect(fallbackList(completions, { model: "a" })).toBe(false);
-    expect(fallbackList(apiRules("anthropic-messages")!, { models: ["a"] })).toBe(false);
+    // OpenRouter's Messages API lists fallbacks in either; Anthropic's own takes `fallbacks`.
+    const messages = apiRules("anthropic-messages")!;
+    expect(fallbackList(messages, { models: ["a"] })).toBe(true);
+    expect(fallbackList(messages, { fallbacks: [{ model: "a" }] })).toBe(true);
+    expect(fallbackList(messages, { fallbacks: [] })).toBe(false);
     expect(manyChoices(completions, { n: 8 })).toBe(true);
     expect(manyChoices(completions, { n: 1 })).toBe(false);
     expect(manyChoices(completions, {})).toBe(false);
@@ -497,7 +565,7 @@ describe("what a metered call could escape its reservation by", () => {
     const catalog = builtinCatalog();
     const [first] = catalog.provider("anthropic")!.getModels()
       .filter((model) => model.api === "anthropic-messages");
-    const model = meteredRecord(catalog, ANTHROPIC.upstream, first!.id)!;
+    const model = meteredRecord(catalog, ...ANTHROPIC_API, first!.id)!;
     const message = { id: "m1", type: "message", role: "assistant", model: first!.id,
                       content: [{ type: "text", text: "hi" }], stop_reason: "end_turn",
                       usage: { input_tokens: 1000, output_tokens: 500 } };
@@ -522,7 +590,7 @@ describe("the price beyond tokens", () => {
     const models = catalog.provider("openrouter")!.getModels()
       .filter((model) => model.api === "openai-completions" && model.cost.output > 0)
       .sort((a, b) => a.cost.output - b.cost.output);
-    const cheap = meteredRecord(catalog, OPENROUTER, models[0]!.id)!;
+    const cheap = meteredRecord(catalog, ...OPENROUTER_API, models[0]!.id)!;
     // A cheap model named alone, answered as an unrelated dear id the catalog lacks.
     expect(await meteredUsage(catalog, OPENROUTER, "k", cheap, 200, SSE,
                               streamOf(completion("someone/dear-uncatalogued-9", BIG))))
@@ -534,7 +602,7 @@ describe("the price beyond tokens", () => {
     const catalog = builtinCatalog();
     const [first] = catalog.provider("openai")!.getModels()
       .filter((model) => model.api === "openai-responses" && model.cost.output > 0);
-    const record = meteredRecord(catalog, OPENAI.upstream, first!.id)!;
+    const record = meteredRecord(catalog, OPENAI.upstream, OPENAI.upstream.apis[0]!, first!.id)!;
     const usage = { input_tokens: 10_000, output_tokens: 5_000, total_tokens: 15_000,
                     input_tokens_details: { cached_tokens: 0 },
                     output_tokens_details: { reasoning_tokens: 0 } };
@@ -572,16 +640,23 @@ describe("the price beyond tokens", () => {
 });
 
 describe("a tier left to the account", () => {
-  it("is set to the one pi-ai prices when absent, by the rules' data, and kept when named",
-     async () => {
-    const meter = (await new Meters(builtinCatalog(), ANTHROPIC.upstream, "sk-x").any())!;
-    expect(clamped(meter, { model: "m" }, 10, "anthropic-messages"))
+  it("is set to the one pi-ai prices when absent, on the provider whose page says so, and " +
+     "kept when named", async () => {
+    const meter = (await new Meters(builtinCatalog(), ANTHROPIC.upstream,
+                                    ANTHROPIC.upstream.apis[0]!, "sk-x").any())!;
+    expect(clamped(meter, { model: "m" }, 10, spoken(ANTHROPIC.upstream)))
       .toMatchObject({ service_tier: "standard_only" });
     expect(clamped(meter, { model: "m", service_tier: "standard_only" }, 10,
-                   "anthropic-messages")).toMatchObject({ service_tier: "standard_only" });
+                   spoken(ANTHROPIC.upstream))).toMatchObject({ service_tier: "standard_only" });
+    // OpenRouter's Messages API serves its standard tier when none is asked: sent as asked.
+    const routed = (await new Meters(builtinCatalog(), ROUTER, ROUTER_MESSAGES,
+                                     "sk-or-x").any())!;
+    expect(clamped(routed, { model: "m" }, 10,
+                   { provider: ROUTER.provider, api: ROUTER_MESSAGES.api }))
+      .toEqual({ model: "m", max_tokens: 10 });
     // An API whose rules default nothing is left as it is.
-    const google = (await new Meters(builtinCatalog(), GOOGLE.upstream, "AIza-x").any())!;
-    expect(clamped(google, { contents: [] }, 7, "google-generative-ai")["service_tier"])
+    const google = (await new Meters(builtinCatalog(), ...GOOGLE_API, "AIza-x").any())!;
+    expect(clamped(google, { contents: [] }, 7, spoken(GOOGLE.upstream))["service_tier"])
       .toBeUndefined();
   });
 });

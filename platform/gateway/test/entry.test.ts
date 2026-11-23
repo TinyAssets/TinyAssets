@@ -21,7 +21,7 @@ import {
 } from "./support";
 import { steer } from "./fake-upstream";
 import type { Reserve } from "../../contract/src/gateway";
-import type { Source } from "../../contract/src/egress-scope";
+import type { Source, Upstream } from "../../contract/src/egress-scope";
 import { builtinCatalog } from "../src/catalog";
 
 const gateway = (exports as unknown as { default: Service<Gateway> }).default;
@@ -30,8 +30,8 @@ const connect = new ConnectGateway(createExecutionContext(), env);
 
 /** OpenRouter's chat completions by key, as its record seals them. */
 const OPENROUTER: Source = Object.freeze({
-  upstream: { provider: "openrouter", api: "openai-completions",
-              base_url: "https://openrouter.ai/api/v1",
+  upstream: { provider: "openrouter",
+              apis: [{ api: "openai-completions", base_url: "https://openrouter.ai/api/v1" }],
               auth: { header: "authorization", scheme: "Bearer" } },
   endpoints: [{ origin: "https://openrouter.ai", paths: ["/api/v1/chat/completions"],
                 methods: ["POST"] }],
@@ -388,6 +388,34 @@ describe("the gateway Worker", () => {
     // its reservation. Reserved as no router, it is priced as the model it named.
     expect(await settled(true)).toEqual({ state: "unknown" });
     expect(await settled(false)).toMatchObject({ state: "succeeded", cost: 0 });
+  });
+
+  it("meters each call of a source of two APIs on the API whose model call it is, held to " +
+     "that API's models", async () => {
+    const egress = new EgressGateway(createExecutionContext(), env);
+    const both: Source = {
+      upstream: { ...OPENROUTER.upstream as Upstream,
+                  apis: [{ api: "openai-completions", base_url: "https://openrouter.ai/api/v1" },
+                         { api: "anthropic-messages", base_url: "https://openrouter.ai/api" }] },
+      endpoints: [{ origin: "https://openrouter.ai",
+                    paths: ["/api/v1/chat/completions", "/api/v1/messages"], methods: ["POST"] }] };
+    const blob = (await connect.seal("alice", C1, 1, "sk-or", both)).blob;
+    const asked: unknown[] = [];
+    const sent = async (path: string, model: string) => {
+      const answer = await egress.forward("alice", C1, 1, blob, posted(path, JSON.stringify({
+        model, max_tokens: 10, stream: true, messages: [{ role: "user", content: "hi" }] }),
+        { "anthropic-version": "2023-06-01" }), granting(asked), new ReadableStream());
+      await answer.response.text();
+      return [answer.response.status, (JSON.parse(await new Response(answer.outcome).text()) as
+        { state: string }).state];
+    };
+    expect(await sent("/api/v1/messages", "anthropic/claude-opus-5.5"))
+      .toEqual([200, "succeeded"]);
+    expect(asked).toMatchObject([{ model: "anthropic/claude-opus-5.5" }]);
+    // A Claude model is no chat-completions model of the catalog's: refused, never reserved.
+    const [status] = await sent("/api/v1/chat/completions", "anthropic/claude-opus-5.5");
+    expect(status).toBeGreaterThanOrEqual(400);
+    expect(asked).toHaveLength(1);
   });
 
   it("settles a call at the bill its answer reports up to METERED_COST_MAX, and past it " +

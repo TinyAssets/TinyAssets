@@ -18,6 +18,7 @@ import { type Tree, treeAt } from "../../ci/history";
 import VECTORS from "../../ci/keyring-vectors.json" with { type: "json" };
 import { parseRing, sealBlob } from "../../contract/src/envelope";
 import { CONNECTION_BLOB_MAX } from "../../contract/src/limits";
+import { credential } from "../src/credential";
 import { doorbellSecret, sealDoorbell } from "../src/doorbell";
 import * as keyring from "../src/keyring";
 
@@ -36,6 +37,8 @@ const VALUE_BOUND = keyring.binding(VALUE.binding.owner, VALUE.binding.connectio
                                     VALUE.binding.version);
 const CREDENTIAL = VECTORS.gateway.credential as unknown as Parameters<Keyring["seal"]>[2];
 const SECRET = { secret: VECTORS.gateway.credential.secret };
+/** The golden credential as today's code reads it: its one API a row of `apis`. */
+const HELD = credential(VECTORS.gateway.credential);
 const BELL = VECTORS.gateway.doorbell;
 const BELL_BOUND = keyring.wakeBinding(BELL.owner, BELL.subscription, BELL.version);
 const BELL_SECRET = "sk-ant-oat01-" + "v".repeat(40);
@@ -78,11 +81,10 @@ describe("main's golden blobs", () => {
     for (const [ring, kid, blob] of [[ROTATED, "k2", VECTORS.gateway.k2],
                                      [OLD, "k1", VECTORS.gateway.k1],
                                      [RETIRED, "k2", VECTORS.gateway.k2]] as const) {
-      expect(await keyring.open(ring, BOUND, blob))
-        .toEqual({ credential: VECTORS.gateway.credential, kid });
+      expect(await keyring.open(ring, BOUND, blob)).toEqual({ credential: HELD, kid });
     }
     const old = await keyring.open(ROTATED, BOUND, VECTORS.gateway.k1);
-    expect([old.kid, old.credential]).toEqual(["k1", VECTORS.gateway.credential]);
+    expect([old.kid, old.credential]).toEqual(["k1", HELD]);
     expect(old.resealed).toMatchObject({ kid: "k2", version: BOUND.version + 1 });
     const next = await keyring.open(ROTATED, { ...BOUND, version: BOUND.version + 1 },
                                     old.resealed!.blob);
@@ -133,8 +135,7 @@ describe("today's blobs", () => {
 
   it("and main's fresh blobs open on today's", async () => {
     const sealed = await main.keyring.seal(ROTATED, BOUND, CREDENTIAL);
-    expect((await keyring.open(ROTATED, BOUND, sealed.blob)).credential)
-      .toEqual(VECTORS.gateway.credential);
+    expect((await keyring.open(ROTATED, BOUND, sealed.blob)).credential).toEqual(HELD);
     const rung = await main.doorbell.sealDoorbell(OLD, BELL.owner, BELL.subscription,
                                                   BELL.version, BELL_INPUT);
     expect((await keyring.openValue(ROTATED, BELL_BOUND, rung.blob, doorbellSecret))

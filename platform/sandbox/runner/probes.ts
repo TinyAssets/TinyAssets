@@ -28,12 +28,12 @@ import { createInterface } from "node:readline";
 
 import type { ModelScope } from "../../contract/src/egress-scope";
 import { ALL_TRAFFIC, closedNetwork, DNS_SERVERS, EGRESS_ORIGIN, egressBaseUrl,
-         sandboxEnv } from "../../contract/src/egress";
+         sandboxEnv, sealedBase } from "../../contract/src/egress";
 import { EGRESS_BODY_MAX } from "../../contract/src/limits";
 import { AGENTS_DIR, WORKSPACE } from "../../contract/src/paths";
 import { FRAME_UNITS_MAX, readEvent } from "../../contract/src/run-events";
 import type { NetworkDocument } from "../../contract/src/sandbox";
-import { bundledRecords, bundledSources } from "../../sources/src/catalog";
+import { bundledSources } from "../../sources/src/catalog";
 import { runEnv } from "../../sources/src/run-env";
 import { engineHosts, type Served, served, signsIn } from "../../sources/src/served";
 import { SIGNIN_REFUSALS, signinShape } from "../../sources/src/signin";
@@ -196,19 +196,19 @@ const ROUTE_PROBE_MS = COMMAND_MS;
 
 const hex = (bytes: number) => randomBytes(bytes).toString("hex");
 
-/** The sealed API a provider's key goes to, as the gateway's record for it says. */
+/**
+ * The sealed APIs a provider's key goes to, as the gateway's record for it says. A probe run
+ * names no model, so it is given the first (`sealedBase`), whose reply it answers.
+ */
 function sealedScope(provider: string, engine: string): ModelScope {
-  const found = (bundledRecords() as Record<string, unknown>[]).filter((raw) =>
-    raw["provider"] === provider
-    && typeof raw["base_url"] === "string" && Array.isArray(raw["connect"])
-    && (raw["connect"] as string[]).includes("api_key")
-    && Array.isArray(raw["engines"]) && (raw["engines"] as string[]).includes(engine))
-    .sort((a, b) => String(a["id"]).localeCompare(String(b["id"])))[0];
+  const sources = bundledSources();
+  const found = [...sources.ids()].sort().map((id) => sources.get(id)!).find((record) =>
+    record.upstream?.provider === provider && record.connect.includes("api_key")
+    && (record.engines ?? []).includes(engine));
   if (found === undefined) {
     throw new Error(`no gateway record seals ${provider}'s key for ${engine}`);
   }
-  return { api: String(found["api"]), base_url: String(found["base_url"]), endpoints: [],
-           meter: null };
+  return { apis: found.upstream!.apis.map((row) => ({ ...row, meter: null })), endpoints: [] };
 }
 
 /** One probe turn's outcome: its exit, the session it named, whether it gave its final text. */
@@ -259,7 +259,8 @@ async function probeRoute(rec: Served, provider: string,
       // The MCP door answers none (404: no server, so no client starts an OAuth discovery
       // of it); a model request gets its API's minimal valid reply.
       const answer = captured.url.split("?")[0]!.endsWith("/mcp")
-        ? { status: 404, type: "application/json", body: "{}" } : reply(egress.api, captured);
+        ? { status: 404, type: "application/json", body: "{}" }
+        : reply(egress.apis[0]!.api, captured);
       response.writeHead(answer.status, { "content-type": answer.type });
       response.end(answer.body);
     });
@@ -277,12 +278,12 @@ async function probeRoute(rec: Served, provider: string,
   const nonce = `probe${hex(8)}`;
   const engine = runEnv(bundledSources(), rec.id, "api_key");
   const keyed = sandboxEnv([{ connection, provider, egress }], () => hex(16),
-                           { ...engine, run, secret, connection });
+                           { ...engine, run, secret, connection, api: null });
   const placeholder = Object.values(keyed).find((value) => value.startsWith("ta_ph_"))!;
   const names = cli.api_key_env![provider]!;
   const inPath = engine.secret_header === undefined ? secret : undefined;
   const prefix = new URL(egressBaseUrl(connection, names.base_url !== null
-    && names.base === "connection" ? null : egress, run, inPath)).pathname;
+    && names.base === "connection" ? null : sealedBase(egress, null), run, inPath)).pathname;
   const env = Object.fromEntries(Object.entries({ ...engine.env, ...keyed }).map(
     ([name, value]) => [name, local(value)]));
   const first: StartDoc = {

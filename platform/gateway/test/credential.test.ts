@@ -90,11 +90,12 @@ describe("source", () => {
       const record = declared({ id: "local-1", name: "Local", reasoning: false, input: ["text"],
                                 contextWindow: 32000, maxTokens: 4096,
                                 cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
-      return { ...record, upstream: { ...record.upstream, api } };
+      return { ...record, upstream: { ...record.upstream,
+                                      apis: [{ api, base_url: "https://llm.example.com/v1" }] } };
     };
     for (const api of ["anthropic-messages", "google-generative-ai", "openai-completions",
                        "openai-responses"]) {
-      expect(source(on(api), false).upstream.api).toBe(api);
+      expect(source(on(api), false).upstream.apis[0]!.api).toBe(api);
     }
     // Mistral's API has rules, so a built-in Mistral source seals, but no declared adapter:
     // a declared endpoint on it would seal and then never serve.
@@ -104,7 +105,8 @@ describe("source", () => {
   /** A declared endpoint whose one model is `model`. */
   function declared(model: Record<string, unknown>) {
     return {
-      upstream: { provider: "custom", api: "openai-completions", base_url: "https://llm.example.com/v1",
+      upstream: { provider: "custom",
+                  apis: [{ api: "openai-completions", base_url: "https://llm.example.com/v1" }],
                   auth: { header: "authorization", scheme: "Bearer" }, models: [model] },
       endpoints: [{ origin: "https://llm.example.com", paths: ["/v1/chat/completions"],
                     methods: ["POST"] }],

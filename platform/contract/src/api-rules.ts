@@ -31,8 +31,10 @@
  *   (a premium speed or geography, another tier, a non-text output): refused
  *   `egress_unpriced_option` unless absent or each value among `allowed`. One whose
  *   absence leaves the price to the account's own default, which pi-ai cannot price, has
- *   `default_when_absent`: the gateway sets that value (one pi-ai prices) when the call
- *   leaves it out, which changes only how the provider serves the call, never its price.
+ *   `default_when_absent`: on the provider whose page says so (keyed as a free call is, so
+ *   another source of the API, whose absence is its standard, is sent as asked), the gateway
+ *   sets that value (one pi-ai prices) when the call leaves it out, which changes only how
+ *   the provider serves the call, never its price.
  * - `served`: where an answer reports the tier it was served at (an SSE event's JSON, at
  *   any of `paths`), and the values pi-ai prices: an answer served at any other settles
  *   `unknown`, keeping its whole charge; one that reports none settles at `absent` times
@@ -84,6 +86,20 @@ export interface FreeCall {
   readonly says: string;
 }
 
+/**
+ * The value an option is set to when a call leaves it out, on the one provider whose page
+ * says its absence is the account's own default (`default_when_absent`).
+ */
+export interface AbsentDefault {
+  /** The pi-ai provider whose page says so. */
+  readonly provider: string;
+  readonly value: string;
+  /** The provider's page, the day it was read, and what it says, quoted. */
+  readonly cite: string;
+  readonly read: string;
+  readonly says: string;
+}
+
 export interface ApiRules {
   readonly outputs: readonly (readonly string[])[];
   readonly counts: readonly (readonly string[])[];
@@ -105,7 +121,7 @@ export interface ApiRules {
                    readonly absent: number } | null;
   readonly unpriced: readonly { readonly path: readonly string[];
                                 readonly allowed: readonly string[];
-                                readonly default_when_absent?: string }[];
+                                readonly default_when_absent?: AbsentDefault }[];
   readonly served: { readonly paths: readonly (readonly string[])[];
                      readonly priced: readonly string[];
                      /** The multiplier an answer that reports no tier settles at. */
@@ -132,7 +148,10 @@ const COMPLETIONS: ApiRules = Object.freeze({
   usage: Object.freeze([Object.freeze([Object.freeze(["stream_options", "include_usage"]), true] as const)]),
   tools: Object.freeze({ list: Object.freeze(["tools"]),
                          kind: Object.freeze({ field: "type", allowed: Object.freeze(["function"]) }) }),
-  paid: Object.freeze([Object.freeze(["web_search_options"]), Object.freeze(["plugins"])]),
+  // OpenRouter's `deferred_tools` runs a tool loop of several model calls under one
+  // reservation's cap (its usage counts "Upstream model calls the run made").
+  paid: Object.freeze([Object.freeze(["web_search_options"]), Object.freeze(["plugins"]),
+                       Object.freeze(["deferred_tools"])]),
   fallbacks: Object.freeze([Object.freeze(["models"])]),
   model: "model",
   tier: null,
@@ -221,16 +240,31 @@ const ANTHROPIC: ApiRules = Object.freeze({
   tools: Object.freeze({ list: Object.freeze(["tools"]),
                          kind: Object.freeze({ field: "type",
                                                allowed: Object.freeze([null, "custom"]) }) }),
-  paid: Object.freeze([Object.freeze(["mcp_servers"])]),
-  fallbacks: Object.freeze([]),
+  // OpenRouter's Messages API takes its `plugins` (web search and others, billed beyond
+  // tokens), its `deferred_tools` (a tool loop of several model calls) and its fallback lists
+  // (`models`, `fallbacks`), beside Anthropic's own server-side refusal `fallbacks`
+  // (openrouter.ai/docs/api/api-reference/anthropic-messages/create-a-message, read
+  // 2026-11-23).
+  paid: Object.freeze([Object.freeze(["mcp_servers"]), Object.freeze(["plugins"]),
+                       Object.freeze(["deferred_tools"])]),
+  fallbacks: Object.freeze([Object.freeze(["models"]), Object.freeze(["fallbacks"])]),
   model: "model",
   tier: null,
   unpriced: Object.freeze([
     Object.freeze({ path: Object.freeze(["speed"]), allowed: Object.freeze(["standard"]) }),
     Object.freeze({ path: Object.freeze(["inference_geo"]), allowed: Object.freeze(["global"]) }),
+    // OpenRouter serves "the standard tier unless you ask for another one"
+    // (openrouter.ai/docs/guides/features/service-tiers, read 2026-11-23), and does not list
+    // `standard_only` among its values: it is sent as asked.
     Object.freeze({ path: Object.freeze(["service_tier"]),
                     allowed: Object.freeze(["standard_only"]),
-                    default_when_absent: "standard_only" }),
+                    default_when_absent: Object.freeze({
+                      provider: "anthropic", value: "standard_only",
+                      cite: "https://platform.claude.com/docs/en/api/service-tiers",
+                      read: "2026-11-23",
+                      says: "\"auto\" (default) - Uses the Priority Tier capacity if available, " +
+                            "falling back to your other capacity if not",
+                    }) }),
   ]),
   served: Object.freeze({ paths: Object.freeze([Object.freeze(["usage", "service_tier"]),
                                                 Object.freeze(["message", "usage",

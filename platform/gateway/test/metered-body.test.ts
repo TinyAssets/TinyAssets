@@ -23,7 +23,7 @@ describe("the clamp in place", () => {
                              model_field: rules.model === null ? null : [rules.model],
                              output_field: rules.outputs[0]! };
       const body = { model: "m", messages: [{ role: "user", content: "hi" }] };
-      const after = clamped(meter, body, 10, api);
+      const after = clamped(meter, body, 10, { provider: "custom", api });
       expect(after, api).toBe(body);
       expect(valueAtPath(after, meter.output_field), api).toBe(10);
     }

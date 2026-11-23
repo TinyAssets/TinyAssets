@@ -23,7 +23,7 @@
  *    hands back the verifier for the gateway's exchange.
  * 3. `commit`: the sealed blob, its kid, the models the gateway's setup check listed (each
  *    its whole pi-ai capability record, which the object has no catalog for: `ModelRecord`),
- *    where sandbox egress may forward its credential (`egress`: the sealed base URL and
+ *    where sandbox egress may forward its credential (`egress`: the sealed base URLs and
  *    endpoints the check read from the blob, no secret; the egress door's admission reads
  *    it) and, for OAuth, the access expiry in clear.
  *    A credential the provider issued whose setup check then failed is committed `failed`:
@@ -781,7 +781,7 @@ export class Connections {
   }
 
   /**
-   * Where an active connection's credential may be forwarded (its sealed base URL and
+   * Where an active connection's credential may be forwarded (its sealed base URLs and
    * endpoints, as its setup check listed them), or null: no such active connection.
    */
   egressScope(id: string): EgressScope | null {

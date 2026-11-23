@@ -321,8 +321,9 @@ function pureStart(engine: string, over: Partial<StartDoc> = {}): StartDoc {
   const made = runEnv(sources, engine, credential);
   const keyed = credential === "vendor_login_in_sandbox" ? {} : sandboxEnv(
     [{ connection, provider: "openai",
-       egress: { api: "x", base_url: "https://api.example/v1", endpoints: [], meter: null } }],
-    () => "4".repeat(32), { ...made, run: PURE_RUN, secret: PURE_SECRET, connection });
+       egress: { apis: [{ api: "x", base_url: "https://api.example/v1", meter: null }],
+                 endpoints: [] } }],
+    () => "4".repeat(32), { ...made, run: PURE_RUN, secret: PURE_SECRET, connection, api: null });
   return { run: PURE_RUN, agent: "main", conversation: `cv_${"c".repeat(32)}`, engine,
            credential, model: null, session_id: null, prompt: "p",
            unattended: false, authority: "owner", lease: { lease_id: "b".repeat(32), epoch: 1 },
@@ -1481,8 +1482,9 @@ describe("an API-key run's base URL", () => {
     const made = runEnv(sources, engine, credential);
     const keyed = credential === "vendor_login_in_sandbox" ? {} : sandboxEnv(
       [{ connection: CONNECTION, provider,
-         egress: { api: "x", base_url: "https://api.example/v1", endpoints: [], meter: null } }],
-      () => "4".repeat(32), { ...made, run: RUN, secret: SECRET,
+         egress: { apis: [{ api: "x", base_url: "https://api.example/v1", meter: null }],
+                   endpoints: [] } }],
+      () => "4".repeat(32), { ...made, run: RUN, secret: SECRET, api: null,
                               connection: credential === "api_key" ? CONNECTION : null });
     return { run: RUN, agent: "main", conversation: `cv_${"c".repeat(32)}`, engine, credential,
              model: null, session_id: null, prompt: "p", unattended: false, authority: "owner",

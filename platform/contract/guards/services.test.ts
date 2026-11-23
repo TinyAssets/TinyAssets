@@ -166,7 +166,7 @@ describe("the services' contracts", () => {
     const shaped = contractShapes(sources);
     const verified = "export interface VerifiedCopy {\n  /** Its models. */\n" +
       "  readonly models: readonly ModelRecord[];\n  readonly resealed?: Resealed;\n" +
-      "  readonly egress: EgressScope;\n}";
+      "  readonly egress: EgressScope | OneApiScope;\n}";
     expect(copies(new Map([["gateway/src/forward.ts", verified]]), new Set(), shaped))
       .toEqual(["gateway/src/forward.ts: VerifiedCopy (the contract's Verified)"]);
     expect(copies(new Map([["doors/src/probe.ts",
