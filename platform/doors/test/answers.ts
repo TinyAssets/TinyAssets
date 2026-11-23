@@ -8,9 +8,10 @@ import type { DoorName } from "../src/tools";
 
 /**
  * What these tests read of the owner's answers past what the doors read (`DoorAnswer`), as the
- * owner's handlers answer them (`owner/src`, which no doors test may import): a test's own
- * reading of the owner, which no deploy pairs with the doors, so the door table declares none
- * of it (`docs/decisions/untangle-2026-11/door-answers.md`).
+ * owner's handlers answer them (`owner/src`, which no doors test may import; each entry held
+ * to the owner's own by `guards/answer-reads.test.ts`): a test's own reading of the owner,
+ * which no deploy pairs with the doors, so the door table declares none of it
+ * (`docs/decisions/untangle-2026-11/door-answers.md`).
  */
 interface TestAnswers {
   readonly grantList: {

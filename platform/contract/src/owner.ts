@@ -18,7 +18,8 @@
  *   egress door's);
  * - where the row declares the answer the doors' code and their app read (`DoorAnswers`, its
  *   fields and their JSON types, which the deploy kit holds across serving versions,
- *   `deploy/handed.ts`), what the doors' code reads of it narrower than those (`answer`: a
+ *   `deploy/handed.ts`, and their compiler finds them read, `doors/guards/answer-reads.test.ts`),
+ *   what the doors' code reads of it narrower than those (`answer`: a
  *   literal, a union's arms, a list's items, an object's fields); where it declares none, an
  *   object they pass on as it came (as JSON, or as an RPC result).
  *

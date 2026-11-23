@@ -27,8 +27,8 @@ const PAGES: Readonly<Record<string, string>> = Object.freeze({
   [CONNECTED_PATH]: "connected.html",
 });
 
-/** The pages' own scripts and style, under `/app/static/`. */
-const STATIC: Readonly<Record<string, string>> = Object.freeze({
+/** The pages' own scripts and style, under `/app/static/` (`STATIC_PREFIX`), by name. */
+export const STATIC: Readonly<Record<string, string>> = Object.freeze({
   "app.js": "text/javascript; charset=utf-8",
   "api.js": "text/javascript; charset=utf-8",
   "view.js": "text/javascript; charset=utf-8",
@@ -37,7 +37,7 @@ const STATIC: Readonly<Record<string, string>> = Object.freeze({
   "app.css": "text/css; charset=utf-8",
 });
 
-const STATIC_PREFIX = `${APP_PATH}/static/`;
+export const STATIC_PREFIX = `${APP_PATH}/static/`;
 
 /**
  * The strict CSP: this origin's own scripts, style and socket, nothing inline, nothing

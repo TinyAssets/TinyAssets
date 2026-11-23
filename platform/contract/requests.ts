@@ -17,7 +17,8 @@
  *   fields, then its optional ones, each its schema's type, an object's or a list's contents
  *   left to `DoorTypes`; null too where it is `nullable`), and what the owner still answers
  *   that they read no more (`UnreadAnswers`, its `unread` fields), so `tsc` holds the doors'
- *   reads and the owner's handlers to the row.
+ *   reads and the owner's handlers to the row; and each tool's door, by the tool's name
+ *   (`ToolDoors`), which the owner app's `tools/<name>` routes answer.
  * - `contract/src/owner-doors.ts`: the owner object's doors as the doors call them
  *   (`OwnerDoors`, `contract/src/owner.ts` says what each part means): each door its row's,
  *   its binding but on an unbound door (`UNBOUND_DOORS`), no request, an optional one, its
@@ -173,6 +174,12 @@ function requestsSource(rows: readonly DoorRow[]): string {
     ...unread.length === 0 ? ["export type UnreadAnswers = Record<never, never>;"]
       : ["export interface UnreadAnswers {", ...unread.map((door) => answerType(door, true)),
          "}"],
+    "",
+    "/** Each tool's door, by the tool's name. */",
+    "export interface ToolDoors {",
+    ...rows.flatMap((row) => row.tool === undefined || row.dropped === true ? []
+      : [`  readonly ${row.tool.name}: "${row.door}";`]),
+    "}",
     "",
   ].join("\n");
 }
