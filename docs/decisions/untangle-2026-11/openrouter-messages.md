@@ -1,130 +1,199 @@
-# openrouter-messages: OpenRouter's Claude models as a record of their own API (2026-11-23)
+# openrouter-messages: one source speaks every API its models speak (2026-11-23)
 
 `untangle/openrouter-messages`, owed by `model-catalog.md` (#5834). pi-ai's catalog holds
 OpenRouter's Claude models (20 in 1.6.0, `anthropic/claude-opus-5.5` and Claude Fable 5.2
 among them) only on `anthropic-messages`, OpenRouter's `/api/v1/messages`. The OpenRouter
-record speaks `openai-completions`, and `modelInfos` keeps the models of the sealed API alone,
-so an OpenRouter user can use none of the strongest Claude models. Directions 1 and 4.
+record spoke `openai-completions` alone, and `modelInfos` kept only the sealed API's models,
+so an OpenRouter user could use none of the strongest Claude models. Directions 1 and 4.
+
+The first build of this PR made a second OpenRouter record. Review (#5837, REQUEST_CHANGES)
+showed that its premise was wrong and that the copy was a band-aid. This file records the
+design built instead.
 
 ## Research (Fact 14), before the design
 
-### How a source declares its API, and whether one may speak two
+### What one vendor is, and what varies by API
 
-- A gateway record names one `upstream` (`contract/src/egress-scope.ts` `Upstream`): one
-  pi-ai provider, one `api`, one `base_url`, one `auth`, and the `endpoints` its secret may
-  reach. The checker (`sources/src/check.ts`) holds it by the gateway's own `source`, and the
-  gateway seals exactly those values with the secret (`credential.ts`).
-- Everything downstream reads that one API: `modelInfos` and the meter's `apiModels` keep the
-  catalog's models on `upstream.api`; a committed connection's `ModelScope` carries one `api`
-  and one learned `meter`; the owner's admission (`owner/src/egress.ts`) and the gateway's
-  `forward` hold every call to that API's rules (`api-rules.ts`).
-- **An engine takes one base URL per connection.** A run's environment gives the engine the
-  door, its run, its connection and the sealed base path (`contract/src/egress.ts`
-  `egressBaseUrl`); pi's record writes it as the provider's `baseUrl` in `models.json`. pi
-  applies a provider's `baseUrl` to every built-in model of the provider (its
-  `models-configuration.md`: "Also applies to the provider's built-in models"; its
-  `provider-composer.ts` `config.baseUrl ?? model.baseUrl`), and `modelOverrides` cannot set
-  one.
-- pi-ai's catalog puts OpenRouter's two APIs at two bases: `openai-completions` at
-  `https://openrouter.ai/api/v1` (397 models), `anthropic-messages` at
-  `https://openrouter.ai/api` (20), each adapter appending its own path (`/chat/completions`,
-  `/v1/messages`). Probed with pi-ai's adapter and no network: on a base of `<door>/api/v1` a
-  Claude model's call goes to `<door>/api/v1/v1/messages`. OpenRouter, asked with no key
-  (2026-11-23): `/api/v1/messages` and `/api/v1/chat/completions` answer 401,
-  `/api/v1/v1/messages` and `/api/chat/completions` 404.
-- So **no one connection can serve both APIs to pi**: its one base reaches one of them. One
-  record speaking both (per-call API dispatch, two meters in a scope) would build a dispatch no
-  run can use; the unit an engine runs on, a key on one API at one base, is a connection as it
-  is. A vendor serving models on two APIs at two bases is two records.
+- A gateway record named one `upstream`: one pi-ai provider, one `api`, one `base_url`, one
+  `auth`, and the `endpoints` its secret may reach. The gateway seals those values with the
+  secret.
+- Downstream, everything read that one API:
+  - `modelInfos` and the meter's `apiModels`;
+  - the committed `ModelScope` (one `api`, one learned `meter`);
+  - the owner's admission and reserve (`owner/src/egress.ts`), and the gateway's `forward`.
+- The fields that change together are the vendor's key: `help_url`, `connect`, `verify_url`,
+  `credit`, `listing`, OAuth with its key exchange, and the `GET` endpoints. Only four things
+  vary by API: its id, its base URL, its learned meter, and the rules a call on it is held to.
+- pi-ai models it the same way: one provider, and each model carries its own `api` and
+  `baseUrl`. OpenRouter's two are `openai-completions` at `https://openrouter.ai/api/v1`
+  (397 models) and `anthropic-messages` at `https://openrouter.ai/api` (20). Each adapter
+  appends its own path: `/chat/completions` and `/v1/messages`.
 
-### OpenRouter's `/api/v1/messages` (its API reference and guides, read 2026-11-23)
+### Why one connection can serve both to a run
 
-- **Auth:** its OpenAPI declares a bearer key for every path; its endpoint reads `x-api-key` as
-  a credential too (no key: "No cookie auth credentials found"; a made-up key, by either
-  header: "User not found.", on `/api/v1/messages`, `/api/v1/key` and `/api/v1/benchmarks`).
-  pi-ai's adapter sends `x-api-key` for these models, so the record seals it there (the
-  gateway's meter test holds a record to the header pi-ai sends).
-- **Usage:** the answer's `usage` carries `cost` and `is_byok` (its non-streaming example; the
-  streamed `message_delta` schema lists neither). pi-ai 1.6.0's adapter, replayed an answer
-  with them in `message_delta`, marks `usage.cost.total` `totalFromProvider`, so the meter
-  settles at OpenRouter's bill (#5834's rule); without them, at the catalog's price. A stream
-  that names Anthropic's own dated id (its `message_start` schema example,
-  `claude-sonnet-4-5-20250929`) and reports no cost is `unknown`: the id is neither the
-  catalog's nor its snapshot. Which one OpenRouter sends is the stage's first call's receipt
-  (owed, `live:`).
-- **Fields beyond Anthropic's:** `models` and `fallbacks` (fallback lists, "Handled by
-  OpenRouter multi-model routing"; Anthropic's own API has a server-side refusal `fallbacks`
-  too, pi's `allowedFallbackModels`), `plugins` (web search and others, billed beyond tokens),
-  `deferred_tools` ("Opt-in versioned router-level deferred-tool protocol", whose usage counts
-  "Upstream model calls the run made": several calls under one reservation's cap), and typed
-  server tools (`tools[].type`, already refused by the API's tool kinds). OpenRouter's chat
-  completions takes `deferred_tools` too, which the completions rules do not refuse.
-- **Service tier:** OpenRouter: "Every request uses the standard tier unless you ask for
-  another one" (but priority endpoints of open-weight models), and its values are `default`,
-  `flex`, `priority`/`fast`, `ultrafast`; the Messages API reports `standard` in
-  `usage.service_tier`. Anthropic: `"auto"` (default) "Uses the Priority Tier capacity if
-  available", hence the rules' `standard_only` when absent. That default is Anthropic's
-  account's, not the API's: sent to OpenRouter it is a value its page does not list.
-- **Routers** (#5827): the catalog has none of OpenRouter's routers on `anthropic-messages`.
-- **Listing** (#5833): `GET /api/v1/models/user` lists all 20 Claude ids, so a connection of
-  the new record lists them all; the same read, credit check and OAuth as the record's.
+- **A run runs one model.** pi's argv is `--provider {provider} --model {model}`
+  (`sources/records/pi.json` `model_argv`; `sandbox/runner/engine.ts` `start.model`). The owner
+  chooses the model where it builds the run's environment (`runs.ts` `choose`, then
+  `launch.ts` `#runConfig`).
+- pi applies its one provider `baseUrl` override to every built-in model of the provider
+  (pi's `models-configuration.md`; `provider-composer.ts` `config.baseUrl ?? model.baseUrl`).
+  So a run's base only has to fit its own model's API: `…/c/<conn>/api` for a Claude run,
+  `…/c/<conn>/api/v1` for a chat run.
+- A base of `/api/v1` sends a Claude call to `/api/v1/v1/messages`. OpenRouter answers that
+  path 404 (probed with no key, 2026-11-23); `/api/v1/messages` answers 401.
+- pi's `models.json` can also set a per-model `baseUrl` (a `models` entry replaces the
+  built-in model whole). That would be the fallback if a run ever switched models partway,
+  and none does.
+- **The door already reaches every sealed path.** A run's path after `/c/<conn>` is the
+  upstream's own path, held to the sealed `endpoints` (`egressTarget`), so
+  `POST /api/v1/messages` is one more endpoint entry.
+- A meter has a method and a path, so a call's method and path say which API's rules and
+  meter apply (`scopeApi`).
+
+### OpenRouter's `/api/v1/messages` (API reference and guides, read 2026-11-23)
+
+- **Auth:** its OpenAPI declares one scheme, a bearer key in `Authorization`, for every path,
+  `/messages` among them. Its Claude Code guide sends `ANTHROPIC_AUTH_TOKEN` as
+  `Authorization: Bearer`. So the source keeps its one documented `auth`.
+  - pi-ai's adapter sends `x-api-key` on this API. The gateway drops the engine's header and
+    sets the sealed one either way.
+  - The meter test holds a record's `auth` to the header pi-ai sends on its first API.
+- **Usage:**
+  - The non-streaming example's `usage` carries `cost` and `is_byok`.
+  - Replayed an answer with them in `message_delta`, pi-ai 1.6.0 marks the total
+    `totalFromProvider`, so the meter settles at OpenRouter's bill (#5834's rule).
+  - With no bill, it settles at the catalog's price.
+  - A stream that names Anthropic's own dated id (the schema's `message_start` example) and
+    reports no cost is `unknown`.
+- **Fields beyond Anthropic's:**
+  - `models` and `fallbacks`: fallback lists. Anthropic's own API has a refusal `fallbacks`
+    too.
+  - `plugins`: billed beyond tokens.
+  - `deferred_tools`: "router-level", and its usage counts "Upstream model calls the run
+    made".
+  - Typed server tools: already refused by the API's tool kinds.
+  - Chat completions takes `deferred_tools` too.
+- **Service tier:**
+  - OpenRouter serves "the standard tier unless you ask for another one". Its values are
+    `default`, `flex`, `priority`/`fast` and `ultrafast`, and the Messages API reports
+    `standard` in `usage.service_tier`.
+  - Anthropic's default `"auto"` "Uses the Priority Tier capacity if available", hence
+    `standard_only` when absent. That is Anthropic's account default, not the API's.
+- **Routers** (#5827): none of OpenRouter's routers are on `anthropic-messages`. A router call
+  on chat completions may route to a Claude model, and it is reserved at the dearest of the
+  connection's models, both APIs' included.
+- **Listing** (#5833): `GET /api/v1/models/user` lists every model, all 20 Claude ids among
+  them. A connection lists its catalog's models on every sealed API that the listing serves.
+
+### What crosses Workers, by the deploy order (gateway, sandbox, owner, doors)
+
+- **The sealed blob.** The gateway opens every blob sealed before (`api`, `base_url`). On a
+  rollback past this release, the gateway before must open what this one sealed. The keyring
+  guard holds both (`guards/keyring-main.test.ts`).
+- **The seal input.** The doors hand it to the gateway (`source`, `keySource`,
+  `keyExchangeSource`). The gateway deploys first, so it reads the doors' version before.
+- **The setup check's answer** (`verify` → doors → `connectionCommit`). The gateway deploys
+  before the owner, so while the stage serves the owner before, that owner parses the new
+  gateway's answer with strict shapes (`egressScope`, `checkedRecord`).
+- **The stored scope and models.** Each owner row holds the scope its connect committed. The
+  owner reads rows written before.
+- `handed.json` lists none of these inner shapes (their parsers check them in code), so
+  `deploy/guards/handed.test.ts` does not hold them. This PR holds them as described above.
 
 ### The stage's connection
 
-Its blob was sealed with the record's endpoints: `POST /api/v1/chat/completions` and `GET`s of
-`/api/v1/models/user`, `/api/v1/benchmarks`, `/api/v1/key`. It does not allow
-`/api/v1/messages`, and a reseal (the keyring's rotation) keeps the plaintext as sealed, so no
-existing connection can reach it. With this design the stage's OpenRouter connection is left
-as it is; the Claude models come with a connect of the new record (a key of its own by OAuth,
-or the same key pasted).
+- Its blob was sealed with `POST /api/v1/chat/completions` and three `GET`s, so it cannot reach
+  `/api/v1/messages`.
+- A reseal (the keyring's rotation) keeps the sealed values. The stored models are the
+  connect's.
+- So the stage reconnects OpenRouter once, and that connection lists both APIs' models.
 
 ## Design
 
-1. **`openrouter_messages`, a second OpenRouter record** (data only): `anthropic-messages` at
-   `https://openrouter.ai/api`, its key in `x-api-key`, `POST /api/v1/messages` and the same
-   three reads, `verify_url`, `credit`, `listing`, OAuth and help page as the record's, on pi.
-   No routers (none on its API), no batch patterns (none on its API).
-2. **Two records of one provider state the vendor's key reads once each, held equal** by a
-   sources guard (`verify_url`, `credit`, `listing`, `oauth`, `help_url`): the copy is said.
-3. **The guard "restate pi-ai's catalog" holds a record's base URL to its API's models' base**,
-   not the provider's default, which is one API's.
-4. **The Messages rules take OpenRouter's fields:** `plugins` and `deferred_tools` refused as
-   billed beyond what is reserved, `models` and `fallbacks` read as fallback lists; the
-   completions rules refuse `deferred_tools` too.
-5. **A tier set when absent is keyed by the provider whose page says so**, as a free call is:
-   `standard_only` for Anthropic's account default, with its page; OpenRouter's call is sent as
-   asked. The gateway clamps by the sealed upstream (its provider and API).
-6. `schema.ts` says why a vendor's second API is a second record; the checklist names its
-   redirect (none).
+1. **An upstream names its APIs.** `apis: [{ api, base_url }]` sits beside the vendor's
+   `provider`, `auth`, `verify_url` and models.
+   - Every base is at one origin among the endpoints, since a door call names its path alone.
+   - No API appears twice. A declared endpoint speaks one.
+   - Every record moves to `apis`.
+   - OpenRouter lists `openai-completions` at `/api/v1` first and `anthropic-messages` at
+     `/api`, adds `POST /api/v1/messages`, and keeps its one documented Bearer `auth`.
+   - The sources guard holds each API's base to that of its catalog models.
+2. **One seal, one connection.**
+   - `modelInfos` lists the catalog's models on every sealed API, each record naming its API
+     (`ModelRecord.api`, pi-ai's own field).
+   - The scope carries `apis: [{ api, base_url, meter }]` and the one `endpoints` list.
+   - `Meters` learns per API.
+3. **A call's API is the one whose meter its method and path are** (`scopeApi`).
+   - Its rules (query, headers, body), its model's catalog record and the clamp are that
+     API's.
+   - Its model must be one the connection lists on that API (`modelApi`). The owner's reserve
+     refuses another as `egress_unknown_model`, and the gateway refuses it as
+     `unknown_model`.
+   - A call no meter claims (a read, a free call) is held to the rules of every API the scope
+     speaks, any of which may take a value.
+4. **A run is given the base of its model's API** (`sealedBase`, `EngineRun.api` from the
+   chosen model in `launch.ts`).
+   - A run that names no model is given the connection's first API. A record lists first the
+     API its engine's default model speaks.
+   - An API the connection is not sealed for fails loudly.
+5. **Expand, then contract.**
+   - The gateway reads both spellings: blobs and seal inputs.
+   - The owner reads both spellings: stored and handed scopes, and models naming no API on a
+     source of one API.
+   - The gateway still seals a source of one API in the old spelling (`sealedForm`), so the
+     gateway before opens it.
+   - The gateway still hands a source of one API in the old spelling (`handed`), so the owner
+     before takes it.
+   - A source of several APIs, which only this release's records make, is sealed and handed
+     as it is.
+   - The contract step is owed below.
+6. **The API rules take OpenRouter's fields** (kept from the first build, which review
+   confirmed):
+   - `plugins` and `deferred_tools` are refused on the Messages API;
+   - `deferred_tools` is refused on chat completions;
+   - `models` and `fallbacks` are read as fallback lists;
+   - `standard_only` when absent is keyed to provider `anthropic` with its page
+     (`AbsentDefault`), and `clamped` takes the call's provider and API.
 
 ## Problems found
 
-- `api-rules.ts` `default_when_absent` set one provider's account default on every source of
-  the API. Fixed: keyed by provider, with its page.
-- `ANTHROPIC.fallbacks` was empty, though Anthropic's own API and OpenRouter's take a
-  fallback list. Fixed.
-- OpenRouter's `plugins` and `deferred_tools` on the Messages API, and `deferred_tools` on chat
-  completions, passed the paid-tool check. Fixed.
-- `sources.test.ts` held a record's base URL to the provider's default base, one API's: a
-  second API's record could not restate the catalog. Fixed.
+- **One API per upstream, scope and meter.** A vendor whose models speak two APIs could list
+  only one API's models. The first build of this PR then made two records, and its guard held
+  the copied reads equal. Fixed: one upstream names its APIs.
+- **The run's base was the sealed base, one per connection.** Fixed: the base of its model's
+  API.
+- **`default_when_absent` set Anthropic's account default on every source of the API.** Fixed:
+  keyed by provider.
+- **`ANTHROPIC.fallbacks` was empty**, though both vendors take fallback lists. Fixed.
+- **Unbilled fields passed the paid-tool check.** OpenRouter's `plugins` and `deferred_tools`
+  (Messages), and `deferred_tools` (chat completions). Fixed.
+- **The sources guard held a record's base to the provider's default base**, one API's. Fixed.
+- **`owner/src/egress.ts` re-checked that a scope's API has rules**, which the scope's parse
+  already holds. Removed.
 
 ## Left, with reasons
 
-- Two connects for one vendor: a user who connected OpenRouter gets the Claude models only by
-  connecting the new record. One connect sealing a key for each of a vendor's records needs
-  the key exchange to seal twice (its code is single-use), a gateway change of its own. Owed.
-- The engine pin: pi 1.4.0 (`sources/locks/pi`) carries pi-ai 1.4.0's 15 Claude models, so 5
-  of the 20 the gateway lists are unknown to the run's engine until pi moves; as for the 55
-  chat models #5834 added. Its own record.
-- A metered call's `anthropic-beta` is dropped (the API's rule: a beta can widen a call past
-  its reservation), on Anthropic's own source as here; pi-ai sends two betas with the newest
-  models' bodies. The rule is the API's, not this PR's; the stage's first call says whether
-  OpenRouter needs them (owed with the receipt).
+- **The route probe runs each engine with no model**, so it probes a source's first API alone.
+  A probe per API needs a model per API in the probe's start; the live line covers the
+  Messages API.
+- **pi 1.4.0's catalog** (`sources/locks/pi`) has 15 of the 20 Claude models, so 5 are
+  unknown to the run's engine until pi moves. That is the same as #5834's 55 chat models, and
+  pi's own record moves it.
+- **A metered call's `anthropic-beta` is dropped**, by the API's rule. That is so on Anthropic's
+  own source too. The stage's call says whether OpenRouter needs it.
+- **A pi run's own `GET {base}/models/user` is refused on a Claude run**, whose base is `/api`.
+  pi then lists every OpenRouter model (its `providers.md`).
+- **Claude Code on an OpenRouter key** is not in this PR. The Messages API makes it possible,
+  but OpenRouter's `engines` stay `["pi"]`, and Claude Code's `api_key_env` names `anthropic`
+  alone.
 
 ## Owed
 
-- [ ] live: connect `openrouter_messages` on the stage and run one call on
-  `anthropic/claude-opus-5.5`: its receipt says the settle (the bill, the catalog price or
-  `unknown`), whether the dropped betas or the `x-api-key` read refuse it.
-- [ ] untangle/connect-apis: one connect of OpenRouter seals its key for both records, so a
-  user who connects OpenRouter once gets its strongest models (Direction 4).
+- [ ] live: reconnect OpenRouter on the stage (its blob lacks `/api/v1/messages`), then run one
+  call on `anthropic/claude-opus-5.5`. Its receipt says the settle (the bill, the catalog price
+  or `unknown`) and whether the dropped betas refuse it.
+- [ ] untangle/apis-contract: once the stage serves only this release's gateway and owner,
+  seal and hand every source in the `apis` spelling (`sealedForm`, `handed` go). Once a
+  keyring sweep has resealed every blob and the owner has rewritten its stored scopes and
+  tagged its stored models, drop the old spelling's readers (`modelUpstream`, `egressScope`)
+  and `ModelRecord.api`'s absence.

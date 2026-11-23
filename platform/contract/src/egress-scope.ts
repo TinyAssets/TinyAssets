@@ -272,9 +272,10 @@ function upstreamApis(value: unknown, endpoints: readonly Endpoint[]): readonly 
 
 /**
  * A model source's upstream; a declared endpoint (`custom`) speaks one API, one with a
- * declared adapter. One sealed (or handed for sealing) before an upstream named its APIs
- * (`api`, `base_url`) is read as its one row: a blob is resealed as read (`keyring.ts`), so the
- * old spelling goes once the keyring's sweep has resealed every blob.
+ * declared adapter. One spelled as before an upstream named its APIs (`api`, `base_url`) is
+ * read as its one row: blobs sealed so, sources the doors' version before hands, and those the
+ * gateway still seals so (`gateway/src/credential.ts` `sealedForm`), until no rollback needs
+ * it.
  */
 function modelUpstream(value: unknown, endpoints: readonly Endpoint[]): Upstream {
   const old = object(value) && "api" in value;
@@ -728,7 +729,7 @@ export function egressScope(value: unknown): EgressScope {
 }
 
 /** The origin every call on `scope` goes to: its APIs' one origin (`upstreamApis`). */
-export function scopeOrigin(scope: EgressScope): string {
+function scopeOrigin(scope: EgressScope): string {
   return new URL("kind" in scope ? scope.base_url : scope.apis[0]!.base_url).origin;
 }
 
