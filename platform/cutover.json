@@ -393,6 +393,7 @@
         { "edit": "scripts/canary_handles.json", "names": ["\"old\"", "scripts/mcp_public_canary.py", "tests/test_handles_canary.py", "platform/cutover.json"], "what": "the old stack's record, by which the platform's canary knows the platform dark" },
         { "edit": "platform/deploy/canary.ts", "names": ["oldAnswers", "sides.old"], "what": "the dark side: no handback is left to give the routes back to the old stack" },
         { "edit": "platform/deploy/alarm.ts", "names": ["dark: the old stack serves"], "what": "the alarm's dark stand-down, with the canary's dark side" },
+        { "edit": "platform/deploy/guards/handed.test.ts", "names": ["CUTOVER_JSON", "platform/cutover.json"], "what": "the cutover's exception, the doors and shapes its change takes out, which the cutover's own PRs need and nothing after" },
 
         { "delete": ".github/workflows/restart-daemon.yml", "what": "restarts the old stack on its untouched volumes after a handback (checklist.md, the handback's step 2), so it stays until the hold ends; at the cutover it loses its converge step (below)" },
         { "delete": "scripts/retire_cheat_loop_deploy_fence.py", "what": "restart-daemon.yml's host fence" },

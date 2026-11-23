@@ -17,8 +17,11 @@
  * and a door to `dropped: true`, which the owner takes and the doors' `OwnerDoors` lacks. It
  * goes once the doors the stage serves hand it no more (expand, then contract): the base
  * branch is not what the stage serves, so that wait is the change's own, named in its
- * decision log. A door's request read by its own module (`loose`) is its module's, and not
- * held here. The base is `ci/history.ts`'s.
+ * decision log. The one exception is the cutover's: the doors and shapes the base's manifest
+ * (`cutover.json`) names in its `cutover` phase's edits of the two files may go at once, since
+ * its change lands after the import window closes (tasks.md §9 step 15), when nothing calls
+ * them. A door's request read by its own module (`loose`) is its module's, and not held here.
+ * The base is `ci/history.ts`'s.
  */
 import { describe, expect, it } from "vitest";
 
@@ -31,6 +34,7 @@ import { WORKERS } from "../facts";
 
 const BINDINGS_JSON = "platform/contract/bindings.json";
 const DOORS_JSON = "platform/contract/doors.json";
+const CUTOVER_JSON = "platform/cutover.json";
 
 /** What the doors hand on one side of the change: the binding's shapes and the door table. */
 interface Side {
@@ -38,8 +42,14 @@ interface Side {
   readonly doors: readonly DoorRow[];
 }
 
-/** The base's side: its shapes are null on a base from before they were data. */
-type BaseSide = Omit<Side, "shapes"> & { readonly shapes: Side["shapes"] | null };
+/**
+ * The base's side: its shapes are null on a base from before they were data; and the doors and
+ * shapes its cutover manifest takes out, by name.
+ */
+type BaseSide = Omit<Side, "shapes"> & {
+  readonly shapes: Side["shapes"] | null;
+  readonly cutover: { readonly doors: ReadonlySet<string>; readonly shapes: ReadonlySet<string> };
+};
 
 /** The fields one side hands, always and sometimes, and the ones it takes and drops. */
 interface Fields {
@@ -113,15 +123,15 @@ function handedProblems(base: BaseSide, head: Side): string[] {
   const shapes = base.shapes === null ? []
     : Object.entries(base.shapes).flatMap(([name, before]) => {
       const after = head.shapes[name];
-      return after === undefined
-        ? [`the binding shape ${name} is gone, which the doors' version before hands`]
+      return after === undefined && base.cutover.shapes.has(name) ? []
+        : after === undefined ? [`the binding shape ${name} is gone, which the doors' version before hands`]
         : fieldProblems(`the binding shape ${name}`, shapeFields(before), shapeFields(after));
     });
   const rows = new Map(head.doors.map((row) => [row.door, row]));
   return [...shapes, ...base.doors.flatMap((before) => {
     const after = rows.get(before.door);
     return after !== undefined ? argsProblems(before.door, before.args, after.args)
-      : before.dropped === true ? []
+      : before.dropped === true || base.cutover.doors.has(before.door) ? []
         : [`the door ${before.door} is gone, which the doors' version before calls: drop it ` +
            "first (the owner takes it, the doors call it no more), and take it out once the " +
            "doors the stage serves call it no more"];
@@ -135,8 +145,19 @@ function baseSide(base: string): BaseSide {
   if (table === null) {
     throw new Error(`${base} holds no ${DOORS_JSON}`);
   }
+  if (shapes === null && /^import .* from ".*\.json"/m
+    .test(fileAt(base, "platform/contract/src/binding.ts") ?? "")) {
+    throw new Error(`${base}'s binding parsers read a shapes file that is not ${BINDINGS_JSON}`);
+  }
+  const manifest = fileAt(base, CUTOVER_JSON);
+  const edits = manifest === null ? [] : (JSON.parse(manifest) as {
+    phases: { cutover: { entries: { edit?: string; names?: string[] }[] } } })
+    .phases.cutover.entries;
+  const cut = (path: string) => new Set(edits.flatMap((entry) => entry.edit === path
+    ? (entry.names ?? []).map((name) => name.replace(/^"(.*)"$/, "$1")) : []));
   return { shapes: shapes === null ? null : (JSON.parse(shapes) as typeof bindings).shapes,
-           doors: (JSON.parse(table) as { doors: DoorRow[] }).doors };
+           doors: (JSON.parse(table) as { doors: DoorRow[] }).doors,
+           cutover: { doors: cut(DOORS_JSON), shapes: cut(BINDINGS_JSON) } };
 }
 
 const HEAD: Side = { shapes: bindings.shapes, doors: doors.doors as unknown as DoorRow[] };
@@ -151,8 +172,9 @@ describe("what the doors hand the owner, against the base branch", () => {
 
   const ACCOUNT: Shape = { required: ["owner", "caller", "origin"],
                            optional: ["source", "control"] };
-  const side = (account: Shape, rows: readonly DoorRow[] = []): Side =>
-    ({ shapes: { account }, doors: rows });
+  const NONE = { doors: new Set<string>(), shapes: new Set<string>() };
+  const side = (account: Shape, rows: readonly DoorRow[] = []): BaseSide & Side =>
+    ({ shapes: { account }, doors: rows, cutover: NONE });
   const door = (args: DoorArgs): DoorRow =>
     ({ door: "fileStat", class: "read", capability: "read_graph", args });
   const fields = (required: string[], optional: string[], more: Partial<Args> = {}): Args => ({
@@ -191,7 +213,7 @@ describe("what the doors hand the owner, against the base branch", () => {
     expect(handedProblems(side(required), side(ACCOUNT))).toEqual([]);
     expect(handedProblems(side(ACCOUNT), { shapes: {}, doors: [] }))
       .toEqual(["the binding shape account is gone, which the doors' version before hands"]);
-    expect(handedProblems({ shapes: null, doors: [] }, side(ACCOUNT))).toEqual([]);
+    expect(handedProblems({ shapes: null, doors: [], cutover: NONE }, side(ACCOUNT))).toEqual([]);
   });
 
   it("refuses a door gone, and a request field it no longer takes or newly requires", () => {
@@ -216,6 +238,12 @@ describe("what the doors hand the owner, against the base branch", () => {
       .toHaveLength(1);
     expect(handedProblems(base, side(ACCOUNT, [door(fields(["path"], ["etag", "max"]))])))
       .toEqual([]);
+    // What the base's cutover manifest takes out goes at once; nothing else it names does.
+    const cutover = { ...base, cutover: { doors: new Set(["fileStat"]),
+                                          shapes: new Set(["account"]) } };
+    expect(handedProblems(cutover, { shapes: {}, doors: [] })).toEqual([]);
+    expect(handedProblems(cutover, side(ACCOUNT, [door(fields(["path", "etag"], []))])))
+      .toHaveLength(1);
     // A door that reads its request no more, or leaves it to its module, refuses nothing here.
     expect(handedProblems(base, side(ACCOUNT, [door("none")]))).toEqual([]);
     expect(handedProblems(base, side(ACCOUNT, [door("loose")]))).toEqual([]);

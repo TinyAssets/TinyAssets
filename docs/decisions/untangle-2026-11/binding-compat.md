@@ -61,7 +61,8 @@ and nothing caught it but a reviewer's chance read.
   shape's `dropped` fields and a request's `dropped` fields, taken and left out by the owner
   (`fields`, `requestFields`), listed by no tool and no request type; and a door marked
   `dropped: true`, which the owner still takes and the doors' `OwnerDoors` lacks, so `tsc`
-  refuses a doors call of it. Each goes once the doors the stage serves hand it no more.
+  refuses a doors call of it, while its `DoorTypes` entry stays for the owner's handler (the
+  generated `Dropped`). Each goes once the doors the stage serves hand it no more.
   `HANDED_BEFORE` was the first instance, as a special case in code.
 - **The guard** (`deploy/guards/handed.test.ts`, beside `forward.test.ts`): against the base
   branch, the head owner takes every door the base's table has (one the base marks dropped may
@@ -70,7 +71,14 @@ and nothing caught it but a reviewer's chance read.
   them; and requires no field the base's doors do not always hand. A request split by who asks
   is held side by side. It states its premise: the owner deploys before the doors (`WORKERS`).
   A loose door's request is its module's, unheld here (owed below). A base before
-  `bindings.json` holds no shapes, so this PR's base holds the door table alone.
+  `bindings.json` holds no shapes, so this PR's base holds the door table alone; a base whose
+  parsers import a shapes file elsewhere fails it.
+- **The cutover's exception, the one** (review): the doors and shapes the base's manifest names
+  in its `cutover` phase's edits of `doors.json` and `bindings.json` (the eight import rows,
+  `import` and `import_bundle`) may go at once. Its deletion lands in the window's last step,
+  after the importer, their one caller, has closed (tasks.md §9 step 15), and in two or three
+  PRs, so no "head without a manifest" test would do. Nothing else they name loosens; the
+  manifest's hold phase takes the exception out.
 - **Why not a recorder replaying the base's calls.** The recorders are CI's, heavy, and run
   each tree on its own; a replay needs the base's binder run with credentials. The base's data,
   read by `fileAt`, is the base's sent shape exactly, since the binder builds every binding
@@ -108,9 +116,8 @@ and nothing caught it but a reviewer's chance read.
   change's own, as this PR's was: its decision log names the serving commit. The kit's plan
   holding the run against the serving versions is owed below.
 - **A whole binding shape gone** has no dropped step: a kind is handed by its doors, and the
-  shape goes when they do. The one planned is the cutover's import kind, with its rows; the
-  cutover's change marks the rows dropped a deploy ahead or settles it in its window, its
-  manifest naming both files.
+  shape goes when they do. The one planned is the cutover's import kind, with its rows, which
+  the cutover's exception above lets go.
 - **A field's schema** (its type, its grammar) is not held: a door's handler and a binding's
   grammar check values, and the guard holds names. `bindingKind`'s markers are not held either.
 - **A request field an MCP client cached from an older `tools/list`** may come long after a
