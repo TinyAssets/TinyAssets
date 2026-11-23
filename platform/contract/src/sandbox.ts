@@ -232,12 +232,12 @@ export interface SandboxService {
   cancel(owner: string, request: { readonly run: string }):
     Promise<{ readonly cancelled: boolean }>;
   /**
-   * The lease is over: no run lives under it. The sandbox Worker pauses that sandbox at
-   * once unless a run started in it since (the zero idle tail, ADR-039 decision 2.16; a
-   * paused sandbox costs nothing and keeps its memory, files and sign-ins). The Worker
-   * keeps asking E2B until the pause lands, and reaps on its own a sandbox idle for a
-   * lease's TTL (a release that never reached it), so an idle sandbox is never left to its
-   * ceiling.
+   * The lease is over: no job stands under it. The sandbox Worker pauses that sandbox once
+   * nothing lives in it (a stopped job of the lease may still be ending), unless a job
+   * launched in it since (the zero idle tail, ADR-039 decision 2.16; a paused sandbox costs
+   * nothing and keeps its memory, files and sign-ins). The Worker keeps asking E2B until the
+   * pause lands, and reaps on its own a sandbox idle for a lease's TTL (a release that never
+   * reached it), so an idle sandbox is never left to its ceiling.
    */
   release(owner: string, request: { readonly lease_id: string }):
     Promise<{ readonly paused: boolean }>;

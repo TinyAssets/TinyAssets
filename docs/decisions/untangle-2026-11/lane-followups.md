@@ -88,7 +88,8 @@ release.
    (`#later`), and pauses once nothing lives. The owner gives a lease back only once no job of
    it stands, so a job live then is one of the lease ending. A job launched in the sandbox since
    ends the ask (`#launch` already clears `releasing`). That replaces "a live run means it is no
-   longer released", which was a stand-in for "a run started since".
+   longer released", which was a stand-in for "a run started since". The contract's `release`
+   (`contract/src/sandbox.ts`) and the owner's list of sandbox calls say so (review).
 
 ## Found and left
 
