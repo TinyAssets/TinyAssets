@@ -638,7 +638,7 @@ describe("listing", () => {
     }
   });
 
-  it("answers the owner's version before's strength read with the scored models alone",
+  it("answers an owner before #5833's strength read with the scored models alone",
      async () => {
     expect(await read("sk-listed", LISTED, READ, strength)).toEqual({ scores: [
       { id: "nvidia/nemotron-3.5-super-vl:free", score: 13.6 }] });

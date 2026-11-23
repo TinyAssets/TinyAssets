@@ -653,9 +653,9 @@ export async function listing(env: KeyringEnv, bound: Binding, blob: unknown,
 }
 
 /**
- * The owner's version before's read of the same listing (`strength_read`, its score path
- * required): the scored models alone. It goes once the stage serves no owner that calls it
- * (`untangle-2026-11/served-models.md`).
+ * The read of the same listing an owner before #5833 called (`strength_read`, its score path
+ * required, which the owner hands no more): the scored models alone. It goes once the stage
+ * serves an owner whose shapes mark it so (`untangle-2026-11/served-models-contract.md`).
  */
 export async function strength(env: KeyringEnv, bound: Binding, blob: unknown,
                                value: unknown):
