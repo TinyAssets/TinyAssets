@@ -402,6 +402,19 @@ test("the owner makes an agent, starts a run and sees its live frames and its re
   await page.locator(".said.agent", { hasText: "Hello from pi" }).waitFor();
   assert.match(await page.locator("main").innerText(), /Run succeeded on pi/);
   await shot("agent");
+  // A run ended for a code with no words of its own shows the code as it came.
+  await page.getByPlaceholder("Say something to helper").fill("again");
+  await page.getByRole("button", { name: "Send" }).click();
+  let again;
+  for (let i = 0; i < 100 && again === undefined; i++) {
+    again = (await starts()).find((each) => each.run !== start.run);
+    if (again === undefined) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+  await report(again, { frames: [], end: { exit_code: 1 } });
+  await page.locator(".said.agent", { hasText: "(exit)" }).waitFor();
+  assert.match(await page.locator("main").innerText(), /Run failed on pi: exit/);
 });
 
 test("the agent form offers a subscription signed in inside the sandbox, beside an API key " +
@@ -536,6 +549,7 @@ test("a sign-in that could not start says why in plain words, in view of its but
   const script = (answer) => mf.dispatchFetch(`https://e2e.internal/script/${WHO}`, {
     method: "POST", body: JSON.stringify({ signinAnswer: answer }) });
   // A short window, so the button is well below the top of the page, as on a phone.
+  const was = page.viewportSize();
   await page.setViewportSize({ width: 400, height: 500 });
   await script({ started: false, code: "sandbox_unconfigured" });
   try {
@@ -552,9 +566,12 @@ test("a sign-in that could not start says why in plain words, in view of its but
     const { top, bottom } = await message.evaluate((el) => el.getBoundingClientRect());
     assert.ok(top >= 0 && bottom <= 500, `the refusal is out of view (${top} to ${bottom})`);
     assert.ok(await page.evaluate(() => window.scrollY > 0), "the page was not scrolled");
+    // Held in view, so the owner can put it away.
+    await message.getByRole("button", { name: "Dismiss" }).click();
+    await message.waitFor({ state: "detached" });
   } finally {
     await script({ started: true });
-    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.setViewportSize(was);
   }
 });
 

@@ -1063,10 +1063,15 @@ describe("the deploy kit's facts", () => {
         "the control mode's --replace gives the whole record");
       expect(w.kv.get(`${CONTROL_NS}/${CONTROL_KEY}`)).toBe(held);
     }
-    // A record they take is left as it is.
-    const w = world({ held: true });
-    await runMode(w, "dark", ["--yes"]);
-    expect(JSON.parse(w.kv.get(`${CONTROL_NS}/${CONTROL_KEY}`)!)).toEqual(DARK);
+    // A record they take is left as it is: the founder's own numbers, or none of the sandbox's.
+    for (const kept of [{ ...DARK, sandbox_runtime_ceiling_s: 86_400 },
+                        Object.fromEntries(Object.entries(DARK)
+                          .filter(([key]) => !key.startsWith("sandbox_")))]) {
+      const w = world({ held: true });
+      w.kv.set(`${CONTROL_NS}/${CONTROL_KEY}`, JSON.stringify(kept));
+      await runMode(w, "dark", ["--yes"]);
+      expect(w.kv.get(`${CONTROL_NS}/${CONTROL_KEY}`)).toBe(JSON.stringify(kept));
+    }
   });
 
   it("prints the import job's names for its bundle, each storage this kit makes, and the doors",
@@ -5436,7 +5441,7 @@ const DARK_FRESH = [
   ...WORKERS.flatMap((worker, at) => [onceLine(worker, FIRST, true),
                                        readBack(worker, [MADE_ID(at + 1), 100])]),
   "write the control record closed (outside off, canary none, inbound off, the founder's " +
-  "tier numbers): the API answered there is none",
+  "tier numbers, the sandbox's at E2B Hobby's): the API answered there is none",
   `E2B lifecycle webhook ${E2B_HOOK.url}: registered, disabled`,
 ];
 

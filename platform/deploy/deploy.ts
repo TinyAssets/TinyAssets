@@ -2173,7 +2173,7 @@ const control = step<"cloudflare" | "account" | "ids">(async ({ run, say }, got)
     : await got.cloudflare.text(got.account, id, CONTROL_KEY);
   if (held === undefined) {
     say("write the control record closed (outside off, canary none, inbound off, the " +
-        "founder's tier numbers): the API answered there is none");
+        "founder's tier numbers, the sandbox's at E2B Hobby's): the API answered there is none");
     if (run.apply) {
       await putOrStop(got, id!, CONTROL_KEY, JSON.stringify(DARK_CONTROL));
     }

@@ -52,7 +52,10 @@ of `platform/deploy/checklist.md` set them. The stage was unblocked by hand with
    the checklist's step 5 and the limits audit's two rows, which now name the dark record's values.
 3. **Guard:** `deploy/guards/deploy.test.ts`, "writes the dark record": the record `dark` writes
    parses with its sandbox numbers present. Mutations: dropping one number fails it (the record is
-   malformed whole); dropping all three fails it (`sandbox` null).
+   malformed whole); dropping all three fails it (`sandbox` null). "Stops loudly on a held
+   record" now holds a founder's record (a raised ceiling, and one with no sandbox numbers) kept
+   byte for byte; it held the dark record before, so writing over it could not fail it.
+   Mutation (review): the kit writing over any record it takes fails it.
 
 ## 2. The owner app hid a start's refusal
 
@@ -64,16 +67,22 @@ failed for a start code said only "(the run failed)" in Talk.
 **Decided.**
 1. **The notice stays in view** (`app.css`, `#notice` sticky at the top of the view): the one
    fix behind every action's answer, wherever its button is, with no per-action slot. It was
-   already announced (`role="status"`, `aria-live="polite"`).
+   already announced (`role="status"`, `aria-live="polite"`). Held in view, it lies over the
+   page's top as the owner scrolls, so every answer carries a Dismiss (`say()`), as the next
+   screen clears it.
 2. **One map of start codes to words** (`NOT_STARTED`, keyed by `START_CODES`), used by the
    sign-in's refusal and by Talk's run line and reply (`runWhy`: the run's own error, else its
-   start code's words). The sign-in's own `sandbox_waiting` special case went into it. A code
-   outside the map is shown as it came.
+   code's words, `inWords`). The sign-in's own `sandbox_waiting` special case went into it. A
+   code outside the map is shown as it came, a run's too (`exit`, `cancelled`), where it had
+   said nothing. `doors/test/app-pages.test.ts` holds the map's keys to `START_CODES`, as it
+   holds the sign-in refusals' words to the records'.
 3. **Test:** `doors/test/app.e2e.mjs`, "a sign-in that could not start says why in plain words,
    in view of its button": a 400 by 500 window, the page scrolled to the button, the fake
    sandbox scripted to answer `sandbox_unconfigured` (a harness door, `e2e-entry.ts`
    `/script/<owner>`). Mutations: the notice not sticky fails it ("out of view"); the raw code
-   restored fails it.
+   restored fails it; Dismiss doing nothing fails it. The run test's second run, ended
+   `exit 1`, fails with the run's code dropped; a start code missing from the map fails
+   `app-pages.test.ts`.
 
 **Left.** Past runs shows `state (code)` in its table, a record of codes. It is not an action's
 answer, and words there would not fit a cell.

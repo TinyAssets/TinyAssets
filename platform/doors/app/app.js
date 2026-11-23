@@ -49,15 +49,23 @@ const NOT_STARTED = Object.freeze({
   sandbox_lost: "the sandbox it was to join had already gone: start it again",
 });
 
-/** Why a run stopped short, in plain words: the run's own error, else its start code's. */
+/** A code in plain words: a start code's, else the code as it came. */
+function inWords(code) {
+  return NOT_STARTED[code] ?? code;
+}
+
+/** Why a run stopped short, in plain words: the run's own error, else its code's. */
 function runWhy(run) {
-  return run.error ?? NOT_STARTED[run.code] ?? null;
+  return run.error ?? (run.code ? inWords(run.code) : null);
 }
 
 // -- Messages -------------------------------------------------------------------------
 
+/** An answer in the notice, held in view until the next screen or the owner puts it away. */
 function say(text, kind = "good", ...extra) {
-  fill(notice, h("div", { class: `message ${kind}` }, h("span", {}, text), ...extra));
+  fill(notice, h("div", { class: `message ${kind}` }, h("span", {}, text), ...extra,
+                 h("button", { type: "button", class: "quiet", onclick: () => fill(notice) },
+                   "Dismiss")));
 }
 
 /**
@@ -668,7 +676,7 @@ function signinPanel(record, present, live) {
     const view = await call("signin/start", {
       engine: record.id, ...(mode === "out" ? { mode } : {}) });
     if (view.started === false) {
-      say(`The sign-in could not start: ${NOT_STARTED[view.code] ?? view.code}.`, "bad");
+      say(`The sign-in could not start: ${inWords(view.code)}.`, "bad");
       return;
     }
     await watch(view);

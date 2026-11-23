@@ -6,6 +6,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { HOST } from "../../contract/src/identity";
+import { START_CODES } from "../../contract/src/sandbox";
 
 import { CSP } from "../src/pages";
 import { SIGNIN_REFUSALS, SIGNIN_STATES } from "../../sources/src/signin";
@@ -60,6 +61,13 @@ describe("the owner app's pages", () => {
     const ends = /const SIGNIN_ENDS = Object\.freeze\(\[([^\]]*)\]\)/.exec(app)![1]!;
     expect(JSON.parse(`[${ends}]`)).toEqual(SIGNIN_STATES.filter((state) =>
       !["starting", "open", "code_sent"].includes(state)));
+  });
+
+  it("tell every start code in plain words", async () => {
+    const app = await (await get("/app/static/app.js")).text();
+    const words = /const NOT_STARTED = Object\.freeze\(\{([^}]*)\}\)/.exec(app)![1]!;
+    expect([...words.matchAll(/^\s*(\w+):/gm)].map((match) => match[1]))
+      .toEqual([...START_CODES]);
   });
 
   it("allow this origin's own scripts, style and socket, and nothing inline or framed", () => {
