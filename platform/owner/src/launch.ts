@@ -1178,8 +1178,9 @@ export class Launcher implements RunHost {
 
   /**
    * The API of the model an API-key run is given (`EngineRun.api`), whose base it is handed:
-   * one its connection lists, as its admission chose it in this unit. Null on the vendor's own
-   * sign-in; refused for a model its connection does not list or an API it is not sealed for.
+   * the one its connection lists it on, as its admission chose it in this unit. Null on the
+   * vendor's own sign-in, and for a model its connection does not list on an API it is sealed
+   * for: an API-key run given none `sandboxEnv` refuses.
    */
   #runApi(run: SandboxRun): string | null {
     if (run.connection === undefined) {
@@ -1190,13 +1191,8 @@ export class Launcher implements RunHost {
     const model = this.#o.connections.usable()
       .find((entry) => entry.connection === run.connection)?.models
       .find((entry) => entry.id === run.model);
-    const api = egress === undefined || "kind" in egress || model === undefined ? null
-      : modelApi(egress, model);
-    if (api === null) {
-      throw new Refusal("run_config_invalid", "an API-key run's model is one its connection " +
-                                              "lists, on an API it is sealed for");
-    }
-    return api.api;
+    return egress === undefined || "kind" in egress || model === undefined ? null
+      : modelApi(egress, model)?.api ?? null;
   }
 
   /**

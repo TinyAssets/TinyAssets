@@ -79,6 +79,11 @@ That refusal now says so, with the remedy, on `auto` and on a named engine alike
   runs what `auto` would (for example `~anthropic/claude-fable-latest`, or the `:free` model on
   a key that pays for nothing). That is Direction 4, under the owner's own caps (Fact 15). An
   agent pins a cheaper model by naming it.
+  - Review: the app's agent form (`doors/app/app.js`) writes no `model`, so every agent made
+    there on an engine and a key changes this way, a scheduled one unattended too. The
+    owner's caps (`MODEL_DEFAULTS`) are off by default, so only the vendor's limits bound the
+    rise. The owner sees the model on each run's line and receipt (`runs.model`), and is told
+    nothing else.
 - An explicitly named engine with a named model now runs on a connection that lists that
   model. The model was not checked before, so its calls were refused at the door
   (`egress_unknown_model`). A model no key lists is now refused at admission, saying so, as on
@@ -119,10 +124,11 @@ That refusal now says so, with the remedy, on `auto` and on a named engine alike
    - `choose`, `Chosen` and `Admitted` type `model` as `string`.
    - The `model_unranked` notice applies to every run given a model it did not name.
 2. **A run's base is its model's API's, always.**
-   - `#runApi` returns the API of the model its connection lists. It refuses
-     (`run_config_invalid`) a model the connection does not list, or an API it is not sealed
-     for. Admission chose the model from that list in the same unit, so neither happens
-     unless there is a bug.
+   - `#runApi` returns the API of the model its connection lists, which admission chose
+     from that list in the same unit. Null on the vendor's own sign-in and, only through a
+     bug, for a model the connection does not list: `sandboxEnv` refuses an API-key run given
+     none, the one refusal of that rule (review: a second refusal in `#runApi` was
+     unreachable, so its mutation survived; it went).
    - `sealedBase(egress, api)` takes a string. Its first-API fallback goes.
    - `EngineRun.api` is null on the vendor's own sign-in alone, as `connection` is, and
      `sandboxEnv` refuses an API-key run given none.
@@ -148,7 +154,7 @@ That refusal now says so, with the remedy, on `auto` and on a named engine alike
 - **A named engine's named model was never checked against its connection.** Fixed: the same
   filter.
 - **`#runApi` mapped "a model its connection does not list" to the first API**, a quiet
-  fallback (Fact 8). Fixed: refused.
+  fallback (Fact 8). Fixed: an API-key run given no API is refused (`sandboxEnv`).
 - **The unranked notice said "auto"** for what is now every run's choice. Fixed.
 - **The probe spelled its API twice** (`apis[0]` for the reply, `null` for the base). Fixed:
   once.
