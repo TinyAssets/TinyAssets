@@ -92,7 +92,9 @@ doors version that reads an answer field with an owner that no longer answers it
    `required` and `optional` fields, each schema its JSON type alone (`fieldTypes`, the
    requests' vocabulary, now with `stream`, which no tool's field names, as `bytes`),
    `nullable` where the owner may answer null, and `unread`. One place: the 55 `DoorTypes`
-   answers move in, each at its top level.
+   answers move in, each at its top level. Not `handed.json`, as the owed line had it: a
+   door's answer is its row's, beside its request, and a shape there would be a second file
+   naming the same door.
 2. **`tsc` holds both sides at one commit from it.** `npm run generate` writes `DoorAnswers`
    (what the doors read: the fields, but `unread`) and `UnreadAnswers` (what the owner still
    answers); `DoorAnswer` is the row's, narrowed by `DoorTypes` `answer` only where a JSON
