@@ -1111,8 +1111,8 @@ describe("the deploy kit's facts", () => {
     }
   });
 
-  it("writes the dark record (`control.json`) when none is held, every outside door closed",
-     async () => {
+  it("writes the dark record (`control.json`) when none is held: every outside door closed, " +
+     "the sandbox's numbers set", async () => {
     const w = world();
     await runMode(w, "dark", ["--yes"]);
     const written = [...w.kv].filter(([key]) => key.endsWith(`/${CONTROL_KEY}`))
@@ -1122,6 +1122,8 @@ describe("the deploy kit's facts", () => {
     expect(control).toMatchObject({ outside: "off", ordinary: "canary", canary: [],
                                     inbound: false });
     expect(control?.tiers).not.toBeNull();
+    // With no sandbox numbers, every start is refused `sandbox_unconfigured`.
+    expect(control?.sandbox).not.toBeNull();
   });
 
   it("stops loudly on a held record no reader takes, and never writes over it", async () => {
@@ -1134,10 +1136,15 @@ describe("the deploy kit's facts", () => {
         "the control mode's --replace gives the whole record");
       expect(w.kv.get(`${CONTROL_NS}/${CONTROL_KEY}`)).toBe(held);
     }
-    // A record they take is left as it is.
-    const w = world({ held: true });
-    await runMode(w, "dark", ["--yes"]);
-    expect(JSON.parse(w.kv.get(`${CONTROL_NS}/${CONTROL_KEY}`)!)).toEqual(DARK);
+    // A record they take is left as it is: the founder's own numbers, or none of the sandbox's.
+    for (const kept of [{ ...DARK, sandbox_runtime_ceiling_s: 86_400 },
+                        Object.fromEntries(Object.entries(DARK)
+                          .filter(([key]) => !key.startsWith("sandbox_")))]) {
+      const w = world({ held: true });
+      w.kv.set(`${CONTROL_NS}/${CONTROL_KEY}`, JSON.stringify(kept));
+      await runMode(w, "dark", ["--yes"]);
+      expect(w.kv.get(`${CONTROL_NS}/${CONTROL_KEY}`)).toBe(JSON.stringify(kept));
+    }
   });
 
   it("prints the import job's names for its bundle, each storage this kit makes, and the doors",
@@ -5808,7 +5815,7 @@ const DARK_FRESH = [
   ...WORKERS.flatMap((worker, at) => [onceLine(worker, FIRST, true),
                                        readBack(worker, [MADE_ID(at + 1), 100])]),
   "write the control record closed (outside off, canary none, inbound off, the founder's " +
-  "tier numbers): the API answered there is none",
+  "tier numbers, the sandbox's at E2B Hobby's): the API answered there is none",
   `E2B lifecycle webhook ${E2B_HOOK.url}: registered, disabled`,
 ];
 

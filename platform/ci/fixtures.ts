@@ -13,7 +13,7 @@ import dark from "../deploy/control.json" with { type: "json" };
 
 /**
  * The control record a first deploy writes when there is none (`deploy/control.json`): every
- * outside door closed, no canary owner, and the founder's tier numbers.
+ * outside door closed, no canary owner, the founder's tier numbers and the sandbox's numbers.
  */
 export const DARK = Object.freeze(dark);
 

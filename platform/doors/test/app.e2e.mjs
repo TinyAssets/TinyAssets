@@ -402,6 +402,19 @@ test("the owner makes an agent, starts a run and sees its live frames and its re
   await page.locator(".said.agent", { hasText: "Hello from pi" }).waitFor();
   assert.match(await page.locator("main").innerText(), /Run succeeded on pi/);
   await shot("agent");
+  // A run ended for a code with no words of its own shows the code as it came.
+  await page.getByPlaceholder("Say something to helper").fill("again");
+  await page.getByRole("button", { name: "Send" }).click();
+  let again;
+  for (let i = 0; i < 100 && again === undefined; i++) {
+    again = (await starts()).find((each) => each.run !== start.run);
+    if (again === undefined) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+  await report(again, { frames: [], end: { exit_code: 1 } });
+  await page.locator(".said.agent", { hasText: "(exit)" }).waitFor();
+  assert.match(await page.locator("main").innerText(), /Run failed on pi: exit/);
 });
 
 test("the agent form offers a subscription signed in inside the sandbox, beside an API key " +
@@ -529,6 +542,37 @@ test("the owner signs in to a subscription inside its sandbox: the vendor's page
   await post({ frames: [{ seq: 2, at: 2, event: { type: "ta.signin", state: "expired" } }] });
   await page.locator(".message.bad", { hasText: "The code expired; start again." }).waitFor();
   await card.getByRole("button", { name: /^Sign in/ }).waitFor();
+});
+
+test("a sign-in that could not start says why in plain words, in view of its button",
+     { timeout: 60_000 }, async () => {
+  const script = (answer) => mf.dispatchFetch(`https://e2e.internal/script/${WHO}`, {
+    method: "POST", body: JSON.stringify({ signinAnswer: answer }) });
+  // A short window, so the button is well below the top of the page, as on a phone.
+  const was = page.viewportSize();
+  await page.setViewportSize({ width: 400, height: 500 });
+  await script({ started: false, code: "sandbox_unconfigured" });
+  try {
+    await page.goto(`${ORIGIN}/app#sources`);
+    const card = page.locator(".card", { hasText: "Claude" })
+      .filter({ has: page.locator(".signin") }).first();
+    const button = card.getByRole("button", { name: /^Sign in/ });
+    await button.scrollIntoViewIfNeeded();
+    await button.click();
+    const message = page.locator("#notice .message.bad",
+                                 { hasText: "TinyAssets cannot start sandboxes yet" });
+    await message.waitFor();
+    assert.equal((await message.textContent()).includes("sandbox_unconfigured"), false);
+    const { top, bottom } = await message.evaluate((el) => el.getBoundingClientRect());
+    assert.ok(top >= 0 && bottom <= 500, `the refusal is out of view (${top} to ${bottom})`);
+    assert.ok(await page.evaluate(() => window.scrollY > 0), "the page was not scrolled");
+    // Held in view, so the owner can put it away.
+    await message.getByRole("button", { name: "Dismiss" }).click();
+    await message.waitFor({ state: "detached" });
+  } finally {
+    await script({ started: true });
+    await page.setViewportSize(was);
+  }
 });
 
 test("a sign-in whose socket drops is followed on a new socket, and ends as it ends " +
