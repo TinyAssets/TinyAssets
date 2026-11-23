@@ -1631,18 +1631,31 @@ describe("the sandbox's lease", () => {
     expect(JSON.stringify(config)).not.toContain("sk-good");
   });
 
-  it("gives a run the base of its model's API on a source of two, the first for none",
-     async () => {
+  it("gives a run the base of its model's API on a source of two, and one naming none a " +
+     "model its connection lists", async () => {
     const r = await gated();
     const connection = await r.connect("sk-good", OPENROUTER as never);
-    const base = async (model?: string) => (await ownerRun(r.stub, r.bind(), {
-      engine: "pi", credential: "api_key", connection, scopes: [],
-      ...(model === undefined ? {} : { model }) })).start.config.env["OPENROUTER_BASE_URL"];
-    const door = (run: string) => `https://egress.tinyassets.io/r/${run}`;
-    expect(await base("anthropic/claude-opus-5.5")).toMatch(
-      new RegExp(`^${door("run_[0-9a-f]{32}")}/[0-9a-f]{64}/c/${connection}/api$`));
-    expect(await base()).toMatch(
-      new RegExp(`^${door("run_[0-9a-f]{32}")}/[0-9a-f]{64}/c/${connection}/api/v1$`));
+    const started = async (engine: string, model?: string) => (await ownerRun(r.stub, r.bind(), {
+      engine, connection, scopes: [], ...(model === undefined ? {} : { model }) })).start;
+    const [row] = await r.sql("SELECT models FROM connections WHERE id = ?", connection) as
+      { models: string }[];
+    const apis = new Map((JSON.parse(row!.models) as { id: string; api: string }[])
+      .map((model) => [model.id, model.api]));
+    const paths: Readonly<Record<string, string>> = { "anthropic-messages": "/api",
+                                                      "openai-completions": "/api/v1" };
+    const base = (start: SandboxStart) => `https://egress.tinyassets.io/r/${start.run}/${
+      secretOf(start)}/c/${connection}${paths[apis.get(start.model!)!]!}`;
+    const chat = [...apis].find(([, api]) => api === "openai-completions")![0];
+    for (const model of ["anthropic/claude-opus-5.5", chat]) {
+      const start = await started("pi", model);
+      expect(start.model).toBe(model);
+      expect(start.config.env["OPENROUTER_BASE_URL"]).toBe(base(start));
+    }
+    // Naming none, it is given a model the connection lists (the one `auto` would pick, as
+    // the runs test holds), never its engine's own default, and that model's API's base.
+    const unnamed = await started("pi");
+    expect(apis.has(unnamed.model!)).toBe(true);
+    expect(unnamed.config.env["OPENROUTER_BASE_URL"]).toBe(base(unnamed));
   });
 
   it("gives a run on the owner's own sign-in no key, though the owner has one", async () => {

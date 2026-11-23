@@ -25,8 +25,9 @@
  *    each by its record's plan model, `cli.login.model`) ranked together (`auto.ts`, by the
  *    owner's ranking file, else the platform's), a subscription preferred to a key of the
  *    provider it covers and run on its plan's model, and a lapsed sign-in refused
- *    (`SIGNIN_LAPSED`), never a silent fall back to another source;
- *    for an unattended run (a schedule's, a mail's) only a credential its record allows
+ *    (`SIGNIN_LAPSED`), never a silent fall back to another source; every run given its
+ *    model (the agent's, else its source's strongest by the same ranking), never its
+ *    engine's own default; for an unattended run (a schedule's, a mail's) only a credential its record allows
  *    unattended (ADR-033 decision 3, `UNATTENDED_REFUSED`);
  * 8. the owner's own limits hold (`OWNER_LIMIT`): an API-key run's source and the owner's
  *    day and month spend under their caps (the policy's, off by default). A signed-in run
@@ -128,10 +129,13 @@ export const SIGNIN_LAPSED = "signin_lapsed: sign in to this engine again";
 export const UNATTENDED_REFUSED = "unattended_refused: no source of this agent may run " +
   "unattended on its record";
 export const NO_SOURCE = "no_source: no connected source can run this agent's engine";
-/** The notice of an `auto` run on a model no entry of the ranking ranks. */
+/** The notice of a run given a model no entry of the ranking ranks. */
 export const MODEL_UNRANKED = "model_unranked";
-const UNRANKED_DETAIL = "no entry of the model ranking ranks it, so auto ranked it below " +
-  `every ranked model; rank it in ${RANKING}`;
+const UNRANKED_DETAIL = "no entry of the model ranking ranks it, so it ranked below every " +
+  `ranked model; rank it in ${RANKING}`;
+/** Why no source runs an agent naming no model whose keys list only models it must name. */
+const UNPICKED = "its connections list only models a run is given when its agent names one " +
+  "(agent.json's model)";
 const OWNER_LIMIT = "owner_limit";
 export const NO_RUN = "no_run: no such run of the caller's";
 export const RUN_ENDED = "run_ended: the run is no longer live";
@@ -267,7 +271,7 @@ export interface Admitted {
   readonly engine: string;
   readonly credential: CredentialKind;
   readonly connection: string | null;
-  readonly model: string | null;
+  readonly model: string;
   readonly session_id: string | null;
   readonly lease: { readonly lease_id: string; readonly epoch: number };
   /** Whose sandbox it runs in. */
@@ -290,8 +294,8 @@ interface Chosen {
   readonly engine: string;
   readonly credential: CredentialKind;
   readonly connection: string | null;
-  /** The model it is given, or null: its engine's own default. */
-  readonly model: string | null;
+  /** The model it is given: the agent's, else the one its source was ranked by. */
+  readonly model: string;
   readonly secret: string;
 }
 
@@ -1029,10 +1033,11 @@ export class Runs {
   /**
    * The engine, credential, connection and model a run of `file` runs on (ADR-034 decision
    * 4.1): its named engine, on its named credential (else its record's credentials in
-   * order, a key's run on the named connection, else the strongest connected one whose
-   * source lists the engine); or for `auto`, the strongest connected source that lists an
-   * engine, on a model a run can call turn by turn and its key can pay for unless the agent
-   * names one (`pickable`). An unattended
+   * order), a key's run on the named connection, else the strongest connected one whose
+   * source lists the engine; or for `auto`, the strongest connected source that lists an
+   * engine. Every run is given its model, never left to its engine's own default: the one the
+   * agent names, a plan's (`cli.login.model`), or the key's strongest that a run can call turn
+   * by turn and the key can pay for (`pickable`), by the one ranking. An unattended
    * run takes only a credential its record allows unattended. The sign-ins read are the
    * run's own sandbox's (`authority`'s): the owner's own sandbox's (`engine_signins`), or an
    * outside client's, as its own runner reported them on its live
@@ -1044,12 +1049,11 @@ export class Runs {
    */
   choose(ask: Pick<Ask, "file" | "ranking" | "unattended" | "origin">, now: number):
       { engine: string; credential: CredentialKind; connection: string | null;
-        source: string | null; model: string | null } {
+        source: string | null; model: string } {
     const { file, unattended } = ask;
     const authority = authorityOf(ask.origin);
     const sources = bundledSources();
     const keys = this.#host.reachable();
-    const candidates = ranked(keys, [], ask.ranking);
     // Each engine its sandbox's runner reported a sign-in for: presence alone.
     const client = authority !== OWNER;
     const signins = new Map<string, SignIn>(client
@@ -1069,11 +1073,33 @@ export class Runs {
       }
       return true;
     };
-    // The connection the file names (the run's environment then refuses an engine that runs
-    // no key of its provider), else the strongest whose source lists the engine.
-    const keyFor = (engine: string): Candidate | undefined => candidates.find((candidate) =>
-      file.connection !== null ? candidate.connection === file.connection
-        : (sources.get(candidate.source)?.engines ?? []).includes(engine));
+    // A candidate a run of `file` may take: on the connection it names, of the model it names.
+    // A key's model its source record marks `not_interactive` answers no run's turn, and a key
+    // that pays for nothing is served only its source's free models, so neither is picked for
+    // an agent that names no model; one the agent names is its own choice.
+    let unpicked = false;
+    const pays = new Map(keys.map((key) => [key.connection, key.pays]));
+    const takes = (candidate: Candidate): boolean => {
+      if ((file.connection !== null && candidate.connection !== file.connection)
+          || (file.model !== null && candidate.model !== file.model)) {
+        return false;
+      }
+      if (file.model === null && candidate.connection !== null
+          && !pickable(sources.get(candidate.source), candidate.model,
+                       pays.get(candidate.connection) ?? null)) {
+        unpicked = true;
+        return false;
+      }
+      return true;
+    };
+    // A model the ranking does not rank is run only after every ranked one, and the owner
+    // is told, once while the notice is kept; one the agent names is its own choice.
+    const picked = (candidate: Candidate) => {
+      if (candidate.place === null && file.model === null) {
+        this.#host.noticeOnce(MODEL_UNRANKED, `${candidate.model} (${candidate.connection
+          ?? `${candidate.source}'s sign-in`}): ${UNRANKED_DETAIL}`);
+      }
+    };
     if (file.engine !== AUTO) {
       const record = servedRecord(file.engine);
       if (record === undefined) {
@@ -1100,10 +1126,16 @@ export class Runs {
           return { engine: file.engine, credential, connection: null, source: null,
                    model: file.model ?? record.cli.login!.model.id };
         }
-        const key = keyFor(file.engine);
+        // The connection the file names (the run's environment then refuses an engine that
+        // runs no key of its provider), else the strongest whose source lists the engine.
+        const key = ranked(keys, [], ask.ranking).find((candidate) =>
+          (file.connection !== null
+           || (sources.get(candidate.source)?.engines ?? []).includes(file.engine))
+          && takes(candidate));
         if (key !== undefined) {
+          picked(key);
           return { engine: file.engine, credential, connection: key.connection,
-                   source: key.source, model: file.model };
+                   source: key.source, model: key.model };
         }
       }
     } else {
@@ -1125,24 +1157,8 @@ export class Runs {
           covering.set(plan.provider, plan);
         }
       }
-      // A model the ranking does not rank is run only after every ranked one, and the owner
-      // is told, once while the notice is kept; one the agent names is its own choice.
-      const picked = (candidate: Candidate) => {
-        if (candidate.place === null && file.model === null) {
-          this.#host.noticeOnce(MODEL_UNRANKED, `${candidate.model} (${candidate.connection
-            ?? `${candidate.source}'s sign-in`}): ${UNRANKED_DETAIL}`);
-        }
-      };
-      const pays = new Map(keys.map((key) => [key.connection, key.pays]));
       for (const candidate of ranked(keys, [...plans.values()], ask.ranking)) {
-        // A key's model its source record marks `not_interactive` answers no run's turn, and
-        // a key that pays for nothing is served only its source's free models, so `auto`
-        // never picks the rest on its own; one the agent names is its own choice.
-        if ((file.connection !== null && candidate.connection !== file.connection)
-            || (file.model !== null && candidate.model !== file.model)
-            || (file.model === null && candidate.connection !== null
-                && !pickable(sources.get(candidate.source), candidate.model,
-                             pays.get(candidate.connection) ?? null))) {
+        if (!takes(candidate)) {
           continue;
         }
         const plan = candidate.connection === null ? plans.get(candidate.source)
@@ -1163,16 +1179,17 @@ export class Runs {
         if (engine !== undefined) {
           picked(candidate);
           return { engine, credential: "api_key", connection: candidate.connection,
-                   source: candidate.source, model: file.model ?? candidate.model };
+                   source: candidate.source, model: candidate.model };
         }
       }
     }
-    // A model `auto` is named that no key lists (its vendor no longer serves it) says so.
-    const unlisted = file.engine === AUTO && file.model !== null
+    // A model the agent names that no key lists (its vendor no longer serves it) says so, and
+    // so do keys that list only models an agent must name.
+    const unlisted = file.model !== null
       && !keys.some((key) => key.models.some((model) => model.id === file.model));
     throw unattendedOnly ? new Refusal("unattended_refused", UNATTENDED_REFUSED)
       : new Refusal("no_source", unlisted ? `${NO_SOURCE} (no connected key lists ${file.model})`
-        : NO_SOURCE);
+        : unpicked ? `${NO_SOURCE} (${UNPICKED})` : NO_SOURCE);
   }
 
   /** The owner's own spending caps, for an API-key run on `source`: off unless set. */

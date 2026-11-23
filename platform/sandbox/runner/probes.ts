@@ -198,7 +198,8 @@ const hex = (bytes: number) => randomBytes(bytes).toString("hex");
 
 /**
  * The sealed APIs a provider's key goes to, as the gateway's record for it says. A probe run
- * names no model, so it is given the first (`sealedBase`), whose reply it answers.
+ * names no model, so its engine runs its own default, and it is given and answered in the
+ * first API, which its record lists first for that reason.
  */
 function sealedScope(provider: string, engine: string): ModelScope {
   const sources = bundledSources();
@@ -239,6 +240,7 @@ async function probeRoute(rec: Served, provider: string,
                           resolvers: readonly string[]): Promise<Record<string, unknown>> {
   const cli = rec.cli;
   const egress = sealedScope(provider, rec.id);
+  const api = egress.apis[0]!.api;
   const requests: Captured[] = [];
   const server = createHttpServer((request: IncomingMessage, response) => {
     const chunks: Buffer[] = [];
@@ -260,7 +262,7 @@ async function probeRoute(rec: Served, provider: string,
       // of it); a model request gets its API's minimal valid reply.
       const answer = captured.url.split("?")[0]!.endsWith("/mcp")
         ? { status: 404, type: "application/json", body: "{}" }
-        : reply(egress.apis[0]!.api, captured);
+        : reply(api, captured);
       response.writeHead(answer.status, { "content-type": answer.type });
       response.end(answer.body);
     });
@@ -278,12 +280,12 @@ async function probeRoute(rec: Served, provider: string,
   const nonce = `probe${hex(8)}`;
   const engine = runEnv(bundledSources(), rec.id, "api_key");
   const keyed = sandboxEnv([{ connection, provider, egress }], () => hex(16),
-                           { ...engine, run, secret, connection, api: null });
+                           { ...engine, run, secret, connection, api });
   const placeholder = Object.values(keyed).find((value) => value.startsWith("ta_ph_"))!;
   const names = cli.api_key_env![provider]!;
   const inPath = engine.secret_header === undefined ? secret : undefined;
   const prefix = new URL(egressBaseUrl(connection, names.base_url !== null
-    && names.base === "connection" ? null : sealedBase(egress, null), run, inPath)).pathname;
+    && names.base === "connection" ? null : sealedBase(egress, api), run, inPath)).pathname;
   const env = Object.fromEntries(Object.entries({ ...engine.env, ...keyed }).map(
     ([name, value]) => [name, local(value)]));
   const first: StartDoc = {

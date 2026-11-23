@@ -346,9 +346,7 @@ export interface EngineRun {
   readonly connection: string | null;
   /**
    * The API of the model an API-key run is given (its record's `api`, `modelApi`): its base is
-   * the run's on a source that speaks several. Null for a run that names no model, which is
-   * given its connection's first API (its record lists first the one its engine's own default
-   * model speaks).
+   * the run's on a source that speaks several. Null on the vendor's own sign-in.
    */
   readonly api: string | null;
   readonly api_key_env: Readonly<Record<string, {
@@ -359,14 +357,14 @@ export interface EngineRun {
 
 /**
  * The sealed base URL a run on `egress` is given: a service's one URL; a model source's, that
- * of the API its model speaks (`EngineRun.api`; its first, for a run that names none). An API
- * the scope is not sealed for fails loudly.
+ * of the API its model speaks (`EngineRun.api`). An API the scope is not sealed for fails
+ * loudly.
  */
-export function sealedBase(egress: EgressScope, api: string | null): string {
+export function sealedBase(egress: EgressScope, api: string): string {
   if ("kind" in egress) {
     return egress.base_url;
   }
-  const row = api === null ? egress.apis[0] : egress.apis.find((entry) => entry.api === api);
+  const row = egress.apis.find((entry) => entry.api === api);
   if (row === undefined) {
     throw new Refusal("run_config_invalid", "the run's model speaks an API its connection " +
                                             "is not sealed for");
@@ -409,10 +407,11 @@ export function connectorUrl(connection: string, run: string, secret: string,
 /**
  * One engine run's environment (`run`), from the owner's egress-able `connections`:
  * nothing on the vendor's own sign-in; on an API key, its one connection's base URL on the
- * door and a placeholder key, `random()` making the placeholder's random part (hex), under
- * the rule's names and the engine's own. A placeholder carries no secret. A connection
- * that is not the owner's egress-able one, a provider the engine runs no key of, two names
- * for one variable that disagree, or a variable the credential forbids fails loudly.
+ * door (its model's API's) and a placeholder key, `random()` making the placeholder's random
+ * part (hex), under the rule's names and the engine's own. A placeholder carries no secret.
+ * A connection that is not the owner's egress-able one, a provider the engine runs no key of,
+ * a run given no API, two names for one variable that disagree, or a variable the credential
+ * forbids fails loudly.
  */
 export function sandboxEnv(connections: readonly Egressible[], random: () => string,
                            run: EngineRun): Readonly<Record<string, string>> {
@@ -432,6 +431,9 @@ export function sandboxEnv(connections: readonly Egressible[], random: () => str
   if (!Object.hasOwn(run.api_key_env, provider)) {
     throw new Refusal("run_config_invalid",
                       "the engine runs on no key of this connection's provider");
+  }
+  if (run.api === null) {
+    throw new Refusal("run_config_invalid", "an API-key run is given its model's API");
   }
   const env: Record<string, string> = {};
   const set = (name: string, value: string) => {

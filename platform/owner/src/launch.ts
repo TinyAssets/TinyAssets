@@ -151,8 +151,8 @@ export interface SandboxRun {
   readonly credential: CredentialKind;
   /** An API-key run's connection; absent on the vendor's own sign-in. */
   readonly connection?: string;
-  /** The model it is given, or null: its engine's own default. */
-  readonly model: string | null;
+  /** The model it is given (`Runs.choose`). */
+  readonly model: string;
 }
 
 /** A run as the owner's rules decide its calls (`actions.ts`): its id, agent and conversation. */
@@ -1177,12 +1177,13 @@ export class Launcher implements RunHost {
   }
 
   /**
-   * The API of the model an API-key run is given (`EngineRun.api`), whose base it is handed;
-   * null for a run that names none, or a model its connection does not list (its calls are
-   * refused at the door), which are given the connection's first API.
+   * The API of the model an API-key run is given (`EngineRun.api`), whose base it is handed:
+   * the one its connection lists it on, as its admission chose it in this unit. Null on the
+   * vendor's own sign-in, and for a model its connection does not list on an API it is sealed
+   * for: an API-key run given none `sandboxEnv` refuses.
    */
   #runApi(run: SandboxRun): string | null {
-    if (run.connection === undefined || run.model === null) {
+    if (run.connection === undefined) {
       return null;
     }
     const egress = this.#o.connections.egressible()
