@@ -67,7 +67,8 @@ export function readerProgram(roots: readonly string[],
                               overlay: Readonly<Record<string, string>> = {}): ts.Program {
   const compiled = options(paths);
   const host = ts.createCompilerHost(compiled);
-  const given = new Map(Object.entries(overlay).map(([path, text]) => [join(PLATFORM, path), text]));
+  const given = new Map(Object.entries(overlay).map(([path, text]) =>
+    [join(PLATFORM, path), text]));
   const getSourceFile = host.getSourceFile.bind(host);
   const fileExists = host.fileExists.bind(host);
   const readFile = host.readFile.bind(host);
@@ -205,7 +206,7 @@ export function answerReads(program: ts.Program, files: readonly string[]): Answ
       return;
     }
     const taken = armsOf(target, true);
-    for (const [arm, _] of found) {
+    for (const [arm] of found) {
       for (const field of checker.getPropertiesOfType(arm)) {
         if (taken.some((each) => checker.getPropertyOfType(each, field.name) !== undefined)) {
           reads.push(...[...doorsOf(field)].map((door) =>
@@ -214,10 +215,18 @@ export function answerReads(program: ts.Program, files: readonly string[]): Answ
       }
     }
   };
-  /** A cast of an answer to a type of its own: a read no type holds. */
+  /**
+   * A cast of an answer to a type of its own, through any casts between (`as unknown as`): a
+   * read no type holds.
+   */
   const cast = (node: ts.Expression, operand: ts.Expression): void => {
+    let inner = operand;
+    while (ts.isAsExpression(inner) || ts.isTypeAssertionExpression(inner)
+           || ts.isParenthesizedExpression(inner)) {
+      inner = inner.expression;
+    }
     const target = checker.getTypeAtLocation(node);
-    if (answersIn(checker.getTypeAtLocation(operand)).length > 0
+    if (answersIn(checker.getTypeAtLocation(inner)).length > 0
         && answersIn(target).length === 0
         && (target.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) === 0) {
       unheld.push(`${where(node)}: a cast of an answer to ${checker.typeToString(target)}`);

@@ -77,6 +77,7 @@ describe("the owner's answers the doors read", () => {
         'export const asked = "verdict" in decided;',
         'export const bare = "x" in passed;',
         "export const told = (decided as { verdict: string }).verdict;",
+        "export const said = (decided as unknown as { verdict: string }).verdict;",
         "keep(listed);",
         "export interface Typed {",
         "  readonly grantList: { readonly clients: string };",
@@ -100,7 +101,8 @@ describe("the owner's answers the doors read", () => {
       "doors/src/zz-probe.ts:6: runDecide.verdict", "doors/app/zz-probe.js:2: noticeList.gone"]);
     expect(unheld).toEqual([
       'doors/src/zz-probe.ts:7: an `in` check of "x" on a bare object',
-      "doors/src/zz-probe.ts:8: a cast of an answer to { verdict: string; }"]);
+      "doors/src/zz-probe.ts:8: a cast of an answer to { verdict: string; }",
+      "doors/src/zz-probe.ts:9: a cast of an answer to { verdict: string; }"]);
     expect(unanswered(found, `${probe}#Typed`, `${probe}#Owner`)).toEqual([
       "grantList: Owner answers { clients: string[]; }", "noticeList: Owner has no such door"]);
   });
