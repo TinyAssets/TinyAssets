@@ -76,8 +76,8 @@ export const EGRESS_BODY_MAX = 16 * 1024 * 1024;
  * The most dollars one metered call settles at, so its µ$ (the owner's counters' unit) is an
  * exact integer in a JavaScript number (2^53 µ$), as every reservation's is by a model
  * record's bounds on prices and windows (`model-record.ts`), far under it. No vendor bills a
- * call near it: a cost past it is no bill, and the call settles `unknown` (`gateway.ts`
- * `meteredCost`).
+ * call near it: a cost past it is no bill (`gateway.ts` `meteredCost`): the gateway reports
+ * the call `unknown`, and the owner refuses a settle at one, so either way it keeps its hold.
  */
 export const METERED_COST_MAX = 9_000_000_000;
 /**

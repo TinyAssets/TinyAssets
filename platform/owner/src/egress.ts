@@ -103,6 +103,7 @@ import { type EgressCode, Refusal } from "../../contract/src/refusal";
 import { EGRESS_PATH_MAX } from "../../contract/src/limits";
 import type { ModelRecord } from "../../contract/src/model-record";
 import type { Call, Door, DoorUnits } from "./door";
+import type { Notices } from "./notices";
 import type { Runs } from "./runs";
 import { bundledSources } from "../../sources/src/catalog";
 import { pricedBy } from "../../sources/src/routers";
@@ -276,6 +277,7 @@ interface EgressDeps {
       readonly models: readonly ModelRecord[] } | null;
   /** The caps for a call of `source`. */
   readonly caps: (source: string) => EgressCaps;
+  readonly notices: Pick<Notices, "once">;
 }
 
 /**
@@ -646,14 +648,22 @@ export class Egress {
     if (row.charge === "held") {
       // pi-ai's cost, read and priced by the gateway; what it cannot read keeps it all.
       const spend = request.spend;
+      const cost = spend.state === "succeeded" ? costMicros(spend.cost)
+        : spend.state === "failed" ? 0 : null;
       this.#sql.exec("UPDATE egress_reservations SET charge = ?, tokens = ?, cost = ?, " +
                        "served = ? WHERE id = ? AND charge = 'held'", spend.state,
                      spend.state === "succeeded" ? spend.tokens : spend.state === "failed" ? 0
                        : null,
-                     spend.state === "succeeded" ? costMicros(spend.cost)
-                       : spend.state === "failed" ? 0 : null,
-                     spend.state === "succeeded" ? spend.served ?? null : null,
+                     cost, spend.state === "succeeded" ? spend.served ?? null : null,
                      request.reservation);
+      // A bill past its hold is counted in full, so the caps may refuse what follows sooner
+      // than the owner expects: told once a connection while the notice is kept.
+      if (cost !== null && cost > row.est_cost!) {
+        this.#deps.notices.once("egress_overspent", `Connection ${row.connection_id}: a model ` +
+                                  "call was billed more than it held, and every spending cap " +
+                                  "counts the whole bill; its egress receipt shows the bill " +
+                                  "(cost) beside the hold (est_cost)", now);
+      }
     }
     this.#release(request.reservation);
     this.#prune();

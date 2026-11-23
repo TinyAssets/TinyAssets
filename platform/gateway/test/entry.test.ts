@@ -410,8 +410,8 @@ describe("the gateway Worker", () => {
     }
     // Past it, no counter holds it exactly: no bill, so unknown, never a line the owner reads
     // as Infinity or as no cost at all.
-    for (const bill of ["9000000001", "1e308"]) {
-      expect(await settled(bill)).toBe('{"state":"unknown"}\n');
+    for (const bill of [String(METERED_COST_MAX + 1), "1e308"]) {
+      expect(JSON.parse(await settled(bill))).toEqual({ state: "unknown" });
     }
   });
 

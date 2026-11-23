@@ -1127,6 +1127,8 @@ describe("the spend caps", () => {
     expect((await r.stub.egressReceipts(r.bind())).receipts[0])
       .toMatchObject({ reservation: snapshot.reservation, charge: "succeeded",
                        served: "model-x-2026-01-01" });
+    // A bill within its hold tells the owner nothing.
+    expect((await r.stub.noticeList(r.bind())).notices).toEqual([]);
     expect((await failure(() => r.stub.egressSettle(lease.as(), settle(snapshot.reservation, {
       spend: { ...DONE, served: "a b" } })))).message).toBe("invalid egress settle");
     // A settled charge never moves again.
@@ -1153,8 +1155,13 @@ describe("the spend caps", () => {
     }
     expect(await sourceSpend(r)).toEqual([{ p: "d", cost: one }, { p: "m", cost: one }]);
     expect(() => costMicros(1e308)).toThrow(RangeError);
+    const overspent = async () => (await r.stub.noticeList(r.bind())).notices
+      .filter((notice) => notice.type === "egress_overspent").length;
+    expect(await overspent()).toBe(0);
     expect(await r.stub.egressSettle(lease.as(), settle(over.reservation, {
       spend: { ...DONE, cost: bill } }))).toEqual({ settled: true });
+    // The owner is told once, since the caps now count more than any hold said.
+    expect(await overspent()).toBe(1);
     expect((await r.stub.egressReceipts(r.bind())).receipts[0])
       .toMatchObject({ reservation: over.reservation, charge: "succeeded", est_cost: one,
                        cost: one * 10 });

@@ -591,6 +591,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
                  source_daily_cost: own?.daily_cost ?? null,
                  source_monthly_cost: own?.monthly_cost ?? null };
       },
+      notices: this.#notices,
     });
     this.#tickets = new Tickets(storage);
     this.#signins = new Signins(storage);

@@ -98,8 +98,28 @@ Nothing bounds it from above, and the store is where that breaks (measured in SQ
 
 ## Left, with reasons
 
-- An overspend raises no notice of its own: the receipt carries both numbers and every cap
-  counts it; a notice for it would be a new feature, not this fix's.
+- `succeeded` checks the cost alone, not `served` against `MODEL_NAME` as `spendOutcome`
+  does: a vendor-billed answer naming a served model past that pattern is refused at the
+  owner and settled `lost`, keeping its hold (no call goes uncharged). Whether such a name is
+  dropped or makes the call `unknown` is its own decision, with one parser of the outcome for
+  the gateway, the door and the owner; not this fix's.
+- Why no relative bound (a multiple of the hold): Fact 15 admits only recorded technical
+  ceilings, and a bill above its hold is the vendor's to charge; the owner is told instead
+  (below).
+
+## Review (2026-11-23)
+
+- An overspend now tells the owner once a connection (`egress_overspent`, `Notices.once`, in
+  the settle's unit): every cap counts the whole bill, so the caps may refuse what follows
+  sooner than the owner expects (Fact 8). The builder had left it as a new feature.
+- Checked: pi-ai reads a vendor bill only when it is a number at least 0; `null`, a string,
+  `[]`, `true` and `-1` all settle at the catalog's price, so the multiplication before
+  `succeeded` coerces nothing.
+- Checked: `costMicros`' throw is unreachable from a settle (`spendOutcome` checks first) and
+  from a reserve (a model record's bounds keep `priced` at most $2 × 10^8); it is a request's
+  throw, never an alarm's or a lane's.
+- Checked: `TOTAL` is a double, exact for µ$ sums up to 2^53; every cap is at most 10^12 µ$
+  (`policy-document.ts`), so a sum past 2^53 is refused whatever its rounding.
 - `outcomeOf` (the door's read of the line) tells success from failure and checks no cost:
   the owner's `spendOutcome` is the settle's one checker, and a third check would copy it.
 - `model_reservations` (written by no code now) keeps its triggers: its SQL is a frozen
