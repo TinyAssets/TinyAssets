@@ -445,7 +445,9 @@ It never counts as "absent".
        - Its first sign-in is then admitted automatically: the gate admits the listed id,
          and the doors admit a new owner at sign-up.
     4. **Create the canary owner** (tester B, signing in through the doors), then mint its
-       API key in the owner app and store it as the `production` secret `TA_PROBE_KEY`.
+       API key in the owner app (API keys, a name alone: the key does what a connected app
+       may, so it writes, reads and removes the owner's files and runs its main agent) and
+       store it as the `production` secret `TA_PROBE_KEY`.
        H2's probes use it too. In the same owner app, connect the free-tier model key
        (for example a Google AI Studio key) as the owner's model source: the full run runs
        on it. The key goes into the app's connect form alone, never a GitHub secret: only
@@ -492,8 +494,10 @@ It never counts as "absent".
   4. **Open the gate to the stage accounts alone** with mode `control`: their two WorkOS
      user ids (`user_…`) as `canary`, `outside` on, `ordinary` still `canary`. A sign-in by
      any other id is refused at the gate, with no owner made.
-  5. **Each account signs in and mints one API key**; store the probe keys (`TA_PROBE_KEY`
-     and the rest, as after `routes` above) and run the platform's canary keyed.
+  5. **Each account signs in and mints one API key** (as after `routes` above, step 4); store
+     the probe keys (`TA_PROBE_KEY` and the rest) and run the platform's canary keyed. A key
+     the list shows with scopes (not "everything") is registered as no agent, so it acts
+     nowhere: turn it off and mint another.
   6. **The end:** each stage account's own erasure in the owner app, then `handback` of the
      stage's route record, the one the next `routes` plan or a refused handback names. It
      deletes the stage host's routes and DNS record, detaches the
@@ -511,6 +515,23 @@ It never counts as "absent".
   turns code mode on in its owner app (Connected apps, Code mode): it is off by default until
   H2 passes, and a probe's `code` call is refused `code_mode_off` until its owner turns it on.
   It prints one row per probe.
+- **Mode `logs`: the Workers' own error and warn lines**, when a run settles `unknown` or a
+  sign-in is refused and only the Workers' logs say why. Dispatch it with `minutes` (none: the
+  kit's default, `logs.ts` `MINUTES`; at most the 7 days Workers Logs keep), and, if you want, `worker` (one folder under
+  `platform/`) and `filter` (text each line holds, any case). The plan job prints each line,
+  oldest first: its time, Worker, level and message, then the error, its stack and its source
+  as logged. Each line is redacted first (bearer and basic credentials, values named as
+  tokens, secrets, keys, keyrings or authorization, JWTs, email addresses, and any long run of
+  base64 or hex, such as a key or a sealed route), then cut to its bound, and the printout
+  stops at its own (`logs.ts`). It changes nothing and has no apply job. The job's log is
+  public and a line may quote an owner's content, which no redaction by shape takes out, so it
+  reads only while the control record admits no owner but its canary (the stage's accounts),
+  and the stage's end deletes it; after that, read the Workers' logs in the dashboard. **Its one owed step is
+  yours:** the query (Workers Observability's `telemetry/query`) takes **Workers Observability
+  Write** (in the dashboard, Account, Workers Observability, Edit), which the deploy token
+  lacks; until it is added, the mode stops naming it. Add it to the `CLOUDFLARE_API_TOKEN`
+  token, under the account (My Profile, API Tokens, edit). Nothing else changes. `wrangler tail`
+  is no fallback: it streams only what is logged after it starts.
 - **Open the gates with mode `control`** when you are ready (the cutover's Step 14): canary
   owners first (`set`: `outside=on canary+=<owner>`), then everyone (`ordinary=all`), and
   `inbound=true` for `/hooks/inbound`. The plan job shows each field's old and new value; the

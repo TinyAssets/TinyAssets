@@ -729,12 +729,16 @@ test("every screen opens on the doors' answers, and says plainly what is not her
   await page.getByLabel(/^Message/).fill("good morning");
   await page.getByRole("button", { name: "Post" }).click();
   await page.locator(".message.good", { hasText: "Posted." }).waitFor();
-  // A key, shown once.
+  // A key, shown once, that writes in the owner's workspace as the platform canary's does.
   await page.goto(`${ORIGIN}/app#keys`);
   await page.getByLabel(/^Name/).fill("laptop");
-  await page.getByRole("checkbox", { name: "Read your files" }).check();
   await page.getByRole("button", { name: "Make the key" }).click();
-  assert.match(await page.locator(".secret").innerText(), /^ta_key_[0-9a-f]{16}_/);
+  const key = await page.locator(".secret").innerText();
+  assert.match(key, /^ta_key_[0-9a-f]{16}_/);
+  const keyed = await mf.dispatchFetch(`${ORIGIN}/api/tools/file_write`, { method: "POST",
+    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ path: "/workspace/beat.txt", expected_etag: "", content: "beat" }) });
+  assert.equal(keyed.status, 200, await keyed.text());
   // Code mode, off by default, turned on in the owner's session.
   await page.goto(`${ORIGIN}/app#apps`);
   const codemode = page.locator("section", { hasText: "Code mode" });
@@ -1207,8 +1211,8 @@ test("a screen still loading never paints over the signed-out view",
       response.url().endsWith("/app/api/grants"));
     await grants.release();
     await answered;
-    // The keys screen's two answers handled, the held one last.
-    await handled(from, ["/app/api/grants", "/app/api/capabilities"]);
+    // The keys screen's answer handled.
+    await handled(from, ["/app/api/grants"]);
   });
   assert.equal(await page.getByRole("heading", { name: "Your TinyAssets" }).count(), 1);
   assert.equal(await page.getByRole("heading", { name: "API keys", exact: true }).count(), 0);

@@ -891,14 +891,9 @@ async function apps(arg = null) {
 
 async function keys(arg = null) {
   const turn = turnOf("keys", arg);
-  const [{ clients }, { capabilities }] = await Promise.all([call("grants"),
-                                                             call("capabilities")]);
+  const { clients } = await call("grants");
   const listed = clients.filter((c) => c.source === "api_key" && c.mode !== "revoked");
   const name = h("input", { type: "text", placeholder: "laptop" });
-  const space = h("input", { type: "text", value: "main" });
-  const agentName = h("input", { type: "text", value: "main" });
-  const checks = capabilities.map((c) =>
-    h("label", {}, h("input", { type: "checkbox", value: c.id }), c.words));
   const minted = h("div", {});
   paint(turn,
        h("h1", {}, "API keys"),
@@ -906,7 +901,8 @@ async function keys(arg = null) {
          h("h2", {}, "Your keys"),
          listed.length === 0 ? h("p", { class: "muted" }, "No keys.")
            : h("ul", {}, listed.map((c) => h("li", {}, h("b", {}, c.name), " ",
-             h("small", {}, `Made ${when(c.first_seen)}; ${c.scopes.length} scopes`),
+             h("small", {}, `Made ${when(c.first_seen)}; ${
+               c.mode === "full" ? "everything" : `${c.scopes.length} scopes`}`),
              action("Turn off", async () => {
                await call("grants/revoke", { client: c.client });
                say(`Turned off ${c.name}.`);
@@ -914,14 +910,11 @@ async function keys(arg = null) {
              }, report, { class: "danger" }))))),
        h("section", {},
          h("h2", {}, "New key"),
+         h("p", { class: "muted" }, "A key does what a connected app may: everything but " +
+           "what needs you signed in here. Turn it off when you no longer use it."),
          field("Name", name),
-         field("Space", space, "The space the key's agent works in."),
-         field("Agent", agentName, "The agent the key acts for."),
-         h("div", { class: "checks" }, checks),
          action("Make the key", async () => {
-           const scopes = checks.map((c) => c.firstChild).filter((c) => c.checked).map((c) =>
-             ({ universe: space.value.trim(), agent: agentName.value.trim(), capability: c.value }));
-           const key = await call("keys", { name: name.value.trim(), scopes });
+           const key = await call("keys", { name: name.value.trim(), scopes: [] });
            fill(minted, h("p", {}, "Copy this key now. It is not shown again."),
                 h("p", { class: "secret" }, key.key));
          }, report),

@@ -118,7 +118,7 @@ registration.
 
 Not built here: each needs that choice, and B or C passes this PR's size.
 
-- [ ] An app-minted key acts as the spec settles (A, B or C), the canary's checklist step with it: `untangle/app-key-grant`.
+- [x] An app-minted key acts as the spec settles (A, B or C), the canary's checklist step with it: `untangle/app-key-grant`. Done there: A, a key minted naming no scopes is full, and the screen mints only that (`app-key-grant.md`).
 
 ## Seen, not chased
 
