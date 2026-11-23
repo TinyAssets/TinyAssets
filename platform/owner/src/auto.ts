@@ -3,8 +3,10 @@
  * runs slice (R) picks a run's source from this order (ADR-034 decision 4), by the ranking it
  * is handed (`sources/src/ranking.ts`: the platform's, or the owner's own file).
  *
- * - A candidate is a key's model on one of the owner's connections, or a plan: an engine
- *   signed in, ranked by the model its record says a run on it is given (`cli.login.model`).
+ * - A candidate is a key's model on one of the owner's connections that a run can call turn
+ *   by turn (none its source record marks `not_interactive`: `sources/src/ranking.ts`
+ *   `interactive`), or a plan: an engine signed in, ranked by the model its record says a run
+ *   on it is given (`cli.login.model`).
  * - The order: by tier; within a tier, a plan before a key (the owner pays for the plan
  *   already, so a plan in the top tier wins over every metered key); then by entry, newer ids
  *   first within an entry. A model no entry matches is unknown and comes after every tier,
@@ -15,7 +17,8 @@
  *   call).
  */
 import type { ModelRecord } from "../../contract/src/model-record";
-import type { Place, Ranking } from "../../sources/src/ranking";
+import { interactive, type Place, type Ranking } from "../../sources/src/ranking";
+import type { Sources } from "../../sources/src/schema";
 
 /**
  * A connection a model call may use, as `Connections.usable` lists it: its models, as
@@ -66,15 +69,21 @@ function text(a: string | null, b: string | null): number {
   return (a ?? "") < (b ?? "") ? -1 : (a ?? "") > (b ?? "") ? 1 : 0;
 }
 
-/** Every connected key's model and every plan, strongest first. */
-export function ranked(keys: readonly Usable[], plans: readonly Plan[], ranking: Ranking):
-    Candidate[] {
+/**
+ * Every connected key's model a run can call (by its source record in `sources`) and every
+ * plan, strongest first.
+ */
+export function ranked(keys: readonly Usable[], plans: readonly Plan[], ranking: Ranking,
+                       sources: Sources): Candidate[] {
   const all: Sorted[] = [
-    ...keys.flatMap((connection) => connection.models.map((model) => ({
-      candidate: { connection: connection.connection, source: connection.source,
-                   provider: connection.provider, model: model.id,
-                   place: ranking.place(connection.provider, model.id) },
-      price: model.cost.output, since: connection.created_at }))),
+    ...keys.flatMap((connection) => {
+      const record = sources.get(connection.source);
+      return connection.models.filter((model) => interactive(record, model.id)).map((model) => ({
+        candidate: { connection: connection.connection, source: connection.source,
+                     provider: connection.provider, model: model.id,
+                     place: ranking.place(connection.provider, model.id) },
+        price: model.cost.output, since: connection.created_at }));
+    }),
     ...plans.map((plan) => ({
       candidate: { connection: null, source: plan.engine, provider: plan.provider,
                    model: plan.model, place: ranking.place(plan.provider, plan.model) },

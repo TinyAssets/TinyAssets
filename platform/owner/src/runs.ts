@@ -1045,7 +1045,7 @@ export class Runs {
     const authority = authorityOf(ask.origin);
     const sources = bundledSources();
     const keys = this.#host.reachable();
-    const candidates = ranked(keys, [], ask.ranking);
+    const candidates = ranked(keys, [], ask.ranking, sources);
     // Each engine its sandbox's runner reported a sign-in for: presence alone.
     const client = authority !== OWNER;
     const signins = new Map<string, SignIn>(client
@@ -1129,7 +1129,7 @@ export class Runs {
             ?? `${candidate.source}'s sign-in`}): ${UNRANKED_DETAIL}`);
         }
       };
-      for (const candidate of ranked(keys, [...plans.values()], ask.ranking)) {
+      for (const candidate of ranked(keys, [...plans.values()], ask.ranking, sources)) {
         if ((file.connection !== null && candidate.connection !== file.connection)
             || (file.model !== null && candidate.model !== file.model)) {
           continue;

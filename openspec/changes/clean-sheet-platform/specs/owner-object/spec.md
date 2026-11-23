@@ -908,7 +908,7 @@ A recurrence SHALL be the five classic cron fields in UTC, numbers only (no name
 - **THEN** it is refused, having no occurrence within eight years
 
 ### Requirement: `auto` is the owner's strongest connected model
-The owner's connected keys' models and its signed-in plans (each by the model its engine record says it runs) SHALL be ranked by one ranking: the owner's own file `/workspace/model-ranking.json` where it holds one, whole, else the platform's data file `sources/src/model-ranking.json`, both of one shape (tiers, strongest first, each a list of provider and model-pattern entries). The order SHALL be: by tier; within a tier, a plan before any key, so a plan in the top tier wins over every metered key; then the earliest entry a model matches, newer ids first within an entry. A model no entry matches SHALL be unknown, never placed by a guess: it ranks after every tier, ordered the same way, its keys by their catalog output price, highest first; and an `auto` run on one the agent did not name SHALL tell the owner once while that notice is kept (`model_unranked`). Then the older connection or sign-in, then the id. An owner's file that is no ranking SHALL refuse the run (`invalid`), never fall back silently to the platform's. With nothing connected nothing SHALL rank: there is no platform-paid default. The runs slice (R) picks a run's source from the ranking.
+The owner's connected keys' models a run can call turn by turn (none that the key's source record marks `not_interactive`, by the ranking's model patterns, whatever ranking the owner holds) and its signed-in plans (each by the model its engine record says it runs) SHALL be ranked by one ranking: the owner's own file `/workspace/model-ranking.json` where it holds one, whole, else the platform's data file `sources/src/model-ranking.json`, both of one shape (tiers, strongest first, each a list of provider and model-pattern entries). The order SHALL be: by tier; within a tier, a plan before any key, so a plan in the top tier wins over every metered key; then the earliest entry a model matches, newer ids first within an entry. A model no entry matches SHALL be unknown, never placed by a guess: it ranks after every tier, ordered the same way, its keys by their catalog output price, highest first; and an `auto` run on one the agent did not name SHALL tell the owner once while that notice is kept (`model_unranked`). Then the older connection or sign-in, then the id. An owner's file that is no ranking SHALL refuse the run (`invalid`), never fall back silently to the platform's. With nothing connected nothing SHALL rank: there is no platform-paid default. The runs slice (R) picks a run's source from the ranking.
 
 #### Scenario: Two connections of one model
 - **WHEN** two connections list the same ranked model
@@ -925,6 +925,10 @@ The owner's connected keys' models and its signed-in plans (each by the model it
 #### Scenario: The owner's own ranking
 - **WHEN** the owner writes `/workspace/model-ranking.json` ranking OpenAI's models a tier above Claude's
 - **THEN** `auto` ranks by it in place of the platform's, and runs on the OpenAI key
+
+#### Scenario: A batch variant
+- **WHEN** an OpenRouter key's catalog lists `anthropic/claude-fable-5.1:batch` and `~anthropic/claude-fable-latest`
+- **THEN** `auto` never ranks the batch variant, and runs on `~anthropic/claude-fable-latest`
 
 #### Scenario: Nothing connected
 - **WHEN** the owner has no active connection, or one with no models

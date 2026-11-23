@@ -9,11 +9,16 @@
  * characters, matched against the id and against its part after the last `/` (an
  * aggregator's `vendor/model`). A model ranks at the first entry it matches (`place`); one no
  * entry matches is unknown (`null`), never placed by a guess.
+ *
+ * What `auto` may rank at all is the source's, not the ranking's: a model its source record
+ * marks `not_interactive`, by the same patterns, answers no run's turn, so it is no
+ * candidate (`interactive`), whatever ranking the owner holds.
  */
 import { keyed } from "../../contract/src/checks";
 import { Refusal } from "../../contract/src/refusal";
 import { isPrintable, SOURCE_ID } from "../../contract/src/text";
 
+import type { SourceRecord } from "./schema";
 import shipped from "./model-ranking.json" with { type: "json" };
 
 /** Where a model ranks: its tier (0, the top, first) and its entry, counted across tiers. */
@@ -27,10 +32,19 @@ export interface Ranking {
   place(provider: string, id: string): Place | null;
 }
 
-/** A model pattern as a whole-string matcher: `*` is any run of characters, nothing else special. */
-function matcher(pattern: string): RegExp {
-  return new RegExp(`^${pattern.split("*").map((part) =>
+/**
+ * A model pattern as a test of a model id: `*` is any run of characters, nothing else
+ * special, matched whole against the id and against its part after the last `/`.
+ */
+function matcher(pattern: string): (id: string) => boolean {
+  const whole = new RegExp(`^${pattern.split("*").map((part) =>
     part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`);
+  return (id) => whole.test(id) || whole.test(id.slice(id.lastIndexOf("/") + 1));
+}
+
+/** Whether a run can call `id` turn by turn on a key of `record`: no `not_interactive` matches. */
+export function interactive(record: SourceRecord | undefined, id: string): boolean {
+  return !(record?.not_interactive ?? []).some((pattern) => matcher(pattern)(id));
 }
 
 /** `value`, checked whole as a ranking; `name` is the file it was read from, for the refusal. */
@@ -56,10 +70,8 @@ export function rankingOf(value: unknown, name: string): Ranking {
   }));
   return {
     place: (provider, id) => {
-      const tail = id.slice(id.lastIndexOf("/") + 1);
       const entry = entries.findIndex((one) =>
-        (one.provider === "*" || one.provider === provider)
-        && (one.model.test(id) || one.model.test(tail)));
+        (one.provider === "*" || one.provider === provider) && one.model(id));
       return entry === -1 ? null : { tier: entries[entry]!.tier, entry };
     },
   };
