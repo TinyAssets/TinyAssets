@@ -95,7 +95,7 @@ import type { OwnerStorage } from "./gate";
 import type { SandboxLease } from "./files";
 import { costMicros, keptFrom, largestFitting, periods, priced, SETTLED_WITHIN_S } from "./money";
 import { EGRESS_BEAT_S, type Outcome, OUTCOMES } from "../../contract/src/egress";
-import { type MeterOutcome, MODEL_NAME } from "../../contract/src/gateway";
+import { meteredCost, type MeterOutcome, MODEL_NAME } from "../../contract/src/gateway";
 import type {
   EgressOpened, EgressRefusal, EgressRequest, EgressReserved, ReserveRequest,
 } from "../../contract/src/owner";
@@ -103,6 +103,7 @@ import { type EgressCode, Refusal } from "../../contract/src/refusal";
 import { EGRESS_PATH_MAX } from "../../contract/src/limits";
 import type { ModelRecord } from "../../contract/src/model-record";
 import type { Call, Door, DoorUnits } from "./door";
+import type { Notices } from "./notices";
 import type { Runs } from "./runs";
 import { bundledSources } from "../../sources/src/catalog";
 import { pricedBy } from "../../sources/src/routers";
@@ -276,6 +277,7 @@ interface EgressDeps {
       readonly models: readonly ModelRecord[] } | null;
   /** The caps for a call of `source`. */
   readonly caps: (source: string) => EgressCaps;
+  readonly notices: Pick<Notices, "once">;
 }
 
 /**
@@ -352,8 +354,7 @@ function spendOutcome(value: unknown): MeterOutcome {
       && (!("served" in value) || (typeof served === "string" && MODEL_NAME.test(served)))
       && value["state"] === "succeeded"
       && typeof value["tokens"] === "number" && Number.isSafeInteger(value["tokens"])
-      && value["tokens"] >= 0 && typeof value["cost"] === "number"
-      && Number.isFinite(value["cost"]) && value["cost"] >= 0) {
+      && value["tokens"] >= 0 && meteredCost(value["cost"])) {
     return { state: "succeeded", tokens: value["tokens"], cost: value["cost"],
              ...(served === undefined ? {} : { served: served as string }) };
   }
@@ -551,11 +552,11 @@ export class Egress {
   /**
    * The µ$ held in `period` (`d:<day>` or `m:<month>`), by `source` or by every source: the
    * counters the charges' triggers move (`model_spend`), which the caps here and the runs'
-   * own limits (`runs.ts`) read. A read.
+   * own limits (`runs.ts`) read. A read, by `TOTAL`, since SQLite's `SUM` throws past 2^63.
    */
   spent(period: string, source: string | null): number {
     return this.#sql.exec<{ cost: number }>(
-      "SELECT COALESCE(SUM(cost), 0) AS cost FROM model_spend WHERE period = ? " +
+      "SELECT TOTAL(cost) AS cost FROM model_spend WHERE period = ? " +
         "AND (? IS NULL OR source = ?)", period, source, source).one().cost;
   }
 
@@ -647,14 +648,22 @@ export class Egress {
     if (row.charge === "held") {
       // pi-ai's cost, read and priced by the gateway; what it cannot read keeps it all.
       const spend = request.spend;
+      const cost = spend.state === "succeeded" ? costMicros(spend.cost)
+        : spend.state === "failed" ? 0 : null;
       this.#sql.exec("UPDATE egress_reservations SET charge = ?, tokens = ?, cost = ?, " +
                        "served = ? WHERE id = ? AND charge = 'held'", spend.state,
                      spend.state === "succeeded" ? spend.tokens : spend.state === "failed" ? 0
                        : null,
-                     spend.state === "succeeded" ? costMicros(spend.cost)
-                       : spend.state === "failed" ? 0 : null,
-                     spend.state === "succeeded" ? spend.served ?? null : null,
+                     cost, spend.state === "succeeded" ? spend.served ?? null : null,
                      request.reservation);
+      // A bill past its hold is counted in full, so the caps may refuse what follows sooner
+      // than the owner expects: told once a connection while the notice is kept.
+      if (cost !== null && cost > row.est_cost!) {
+        this.#deps.notices.once("egress_overspent", `Connection ${row.connection_id}: a model ` +
+                                  "call was billed more than it held, and every spending cap " +
+                                  "counts the whole bill; its egress receipt shows the bill " +
+                                  "(cost) beside the hold (est_cost)", now);
+      }
     }
     this.#release(request.reservation);
     this.#prune();

@@ -361,14 +361,24 @@
       "door": "fileWrite", "class": "work", "capability": "write_files",
       "act": { "name": "workspace.files" },
       "args": {
-        "refused": "invalid file request",
-        "required": {
-          "path": { "type": "string", "description": "An absolute path in the owner's files, such as /workspace/notes.md" },
-          "expected_etag": { "type": "string", "description": "The file's current etag, from fetch, file_read or file_stat, or \"\" to create it only when absent" },
-          "content": { "type": "string", "description": "The file's whole text, as UTF-8: at most 4 MiB" }
+        "owner": {
+          "refused": "invalid file request",
+          "required": {
+            "path": { "type": "string" }, "expected_etag": { "type": ["string", "null"] },
+            "content": { "type": ["string", "bytes"] }
+          },
+          "optional": { "mode": { "type": "integer" } }
         },
-        "optional": {
-          "mode": { "type": "integer", "description": "1 to make the file executable, 0 not; kept when omitted" }
+        "outside": {
+          "refused": "invalid file request",
+          "required": {
+            "path": { "type": "string", "description": "An absolute path in the owner's files, such as /workspace/notes.md" },
+            "expected_etag": { "type": "string", "description": "The file's current etag, from fetch, file_read or file_stat, or \"\" to create it only when absent" },
+            "content": { "type": "string", "description": "The file's whole text, as UTF-8: at most 4 MiB" }
+          },
+          "optional": {
+            "mode": { "type": "integer", "description": "1 to make the file executable, 0 not; kept when omitted" }
+          }
         }
       },
       "tool": {
@@ -443,13 +453,23 @@
       "door": "fileRemove", "class": "reduce", "capability": "write_files",
       "act": { "name": "workspace.files" },
       "args": {
-        "refused": "invalid file request",
-        "required": {
-          "path": { "type": "string", "description": "An absolute path in the owner's files, such as /workspace/notes.md" },
-          "expected_etag": { "type": "string", "description": "The entry's current etag, from file_stat, fetch or file_read" },
-          "recursive": { "type": "boolean", "description": "Whether a directory's contents go too" }
+        "owner": {
+          "refused": "invalid file request",
+          "required": {
+            "path": { "type": "string" }, "expected_etag": { "type": ["string", "null"] },
+            "recursive": { "type": "boolean" }
+          },
+          "optional": {}
         },
-        "optional": {}
+        "outside": {
+          "refused": "invalid file request",
+          "required": {
+            "path": { "type": "string", "description": "An absolute path in the owner's files, such as /workspace/notes.md" },
+            "expected_etag": { "type": "string", "description": "The entry's current etag, from file_stat, fetch or file_read" },
+            "recursive": { "type": "boolean", "description": "Whether a directory's contents go too" }
+          },
+          "optional": {}
+        }
       },
       "tool": {
         "name": "file_remove", "title": "Remove file", "readOnlyHint": false,
@@ -461,14 +481,24 @@
       "door": "fileRename", "class": "work", "capability": "write_files",
       "act": { "name": "workspace.files" },
       "args": {
-        "refused": "invalid file request",
-        "required": {
-          "from": { "type": "string", "description": "An absolute path in the owner's files, such as /workspace/notes.md" },
-          "to": { "type": "string", "description": "An absolute path in the owner's files, such as /workspace/notes.md" },
-          "expected_etag": { "type": "string", "description": "The entry's current etag, from file_stat, fetch or file_read" },
-          "replace": { "type": "boolean", "description": "Whether an entry at the new path is replaced" }
+        "owner": {
+          "refused": "invalid file request",
+          "required": {
+            "from": { "type": "string" }, "to": { "type": "string" },
+            "expected_etag": { "type": ["string", "null"] }, "replace": { "type": "boolean" }
+          },
+          "optional": {}
         },
-        "optional": {}
+        "outside": {
+          "refused": "invalid file request",
+          "required": {
+            "from": { "type": "string", "description": "An absolute path in the owner's files, such as /workspace/notes.md" },
+            "to": { "type": "string", "description": "An absolute path in the owner's files, such as /workspace/notes.md" },
+            "expected_etag": { "type": "string", "description": "The entry's current etag, from file_stat, fetch or file_read" },
+            "replace": { "type": "boolean", "description": "Whether an entry at the new path is replaced" }
+          },
+          "optional": {}
+        }
       },
       "tool": {
         "name": "file_rename", "title": "Rename file", "readOnlyHint": false,
@@ -480,13 +510,23 @@
       "door": "fileRestore", "class": "work", "capability": "write_files",
       "act": { "name": "workspace.files" },
       "args": {
-        "refused": "invalid file request",
-        "required": {
-          "path": { "type": "string", "description": "An absolute path in the owner's files, such as /workspace/notes.md" },
-          "version": { "type": "integer", "description": "The kept version to restore" },
-          "expected_etag": { "type": "string", "description": "The path's current etag, or \"\" when no file is there now" }
+        "owner": {
+          "refused": "invalid file request",
+          "required": {
+            "path": { "type": "string" }, "version": { "type": "integer" },
+            "expected_etag": { "type": ["string", "null"] }
+          },
+          "optional": {}
         },
-        "optional": {}
+        "outside": {
+          "refused": "invalid file request",
+          "required": {
+            "path": { "type": "string", "description": "An absolute path in the owner's files, such as /workspace/notes.md" },
+            "version": { "type": "integer", "description": "The kept version to restore" },
+            "expected_etag": { "type": "string", "description": "The path's current etag, or \"\" when no file is there now" }
+          },
+          "optional": {}
+        }
       },
       "tool": {
         "name": "file_restore", "title": "Restore file version", "readOnlyHint": false,
@@ -604,14 +644,16 @@
       "door": "ownerExport", "class": "read", "capability": null,
       "args": {
         "refused": "an export request is at most its cursor and its export_id", "required": {},
-        "optional": { "cursor": {}, "export_id": {} }, "undefinedAllowed": true
+        "optional": { "cursor": { "type": ["string", "null"] }, "export_id": { "type": "string" } },
+        "undefinedAllowed": true
       }
     },
     {
       "door": "exportChunks", "class": "read", "capability": null,
       "args": {
         "refused": "an export's chunks are its export_id and one or two sha256s",
-        "required": { "export_id": {}, "sha256s": {} }, "optional": {}, "undefinedAllowed": true
+        "required": { "export_id": { "type": "string" }, "sha256s": { "type": "array" } },
+        "optional": {}, "undefinedAllowed": true
       }
     },
     {
@@ -634,14 +676,17 @@
       "capability": null,
       "args": {
         "refused": "invalid policy request",
-        "required": { "expected_generation": {}, "policy": {} }, "optional": {},
-        "dropped": ["proposal"]
+        "required": {
+          "expected_generation": { "type": "integer" }, "policy": { "type": "object" }
+        },
+        "optional": {}, "dropped": ["proposal"]
       }
     },
     {
       "door": "policyProposal", "class": "read", "capability": null, "dropped": true,
       "args": {
-        "refused": "invalid policy request", "required": { "request_id": {} }, "optional": {}
+        "refused": "invalid policy request", "required": { "request_id": { "type": "string" } },
+        "optional": {}
       }
     },
     {
@@ -651,14 +696,16 @@
       "door": "policyApply", "class": "work", "act": { "name": "security.change" },
       "capability": null,
       "args": {
-        "refused": "invalid policy request", "required": { "card_id": {}, "digest": {} },
+        "refused": "invalid policy request",
+        "required": { "card_id": { "type": "string" }, "digest": { "type": "string" } },
         "optional": {}
       }
     },
     {
       "door": "policyDecline", "class": "reduce", "capability": null,
       "args": {
-        "refused": "invalid policy request", "required": { "card_id": {}, "digest": {} },
+        "refused": "invalid policy request",
+        "required": { "card_id": { "type": "string" }, "digest": { "type": "string" } },
         "optional": {}
       }
     },
@@ -667,8 +714,8 @@
       "args": {
         "refused": "invalid policy request",
         "required": {
-          "agent_id": {}, "max_wakes_per_hour": {}, "batch_window_s": {},
-          "expected_generation": {}
+          "agent_id": { "type": "string" }, "max_wakes_per_hour": { "type": ["integer", "null"] },
+          "batch_window_s": { "type": "integer" }, "expected_generation": { "type": "integer" }
         },
         "optional": {}
       }
@@ -679,14 +726,16 @@
     {
       "door": "actionApprove", "class": "work", "capability": null,
       "args": {
-        "refused": "invalid action request", "required": { "card_id": {}, "digest": {} },
+        "refused": "invalid action request",
+        "required": { "card_id": { "type": "string" }, "digest": { "type": "string" } },
         "optional": {}
       }
     },
     {
       "door": "actionRefuse", "class": "reduce", "capability": null,
       "args": {
-        "refused": "invalid action request", "required": { "card_id": {}, "digest": {} },
+        "refused": "invalid action request",
+        "required": { "card_id": { "type": "string" }, "digest": { "type": "string" } },
         "optional": {}
       }
     },
@@ -698,36 +747,43 @@
       "args": {
         "refused": "invalid policy request",
         "required": {
-          "client": {}, "source": {}, "mode": {}, "scopes": {}, "expected_revision": {},
-          "name": {}
+          "client": { "type": "string" }, "source": { "type": "string" },
+          "mode": { "type": "string" }, "scopes": { "type": "array" },
+          "expected_revision": { "type": "integer" }, "name": { "type": "string" }
         },
-        "optional": { "profile": {}, "agent": {} }
+        "optional": { "profile": { "type": "string" }, "agent": { "type": "string" } }
       }
     },
     {
       "door": "grantRevoke", "class": "reduce", "capability": null,
       "args": {
-        "refused": "invalid policy request", "required": { "client": {} }, "optional": {}
+        "refused": "invalid policy request", "required": { "client": { "type": "string" } },
+        "optional": {}
       }
     },
     {
       "door": "grantForget", "class": "reduce", "capability": null,
       "args": {
-        "refused": "invalid policy request", "required": { "client": {} }, "optional": {}
+        "refused": "invalid policy request", "required": { "client": { "type": "string" } },
+        "optional": {}
       }
     },
     {
       "door": "grantForgetRevoked", "class": "reduce", "capability": null,
       "args": {
-        "refused": "invalid policy request", "required": { "clients": {} }, "optional": {}
+        "refused": "invalid policy request", "required": { "clients": { "type": "array" } },
+        "optional": {}
       }
     },
     {
       "door": "keyMint", "class": "work", "act": { "name": "access.grant" }, "capability": null,
       "args": {
         "refused": "invalid policy request",
-        "required": { "key_id": {}, "name": {}, "scopes": {} }, "optional": {},
-        "dropped": ["proposal"]
+        "required": {
+          "key_id": { "type": "string" }, "name": { "type": "string" },
+          "scopes": { "type": "array" }
+        },
+        "optional": {}, "dropped": ["proposal"]
       }
     },
     {
@@ -735,12 +791,16 @@
     },
     {
       "door": "ownerErase", "class": "reduce", "capability": null,
-      "args": { "refused": "invalid policy request", "required": { "confirm": {} }, "optional": {} }
+      "args": {
+        "refused": "invalid policy request", "required": { "confirm": { "type": "string" } },
+        "optional": {}
+      }
     },
     {
       "door": "erasureBegin", "class": "admission", "capability": null,
       "args": {
-        "refused": "invalid erasure request", "required": { "confirm": {} }, "optional": {}
+        "refused": "invalid erasure request", "required": { "confirm": { "type": "string" } },
+        "optional": {}
       }
     },
     {
@@ -767,20 +827,25 @@
       "door": "inboundAccept", "class": "work", "capability": null,
       "args": {
         "refused": "invalid policy request",
-        "required": { "event_id": {}, "event_at": {}, "body": {}, "headers": {} },
+        "required": {
+          "event_id": { "type": "string" }, "event_at": { "type": "integer" },
+          "body": { "type": "bytes" }, "headers": { "type": "object" }
+        },
         "optional": {}
       }
     },
     {
       "door": "fileUploadTarget", "class": "work", "capability": "write_files",
       "args": {
-        "refused": "invalid file request", "required": { "intent_id": {} }, "optional": {}
+        "refused": "invalid file request", "required": { "intent_id": { "type": "string" } },
+        "optional": {}
       }
     },
     {
       "door": "fileUploadStored", "class": "work", "capability": "write_files",
       "args": {
-        "refused": "invalid file request", "required": { "intent_id": {}, "chunks": {} },
+        "refused": "invalid file request",
+        "required": { "intent_id": { "type": "string" }, "chunks": { "type": "array" } },
         "optional": {}
       }
     },
@@ -788,12 +853,13 @@
       "door": "registerAgent", "class": "work", "capability": null,
       "args": {
         "owner": {
-          "required": { "card_id": {}, "digest": {} }, "optional": {},
-          "refused": "invalid ledger request"
+          "required": { "card_id": { "type": "string" }, "digest": { "type": "string" } },
+          "optional": {}, "refused": "invalid ledger request"
         },
         "outside": {
           "required": {
-            "command_center_id": {}, "display_name": {}, "delivery_method": {}, "recipe_id": {}
+            "command_center_id": { "type": "string" }, "display_name": { "type": "string" },
+            "delivery_method": { "type": "string" }, "recipe_id": { "type": ["string", "null"] }
           },
           "optional": {}, "refused": "invalid ledger request"
         }
@@ -805,14 +871,16 @@
     {
       "door": "registerDecline", "class": "reduce", "capability": null,
       "args": {
-        "refused": "invalid ledger request", "required": { "card_id": {}, "digest": {} },
+        "refused": "invalid ledger request",
+        "required": { "card_id": { "type": "string" }, "digest": { "type": "string" } },
         "optional": {}
       }
     },
     {
       "door": "disableAgent", "class": "reduce", "capability": null,
       "args": {
-        "refused": "invalid ledger request", "required": { "agent_id": {}, "reason": {} },
+        "refused": "invalid ledger request",
+        "required": { "agent_id": { "type": "string" }, "reason": { "type": "string" } },
         "optional": {}
       }
     },
@@ -821,8 +889,10 @@
       "args": {
         "refused": "invalid ledger request",
         "required": {
-          "agent_id": {}, "kind": {}, "subscription_id": {}, "board": {}, "rooms": {},
-          "blob": {}, "kid": {}, "version": {}
+          "agent_id": { "type": "string" }, "kind": { "type": "string" },
+          "subscription_id": { "type": "string" }, "board": { "type": "boolean" },
+          "rooms": { "type": "array" }, "blob": { "type": "string" }, "kid": { "type": "string" },
+          "version": { "type": "integer" }
         },
         "optional": {}
       }
@@ -830,14 +900,15 @@
     {
       "door": "agentDoorbellEnd", "class": "reduce", "capability": null,
       "args": {
-        "refused": "invalid ledger request", "required": { "subscription_id": {} },
-        "optional": {}
+        "refused": "invalid ledger request",
+        "required": { "subscription_id": { "type": "string" } }, "optional": {}
       }
     },
     {
       "door": "deleteAgent", "class": "reduce", "capability": null,
       "args": {
-        "refused": "invalid ledger request", "required": { "agent_id": {} }, "optional": {}
+        "refused": "invalid ledger request", "required": { "agent_id": { "type": "string" } },
+        "optional": {}
       }
     },
     {
@@ -879,8 +950,12 @@
     {
       "door": "mailChain", "class": "read", "capability": null,
       "args": {
-        "refused": "invalid ledger request", "required": { "message_id": {}, "limit": {} },
-        "optional": { "after": {}, "body_offset": {}, "body_message_id": {} }
+        "refused": "invalid ledger request",
+        "required": { "message_id": { "type": "string" }, "limit": { "type": "integer" } },
+        "optional": {
+          "after": { "type": "integer" }, "body_offset": { "type": "integer" },
+          "body_message_id": { "type": "string" }
+        }
       }
     },
     {
@@ -891,8 +966,10 @@
       "args": {
         "refused": "invalid ledger request",
         "required": {
-          "subscription_id": {}, "name": {}, "arguments": {}, "blob": {}, "kid": {},
-          "version": {}, "expires_at": {}
+          "subscription_id": { "type": "string" }, "name": { "type": "string" },
+          "arguments": { "type": "object" }, "blob": { "type": "string" },
+          "kid": { "type": "string" }, "version": { "type": "integer" },
+          "expires_at": { "type": ["number", "null"] }
         },
         "optional": {}
       }
@@ -900,35 +977,41 @@
     {
       "door": "wakeUnsubscribe", "class": "reduce", "capability": null,
       "args": {
-        "refused": "invalid ledger request", "required": { "subscription_id": {} },
-        "optional": {}
+        "refused": "invalid ledger request",
+        "required": { "subscription_id": { "type": "string" } }, "optional": {}
       }
     },
     {
       "door": "fileRead", "class": "read", "capability": "read_files",
       "args": {
-        "refused": "invalid file request", "required": { "path": {} },
-        "optional": { "etag": {} }
+        "refused": "invalid file request", "required": { "path": { "type": "string" } },
+        "optional": { "etag": { "type": "string" } }
       }
     },
     {
       "door": "fileReadChunks", "class": "read", "capability": "read_files",
       "args": {
         "refused": "invalid file request",
-        "required": { "path": {}, "version": {}, "first": {}, "count": {} }, "optional": {}
+        "required": {
+          "path": { "type": "string" }, "version": { "type": "integer" },
+          "first": { "type": "integer" }, "count": { "type": "integer" }
+        },
+        "optional": {}
       }
     },
     {
       "door": "fileUploadBegin", "class": "work", "capability": "write_files",
       "args": {
-        "refused": "invalid file request", "required": { "size": {}, "chunks": {} },
+        "refused": "invalid file request",
+        "required": { "size": { "type": "integer" }, "chunks": { "type": "array" } },
         "optional": {}
       }
     },
     {
       "door": "fileUploadChunks", "class": "work", "capability": "write_files",
       "args": {
-        "refused": "invalid file request", "required": { "intent_id": {}, "chunks": {} },
+        "refused": "invalid file request",
+        "required": { "intent_id": { "type": "string" }, "chunks": { "type": "array" } },
         "optional": {}
       }
     },
@@ -937,47 +1020,65 @@
       "capability": "write_files",
       "args": {
         "refused": "invalid file request",
-        "required": { "intent_id": {}, "path": {}, "expected_etag": {} },
-        "optional": { "mode": {} }
+        "required": {
+          "intent_id": { "type": "string" }, "path": { "type": "string" },
+          "expected_etag": { "type": ["string", "null"] }
+        },
+        "optional": { "mode": { "type": ["integer", "null"] } }
       }
     },
     {
       "door": "fileUploadAbort", "class": "reduce", "capability": "write_files",
       "args": {
-        "refused": "invalid file request", "required": { "intent_id": {} }, "optional": {}
+        "refused": "invalid file request", "required": { "intent_id": { "type": "string" } },
+        "optional": {}
       }
     },
     {
       "door": "fileRedact", "class": "reduce", "capability": null,
       "args": {
-        "refused": "invalid file request", "required": { "path": {}, "version": {} },
+        "refused": "invalid file request",
+        "required": { "path": { "type": "string" }, "version": { "type": "integer" } },
         "optional": {}
       }
     },
     {
       "door": "fileHistoryPurge", "class": "reduce", "capability": null,
-      "args": { "refused": "invalid file request", "required": { "path": {} }, "optional": {} }
+      "args": {
+        "refused": "invalid file request", "required": { "path": { "type": "string" } },
+        "optional": {}
+      }
     },
     {
       "door": "fileChanges", "class": "read", "capability": "read_files",
       "args": {
-        "refused": "invalid file request", "required": { "after": {}, "limit": {} },
+        "refused": "invalid file request",
+        "required": { "after": { "type": "integer" }, "limit": { "type": "integer" } },
         "optional": {}
       }
     },
     {
       "door": "runEvents", "class": "reduce", "capability": null,
-      "args": { "refused": "invalid run events", "required": { "frames": {} }, "optional": { "end": {} } }
+      "args": {
+        "refused": "invalid run events", "required": { "frames": { "type": "array" } },
+        "optional": { "end": { "type": "object" } }
+      }
     },
     {
       "door": "runDecide", "class": "work", "capability": null,
-      "args": { "refused": "invalid decide request", "required": {}, "optional": { "check": {}, "tool_name": {}, "tool_input": {} } }
+      "args": {
+        "refused": "invalid decide request", "required": {},
+        "optional": {
+          "check": { "type": "boolean" }, "tool_name": { "type": "string" },
+          "tool_input": { "type": ["string", "number", "boolean", "object", "array", "null"] }
+        }
+      }
     },
     {
       "door": "signinStart", "class": "work", "capability": null,
       "args": {
-        "refused": "invalid run request", "required": { "engine": {} },
-        "optional": { "authority": {}, "mode": {} }
+        "refused": "invalid run request", "required": { "engine": { "type": "string" } },
+        "optional": { "authority": { "type": "string" }, "mode": { "type": "string" } }
       }
     },
     {
@@ -986,12 +1087,16 @@
     {
       "door": "signinCode", "class": "work", "capability": null,
       "args": {
-        "refused": "invalid run request", "required": { "id": {}, "code": {} }, "optional": {}
+        "refused": "invalid run request",
+        "required": { "id": { "type": "string" }, "code": { "type": "string" } }, "optional": {}
       }
     },
     {
       "door": "signinCancel", "class": "reduce", "capability": null,
-      "args": { "refused": "invalid run request", "required": { "id": {} }, "optional": {} }
+      "args": {
+        "refused": "invalid run request", "required": { "id": { "type": "string" } },
+        "optional": {}
+      }
     },
     {
       "door": "signinList", "class": "read", "capability": null, "args": "none"
@@ -1000,13 +1105,14 @@
       "door": "runList", "class": "read", "capability": null,
       "args": {
         "refused": "invalid run request", "required": {},
-        "optional": { "before": {}, "limit": {} }
+        "optional": { "before": { "type": "integer" }, "limit": { "type": "integer" } }
       }
     },
     {
       "door": "signinReport", "class": "work", "capability": null,
       "args": {
-        "refused": "invalid sign-in report", "required": { "signins": {} }, "optional": {}
+        "refused": "invalid sign-in report", "required": { "signins": { "type": "array" } },
+        "optional": {}
       }
     },
     {
@@ -1015,7 +1121,8 @@
     {
       "door": "socketTicket", "class": "read", "capability": null,
       "args": {
-        "refused": "invalid run request", "required": { "conversation_id": {} }, "optional": {}
+        "refused": "invalid run request", "required": { "conversation_id": { "type": "string" } },
+        "optional": {}
       }
     },
     {
@@ -1034,7 +1141,8 @@
       "door": "restoreBegin", "class": "admission", "capability": null,
       "args": {
         "refused": "invalid restore request",
-        "required": { "namespace": {}, "gen": {} }, "optional": {}
+        "required": { "namespace": { "type": "string" }, "gen": { "type": "string" } },
+        "optional": {}
       }
     },
     {
@@ -1044,13 +1152,15 @@
       "door": "restorePin", "class": "admission", "capability": null,
       "args": {
         "refused": "invalid restore request",
-        "required": { "namespace": {}, "gen": {} }, "optional": {}
+        "required": { "namespace": { "type": "string" }, "gen": { "type": "string" } },
+        "optional": {}
       }
     },
     {
       "door": "restoreWipe", "class": "admission", "capability": null,
       "args": {
-        "refused": "invalid restore request", "required": { "confirm": {} }, "optional": {}
+        "refused": "invalid restore request", "required": { "confirm": { "type": "string" } },
+        "optional": {}
       }
     },
     {
@@ -1058,13 +1168,17 @@
     },
     {
       "door": "restoreNames", "class": "admission", "capability": null,
-      "args": { "refused": "invalid restore request", "required": { "from": {} }, "optional": {} }
+      "args": {
+        "refused": "invalid restore request", "required": { "from": { "type": "integer" } },
+        "optional": {}
+      }
     },
     {
       "door": "restoreHold", "class": "admission", "capability": null,
       "args": {
         "refused": "invalid restore request",
-        "required": { "namespace": {}, "gen": {} }, "optional": {}
+        "required": { "namespace": { "type": "string" }, "gen": { "type": "string" } },
+        "optional": {}
       }
     },
     {
@@ -1087,21 +1201,32 @@
       "capability": "write_files",
       "args": {
         "refused": "invalid file request",
-        "required": { "lease_id": {}, "epoch": {}, "ops": {} }, "optional": {}
+        "required": {
+          "lease_id": { "type": "string" }, "epoch": { "type": "integer" },
+          "ops": { "type": "array" }
+        },
+        "optional": {}
       }
     },
     {
       "door": "fileSyncUploadBegin", "class": "work", "capability": "write_files",
       "args": {
         "refused": "invalid file request",
-        "required": { "lease_id": {}, "epoch": {}, "size": {}, "chunks": {} }, "optional": {}
+        "required": {
+          "lease_id": { "type": "string" }, "epoch": { "type": "integer" },
+          "size": { "type": "integer" }, "chunks": { "type": "array" }
+        },
+        "optional": {}
       }
     },
     {
       "door": "fileSyncUploadChunks", "class": "work", "capability": "write_files",
       "args": {
         "refused": "invalid file request",
-        "required": { "lease_id": {}, "epoch": {}, "intent_id": {}, "chunks": {} },
+        "required": {
+          "lease_id": { "type": "string" }, "epoch": { "type": "integer" },
+          "intent_id": { "type": "string" }, "chunks": { "type": "array" }
+        },
         "optional": {}
       }
     },
@@ -1109,56 +1234,71 @@
       "door": "fileSyncUploadAbort", "class": "work", "capability": "write_files",
       "args": {
         "refused": "invalid file request",
-        "required": { "lease_id": {}, "epoch": {}, "intent_id": {} }, "optional": {}
+        "required": {
+          "lease_id": { "type": "string" }, "epoch": { "type": "integer" },
+          "intent_id": { "type": "string" }
+        },
+        "optional": {}
       }
     },
     {
       "door": "importRows", "class": "import", "capability": null,
       "args": {
-        "refused": "invalid import request",
-        "required": { "rows": {} }, "optional": {}
+        "refused": "invalid import request", "required": { "rows": { "type": "array" } },
+        "optional": {}
       }
     },
     {
       "door": "importFiles", "class": "import", "capability": null,
       "args": {
-        "refused": "invalid import request",
-        "required": { "entries": {} }, "optional": {}
+        "refused": "invalid import request", "required": { "entries": { "type": "array" } },
+        "optional": {}
       }
     },
     {
       "door": "importFileBegin", "class": "import", "capability": null,
       "args": {
         "refused": "invalid import request",
-        "required": { "path": {}, "size": {}, "mode": {}, "content_id": {}, "chunks": {} }, "optional": {}
+        "required": {
+          "path": { "type": "string" }, "size": { "type": "integer" },
+          "mode": { "type": "integer" }, "content_id": { "type": "string" },
+          "chunks": { "type": "array" }
+        },
+        "optional": {}
       }
     },
     {
       "door": "importFileStored", "class": "import", "capability": null,
       "args": {
         "refused": "invalid import request",
-        "required": { "intent_id": {}, "chunks": {} }, "optional": {}
+        "required": { "intent_id": { "type": "string" }, "chunks": { "type": "array" } },
+        "optional": {}
       }
     },
     {
       "door": "importFileCommit", "class": "import", "capability": null,
       "args": {
         "refused": "invalid import request",
-        "required": { "intent_id": {}, "path": {}, "mode": {}, "content_id": {}, "mtime_ms": {} }, "optional": {}
+        "required": {
+          "intent_id": { "type": "string" }, "path": { "type": "string" },
+          "mode": { "type": "integer" }, "content_id": { "type": "string" },
+          "mtime_ms": { "type": "integer" }
+        },
+        "optional": {}
       }
     },
     {
       "door": "importNotice", "class": "import", "capability": null,
       "args": {
-        "refused": "invalid import request",
-        "required": { "detail": {} }, "optional": {}
+        "refused": "invalid import request", "required": { "detail": { "type": "string" } },
+        "optional": {}
       }
     },
     {
       "door": "importCheck", "class": "import", "capability": null,
       "args": {
         "refused": "invalid import request",
-        "required": { "part": {}, "page": {} }, "optional": {}
+        "required": { "part": { "type": "string" }, "page": { "type": "integer" } }, "optional": {}
       }
     },
     {

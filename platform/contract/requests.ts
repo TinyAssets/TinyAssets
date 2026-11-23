@@ -6,13 +6,13 @@
  * table alone (the owner's typed handler map, from both halves, is `owner/write-door-map.ts`'s):
  *
  * - `contract/src/requests.ts`: each door's request whose row lists its fields, so a door's
- *   fields are listed once, in its row (`args`), and `tsc` holds the doors' request literals
- *   to them (`OwnerDoors`, `contract/src/owner-doors.ts`). Each row with a field list is one entry:
- *   its required fields, then its optional ones, as the runner holds them (`fields`). A
- *   field's value is `unknown`: the schemas are its tool's JSON arguments, and the doors send
- *   some as other values (`fileWrite`'s content as bytes), so its handler checks each value.
- *   A row by who asks (`registerAgent`) is either list. A row that takes no request (`none`),
- *   or one its module reads whole (`loose`), has no entry.
+ *   fields and their types are listed once, in its row (`args`), and `tsc` holds the doors'
+ *   request literals to them (`OwnerDoors`, `contract/src/owner-doors.ts`), as the owner's
+ *   fields step holds each call (`requestFields`). Each row with a field list is one entry:
+ *   its required fields, then its optional ones, each its schema's type (`fieldTypes`; an
+ *   object's or a list's contents `unknown`, which its handler checks). A row by who asks
+ *   (`registerAgent`, the owner's own file doors) is either list. A row that takes no request
+ *   (`none`), or one its module reads whole (`loose`), has no entry.
  * - `contract/src/owner-doors.ts`: the owner object's doors as the doors call them
  *   (`OwnerDoors`, `contract/src/owner.ts` says what each part means): each door its row's,
  *   its binding but on an unbound door (`UNBOUND_DOORS`), no request, an optional one, its
@@ -24,7 +24,9 @@ import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { type Args, type DoorRow, doorTable, takesStop, UNBOUND_DOORS } from "./src/doors.ts";
+import {
+  type Args, type DoorRow, doorTable, fieldTypes, type FieldType, takesStop, UNBOUND_DOORS,
+} from "./src/doors.ts";
 import { docLines, WIDTH } from "./src/source-lines.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -43,10 +45,39 @@ function names(door: string, fields: Readonly<Record<string, unknown>>): string 
   return listed.length === 0 ? "never" : listed.map((name) => `"${name}"`).join(" | ");
 }
 
-/** One field list as its `DoorFields` type. */
-function fieldsType(door: string, args: Args): string {
-  const optional = names(door, args.optional);
-  return `DoorFields<${names(door, args.required)}${optional === "never" ? "" : `, ${optional}`}>`;
+/** A field type's TypeScript type. */
+const TS_TYPES: Readonly<Record<FieldType, string>> = Object.freeze({
+  string: "string", integer: "number", number: "number", boolean: "boolean",
+  object: "Readonly<Record<string, unknown>>", array: "readonly unknown[]", null: "null",
+  bytes: "Uint8Array",
+});
+
+/** One field as its request's member: its value's type, from its schema (`fieldTypes`). */
+function member(door: string, name: string, schema: unknown, optional: boolean): string {
+  const types = fieldTypes(`${door} ${name}`, schema);
+  if (types === null) {
+    throw new Error(`${door}: a field ${name} that names no type`);
+  }
+  const ts = [...new Set(types.map((type) => TS_TYPES[type]))].join(" | ");
+  return `readonly ${name}${optional ? "?" : ""}: ${ts}`;
+}
+
+/**
+ * One field list as its request's type, its required fields, then its optional ones: on
+ * `lead`'s line when it fits, else one member a line, indented past `indent`.
+ */
+function fieldsType(door: string, args: Args, lead: string, indent: string): string {
+  names(door, { ...args.required, ...args.optional });
+  const listed = [
+    ...Object.entries(args.required).map(([name, schema]) => member(door, name, schema, false)),
+    ...Object.entries(args.optional).map(([name, schema]) => member(door, name, schema, true))];
+  const one = listed.length === 0 ? "Record<never, never>" : `{ ${listed.join("; ")} }`;
+  if (`${lead} ${one};`.length <= WIDTH) {
+    return `${lead} ${one}`;
+  }
+  const line = (each: string) => `${indent}  ${each};`.length <= WIDTH ? `${indent}  ${each};`
+    : `${indent}  ${each.replace(/: .*$/, ":")}\n${indent}    ${each.replace(/^[^:]*: /, "")};`;
+  return [`${lead} {`, ...listed.map(line), `${indent}}`].join("\n");
 }
 
 /**
@@ -79,10 +110,9 @@ function requestsSource(rows: readonly DoorRow[]): string {
     const lead = `  readonly ${row.door}:`;
     if ("owner" in args) {
       return [`${lead}\n${[args.owner, args.outside]
-        .map((part) => entry("    |", fieldsType(row.door, part)).replace(/;$/, ""))
-        .join("\n")};`];
+        .map((part) => fieldsType(row.door, part, "    |", "    ")).join("\n")};`];
     }
-    return [entry(lead, fieldsType(row.door, args))];
+    return [`${fieldsType(row.door, args, lead, "  ")};`];
   });
   return [
     "/**",
@@ -90,10 +120,6 @@ function requestsSource(rows: readonly DoorRow[]): string {
     " * `npm run generate` from the door table (`doors.json`), which says what each means.",
     " * Edit the table, never this file.",
     " */",
-    "",
-    "/** A request of exactly the `Required` fields and any of the `Optional` ones. */",
-    "export type DoorFields<Required extends string, Optional extends string = never> =",
-    "  { readonly [Field in Required]: unknown } & { readonly [Field in Optional]?: unknown };",
     "",
     "export interface DoorRequests {",
     ...entries,

@@ -33,8 +33,7 @@ function entryOf(answer: { entry: Entry } | { conflict: Entry | null }): Entry {
 
 async function write(r: Rig, path: string, content: Uint8Array | string,
                      expected: string | null = null, binding: Binding = r.bind(null)) {
-  return r.stub.fileWrite(binding, { path, expected_etag: expected,
-                                     content: typeof content === "string" ? text(content) : content });
+  return r.stub.fileWrite(binding, { path, expected_etag: expected, content });
 }
 
 /** A file's whole bytes through the read doors: inline, or its chunks by version. */
@@ -249,10 +248,15 @@ describe("a file write", () => {
   it("refuses content that is neither bytes nor text, or past one chunk at the write door",
      async () => {
     const r = await rig();
-    for (const content of [[1, 2], 7, new Uint8Array(4 * 1024 * 1024 + 1),
+    for (const content of [[1, 2], 7]) {
+      expect((await failure(() => r.stub.fileWrite(r.bind(null), {
+        path: `${W}/x`, expected_etag: null, content: content as unknown as Uint8Array })))
+        .message).toBe("invalid file request: content is a string or bytes");
+    }
+    for (const content of [new Uint8Array(4 * 1024 * 1024 + 1),
                            "x".repeat(4 * 1024 * 1024 + 1)]) {
       expect((await failure(() => r.stub.fileWrite(r.bind(null), {
-        path: `${W}/x`, expected_etag: null, content: content as Uint8Array }))).message)
+        path: `${W}/x`, expected_etag: null, content }))).message)
         .toBe("a written file is bytes or text, at most 4 MiB; larger ones are uploaded");
     }
     // Text is written as its UTF-8 (`file_write`).
@@ -288,7 +292,6 @@ describe("a file path", () => {
     ["a path past 4096 bytes", `${W}/${"a/".repeat(2046)}a`],
     ["a path outside the workspace", "/etc/passwd"],
     ["a prefix of the workspace", "/workspaces/a"],
-    ["not text", 7],
   ])("refuses %s", async (_what, path) => {
     const r = await rig();
     const error = await failure(() => r.stub.fileStat(r.bind(null), { path: path as string }));
@@ -461,7 +464,7 @@ describe("every file door", () => {
       const held = new Promise<void>((resolve) => { release = resolve; });
       const commit = state.storage.transaction(() => held);
       const writing = instance.fileWrite(r.bind(MUSE), {
-        path: `${W}/big.bin`, expected_etag: null, content: new Uint8Array(INLINE_BYTES + 1) })
+        path: `${W}/big.bin`, expected_etag: "", content: "x".repeat(INLINE_BYTES + 1) })
         .then(() => "written", (error: Error) => error.message);
       const narrowing = narrow(r, instance, row!.revision);
       release();
@@ -479,7 +482,8 @@ describe("every file door", () => {
     const [row] = (await r.stub.grantList(r.bind(null))).clients;
     const answer = await runInDurableObject(r.stub, async (instance: OwnerDO, state) => {
       const writing = instance.fileWrite(r.bind(MUSE), {
-        path: `${W}/big.bin`, expected_etag: "", content: new Uint8Array(INLINE_BYTES + 1) })
+        path: `${W}/big.bin`, expected_etag: "",
+        content: String.fromCharCode(0).repeat(INLINE_BYTES + 1) })
         .then(() => "written", (error: Error) => error.message);
       // Its intent is made in a few microtasks; its put to FILES needs I/O, so it is
       // still out while the queue is held and the grant narrowed ahead of the commit.

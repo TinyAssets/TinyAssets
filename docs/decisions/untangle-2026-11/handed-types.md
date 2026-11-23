@@ -145,7 +145,7 @@ integers to strings, and a plan of #5829 over b65adb647's doors would have passe
 
 ## Owed
 
-- [ ] untangle/door-types-owner: the owner's fields step (`requestFields`) holds each field's
+- [x] untangle/door-types-owner: the owner's fields step (`requestFields`) holds each field's
   value to its schema's types and `droppedTypes`, as it holds names, and the 148 `{}` fields
   declare their types; then the module type checks it repeats go. Research first (Fact 14).
 - [ ] untangle/door-answers: the door answers the doors read (`DoorTypes` `answer`) become data

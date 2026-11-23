@@ -39,7 +39,7 @@ import {
 } from "../../contract/src/egress-scope";
 import {
   type KeyCredit, metering, MODEL_NAME, type MeterOutcome, type ModelListing, type Resealed,
-  type Reservation, type Reserve, type Verified,
+  type Reservation, type Reserve, succeeded, type Verified,
 } from "../../contract/src/gateway";
 import { taken } from "../../contract/src/handed";
 import { boundedJson } from "./answer";
@@ -509,10 +509,9 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
                                           new Headers(upstream.headers), toMeter, call.pricing),
                              tierPriced])
         .then(([usage, tier]): MeterOutcome => (usage === null || !tier.priced ? UNKNOWN
-          : { state: "succeeded", tokens: usage.tokens,
-              // An answer naming no tier was served at the account's default: the dearest.
-              cost: usage.cost * (tier.seen ? 1 : rules.served?.absent ?? 1),
-              ...(usage.served === undefined ? {} : { served: usage.served }) }), () => UNKNOWN);
+          // An answer naming no tier was served at the account's default: the dearest.
+          : succeeded(usage.tokens, usage.cost * (tier.seen ? 1 : rules.served?.absent ?? 1),
+                      usage.served)), () => UNKNOWN);
     }
   }
   // The caller's cancel ends the provider's request too, whatever else reads the answer; the

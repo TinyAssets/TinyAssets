@@ -71,6 +71,7 @@ import { clock } from "./clock";
 import { type Account, type Call, type LiveSession, proven } from "./door";
 import type { OwnerStorage } from "./gate";
 import type { Notices } from "./notices";
+import type { DoorRequests } from "../../contract/src/requests";
 
 /**
  * How many calls wait: 200 rows in all, pending or approved, and 50 of them one outside
@@ -566,12 +567,6 @@ export interface ActionAnswerRequest {
 // scope and the fields.
 
 /** What a run's hook helper asks: the tools its hook matches, or one call it saw. */
-export interface DecideRequest {
-  readonly check?: true;
-  readonly tool_name?: string;
-  readonly tool_input?: unknown;
-}
-
 /** A tool's name, as a CLI hands its hook one. */
 const TOOL = /^[A-Za-z0-9_.:-]{1,256}$/;
 
@@ -608,24 +603,24 @@ export const actionsDoors = Object.freeze({
    * an `http` hook is answered in its CLI's own words (`hook`): an empty object lets the call
    * be, and the record's `deny`, its `{reason}` the refusal's message, refuses it.
    */
-  runDecide(o: ActionsDoorNeeds, { account, r }: Call<DecideRequest>):
+  runDecide(o: ActionsDoorNeeds, { account, request }: Call<DoorRequests["runDecide"]>):
       { tools: string[]; generation: number } | { allow: true } | { hook: object } {
     const actor = decidedActor(account);
     if (account.run === null || actor === null) {
       throw new Refusal("refused", "only a run's own hook asks its decide door");
     }
     const hook = hookOf(o.runs.engineOf(account.run.id));
-    if (r["check"] === true) {
+    if (request.check === true) {
       return hook === null ? { tools: [], generation: 0 } : o.actions.hookTools(hook);
     }
-    const tool = r["tool_name"];
-    if (typeof tool !== "string" || !TOOL.test(tool)) {
+    const tool = request.tool_name;
+    if (tool === undefined || !TOOL.test(tool)) {
       throw new Refusal("invalid", "invalid decide request");
     }
     const deny = hook !== null && "http" in hook.runs ? hook.runs.http.deny : null;
     try {
       if (hook !== null) {
-        o.actions.decideTool(actor, hook, tool, r["tool_input"] ?? null, clock());
+        o.actions.decideTool(actor, hook, tool, request.tool_input ?? null, clock());
       }
     } catch (error) {
       const refusal = refusalOf(error);

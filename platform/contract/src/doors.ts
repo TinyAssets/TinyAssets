@@ -11,9 +11,9 @@
  * - its request (`args`): exactly the required fields and any of the optional ones, none
  *   `undefined`, else refused with the row's words; and any it lists as dropped, which the
  *   doors' version before may still hand, taken and left out (`requestFields`). Each field's
- *   schema is its JSON type (`fieldTypes`), which the doors' `/mcp` holds outside calls to
- *   and the door's module checks; a type the doors' version before may still hand, which
- *   the schema names no more, is listed beside it (`droppedTypes`).
+ *   schema is its type (`fieldTypes`), which the doors' `/mcp` holds outside calls to and the
+ *   owner's fields step every call (`requestFields`); a type the doors' version before may
+ *   still hand, which the schema names no more, is listed beside it (`droppedTypes`).
  *
  * A door the doors call no more is marked `dropped`: the object still takes it, for the
  * doors' version before, and `OwnerDoors` lacks it (`deploy/handed.ts`).
@@ -96,20 +96,24 @@ export interface Args {
    * and the owner still takes, until the doors the stage serves hand them no more
    * (`deploy/handed.ts`).
    */
-  readonly droppedTypes?: Readonly<Record<string, readonly JsonType[]>>;
+  readonly droppedTypes?: Readonly<Record<string, readonly FieldType[]>>;
 }
 
-/** The JSON types a field's schema may name. */
-const JSON_TYPES = Object.freeze(["string", "integer", "number", "boolean", "object",
-                                         "array", "null"] as const);
-export type JsonType = (typeof JSON_TYPES)[number];
+/**
+ * The types a field's schema may name: JSON's, and `bytes`, a `Uint8Array`, which only RPC
+ * carries (the doors' own calls), so no tool's field names it: `/mcp` serves JSON Schema.
+ */
+const FIELD_TYPES = Object.freeze(["string", "integer", "number", "boolean", "object",
+                                   "array", "null", "bytes"] as const);
+export type FieldType = (typeof FIELD_TYPES)[number];
 
 /**
- * The JSON types the field `name`'s schema names, or null where it names none (any value).
- * A schema is its type and description: what the deploy kit holds across a deploy
- * (`deploy/handed.ts`), so any other key throws rather than narrow a field unseen.
+ * The types the field `name`'s schema names, or null where it names none (a table before
+ * every field named one). A schema is its type and description: what the deploy kit holds
+ * across a deploy (`deploy/handed.ts`), so any other key throws rather than narrow a field
+ * unseen.
  */
-export function fieldTypes(name: string, schema: unknown): readonly JsonType[] | null {
+export function fieldTypes(name: string, schema: unknown): readonly FieldType[] | null {
   if (!keyed(schema, [], ["type", "description"])) {
     throw new Error(`${name}'s schema is not its type and description alone`);
   }
@@ -118,16 +122,52 @@ export function fieldTypes(name: string, schema: unknown): readonly JsonType[] |
   }
   const types: unknown[] = Array.isArray(schema["type"]) ? schema["type"] : [schema["type"]];
   if (types.length === 0 || new Set(types).size !== types.length
-      || !types.every((type) => among(JSON_TYPES, type))) {
-    throw new Error(`${name}'s type is not a JSON type, nor a list of distinct ones`);
+      || !types.every((type) => among(FIELD_TYPES, type))) {
+    throw new Error(`${name}'s type is not a field type, nor a list of distinct ones`);
   }
-  return types as JsonType[];
+  return types as FieldType[];
+}
+
+/** Whether a field that takes `taken` takes a value of `type`: `integer` under `number` too. */
+export function takesType(taken: readonly FieldType[], type: FieldType): boolean {
+  return taken.includes(type) || (type === "integer" && taken.includes("number"));
+}
+
+/** Each type in a refusal's words. */
+const TYPE_WORDS: Readonly<Record<FieldType, string>> = Object.freeze({
+  string: "a string", integer: "an integer", number: "a number", boolean: "true or false",
+  object: "an object", array: "a list", null: "null", bytes: "bytes",
+});
+
+/** The type `value` is, as a field's schema names it (`integer` for a whole number); else null. */
+function typeOf(value: unknown): FieldType | null {
+  if (value === null) {
+    return "null";
+  }
+  if (Array.isArray(value)) {
+    return "array";
+  }
+  if (value instanceof Uint8Array) {
+    return "bytes";
+  }
+  if (object(value)) {
+    return "object";
+  }
+  if (typeof value === "string" || typeof value === "boolean") {
+    return typeof value === "string" ? "string" : "boolean";
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Number.isInteger(value) ? "integer" : "number";
+  }
+  return null;
 }
 
 /**
- * A door's arguments: its fields (`Args`); its fields by who asks, the owner itself or an
- * outside client (`registerAgent`); `none`, a door that takes no request; or `loose`, a
- * request its module reads whole, held to no field list.
+ * A door's arguments: its fields (`Args`); its fields by who asks, the owner itself (no
+ * outside client, no run) or anyone else (`registerAgent`, and the file doors whose owner
+ * names no etag, or writes bytes); `none`, a door that takes no request; or `loose`, a
+ * request its module reads whole, held to no field list. A tool's schema is its fields, or
+ * else the outside ones (`argsSchema`).
  */
 export type DoorArgs = Args | { readonly owner: Args; readonly outside: Args } | "none" | "loose";
 
@@ -182,7 +222,7 @@ function argsProblems(value: unknown): string[] {
   if (typeof value["refused"] !== "string" || value["refused"] === "") {
     problems.push("arguments with no refusal");
   }
-  const typed = new Map<string, readonly JsonType[] | null>();
+  const typed = new Map<string, readonly FieldType[]>();
   for (const part of ["required", "optional"]) {
     const fields = value[part];
     if (!object(fields) || !Object.values(fields).every(object)) {
@@ -191,7 +231,12 @@ function argsProblems(value: unknown): string[] {
     }
     for (const [name, schema] of Object.entries(fields)) {
       try {
-        typed.set(name, fieldTypes(name, schema));
+        const types = fieldTypes(name, schema);
+        if (types === null) {
+          problems.push(`${name}'s schema names no type`);
+        } else {
+          typed.set(name, types);
+        }
       } catch (error) {
         problems.push((error as Error).message);
       }
@@ -211,9 +256,9 @@ function argsProblems(value: unknown): string[] {
   if (droppedTypes !== undefined && (!object(droppedTypes)
       || Object.entries(droppedTypes).some(([name, types]) => {
         const held = typed.get(name);
-        return !Array.isArray(types) || types.length === 0 || held === undefined || held === null
+        return !Array.isArray(types) || types.length === 0 || held === undefined
           || new Set(types).size !== types.length
-          || types.some((type) => !among(JSON_TYPES, type) || held.includes(type));
+          || types.some((type) => !among(FIELD_TYPES, type) || held.includes(type));
       }))) {
     problems.push("dropped types that are not, by a typed field it lists, types its schema " +
                   "names not");
@@ -295,8 +340,13 @@ export function doorProblems(rows: unknown): string[] {
         tools.add(tool["name"]);
       }
       const args = row["args"];
-      if (args !== "none" && (!object(args) || !("refused" in args))) {
+      const served = object(args) && object(args["outside"]) ? args["outside"] : args;
+      if (args !== "none" && !(object(served) && "refused" in served)) {
         say("a tool's door takes its fields, or none");
+      } else if (object(served) && [served["required"], served["optional"]].some((fields) =>
+        object(fields) && Object.values(fields).some((schema) =>
+          object(schema) && [schema["type"]].flat().includes("bytes")))) {
+        say("a tool's field names bytes, which JSON Schema has not");
       }
     }
   }
@@ -328,10 +378,11 @@ export function doorRow(name: string): DoorRow {
 
 /**
  * A tool's arguments as JSON Schema: an object of exactly its required fields and any optional
- * ones; an empty one for a door that takes no request.
+ * ones (by who asks, the outside ones); an empty one for a door that takes no request.
  */
 export function argsSchema(args: DoorArgs): JsonSchema {
-  const fields = args === "none" ? { required: {}, optional: {} } : args as Args;
+  const fields = args === "none" ? { required: {}, optional: {} }
+    : "outside" in (args as object) ? (args as { outside: Args }).outside : args as Args;
   return { type: "object", properties: { ...fields.required, ...fields.optional },
            required: Object.keys(fields.required), additionalProperties: false };
 }
@@ -416,7 +467,9 @@ export function fields(request: unknown, required: readonly string[], optional: 
 
 /**
  * A door's request held to its arguments (`fields`): none at all an empty one where it may be
- * `omitted`, and its dropped fields taken and left out.
+ * `omitted`; each field's value of a type its schema names, or one of its `droppedTypes`
+ * (an `undefined` one, where `undefinedAllowed`, its module's to read), else refused with the
+ * row's words and the types it names; and its dropped fields taken and left out.
  */
 export function requestFields(args: Args, request: unknown): Record<string, unknown> {
   const { dropped = [] } = args;
@@ -424,6 +477,18 @@ export function requestFields(args: Args, request: unknown): Record<string, unkn
     : request;
   const r = fields(asked, Object.keys(args.required), [...Object.keys(args.optional), ...dropped],
                    args.refused, args.undefinedAllowed === true);
+  for (const [name, value] of Object.entries(r)) {
+    if (dropped.includes(name) || value === undefined) {
+      continue;
+    }
+    const schema = Object.hasOwn(args.required, name) ? args.required[name] : args.optional[name];
+    const types = fieldTypes(name, schema) ?? [];
+    const type = typeOf(value);
+    if (type === null || !takesType([...types, ...args.droppedTypes?.[name] ?? []], type)) {
+      throw new Refusal("invalid", `${args.refused}: ${name} is ${
+        types.map((each) => TYPE_WORDS[each]).join(" or ")}`);
+    }
+  }
   return dropped.some((key) => key in r)
     ? Object.fromEntries(Object.entries(r).filter(([key]) => !dropped.includes(key))) : r;
 }

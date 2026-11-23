@@ -425,7 +425,7 @@ export const signinsDoors = Object.freeze({
       Promise<SigninView | { started: false; code: string }> {
     const begun = await o.door(() => {
       const { binding, r } = door.check();
-      const rec = typeof r["engine"] === "string" ? servedRecord(r["engine"]) : undefined;
+      const rec = servedRecord(door.request.engine);
       if (!signsIn(rec)) {
         throw new Refusal("invalid",
                           "a sign-in names an engine that signs in with the vendor's own login");

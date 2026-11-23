@@ -193,7 +193,7 @@ describe("the source records", () => {
   it("are copies, so a reader cannot change the bundled data", () => {
     const first = catalogOf(bundledRecords()).get("groq")!;
     expect(Object.isFrozen(first)).toBe(true);
-    const [api] = first.upstream!.apis as { base_url: string }[];
+    const [api] = first.upstream!.apis as unknown as { base_url: string }[];
     expect(() => { api!.base_url = "https://evil.test"; }).toThrow();
     expect(catalogOf(bundledRecords()).get("groq")!.upstream!.apis[0]!.base_url)
       .toBe("https://api.groq.com/openai/v1");

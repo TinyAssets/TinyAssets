@@ -10,7 +10,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { Refusal } from "../../contract/src/refusal";
 import { guarded } from "../src/failure";
-import { EGRESS_BODY_MAX } from "../../contract/src/limits";
+import { EGRESS_BODY_MAX, METERED_COST_MAX } from "../../contract/src/limits";
 import { GATEWAY_POOL_SLOTS, gatewaySlots } from "../src/held";
 import Gateway, { ConnectGateway, EgressGateway } from "../src/index";
 import { doorbellSecret, sealDoorbell } from "../src/doorbell";
@@ -416,6 +416,31 @@ describe("the gateway Worker", () => {
     const [status] = await sent("/api/v1/chat/completions", "anthropic/claude-opus-5.5");
     expect(status).toBeGreaterThanOrEqual(400);
     expect(asked).toHaveLength(1);
+  });
+
+  it("settles a call at the bill its answer reports up to METERED_COST_MAX, and past it " +
+     "unknown", async () => {
+    const egress = new EgressGateway(createExecutionContext(), env);
+    const blob = (await connect.seal("alice", C1, 1, "sk-or", OPENROUTER)).blob;
+    const paid = builtinCatalog().provider("openrouter")!.getModels()
+      .find((model) => model.api === "openai-completions" && model.cost.output > 0)!;
+    const settled = async (bill: string) => {
+      const answer = await egress.forward("alice", C1, 1, blob, posted("/api/v1/chat/completions",
+        JSON.stringify({ model: paid.id, stream: true, messages: [{ role: "user", content: "hi" }] }),
+        steer({ bill })), granting([]), new ReadableStream());
+      await answer.response.text();
+      return new Response(answer.outcome).text();
+    };
+    // A bill far above any reservation is what the vendor charged: the owner's to record.
+    for (const bill of [0.42, 5_000, METERED_COST_MAX]) {
+      expect(JSON.parse(await settled(String(bill))))
+        .toEqual({ state: "succeeded", tokens: 18, cost: bill });
+    }
+    // Past it, no counter holds it exactly: no bill, so unknown, never a line the owner reads
+    // as Infinity or as no cost at all.
+    for (const bill of [String(METERED_COST_MAX + 1), "1e308"]) {
+      expect(JSON.parse(await settled(bill))).toEqual({ state: "unknown" });
+    }
   });
 
   it("leaves a metered answer its provider goes silent on to its caller, whose leaving ends it",

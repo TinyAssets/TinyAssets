@@ -690,6 +690,9 @@ export class LegOwner extends OwnerDO {
       caps: () => {
         throw new Error("a connector's call is never charged");
       },
+      notices: { once: () => {
+        throw new Error("a connector's call is never charged");
+      } },
     });
     const egress = this.#egress;
     // In a unit, as the door's (`egressOpen`).

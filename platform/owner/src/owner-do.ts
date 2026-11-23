@@ -591,6 +591,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
                  source_daily_cost: own?.daily_cost ?? null,
                  source_monthly_cost: own?.monthly_cost ?? null };
       },
+      notices: this.#notices,
     });
     this.#tickets = new Tickets(storage);
     this.#signins = new Signins(storage);
@@ -1251,7 +1252,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       return {};
     }
     return requestFields("refused" in args ? args
-      : account.origin === null ? args.owner : args.outside, request);
+      : account.origin === null && account.run === null ? args.owner : args.outside, request);
   }
 
   /**

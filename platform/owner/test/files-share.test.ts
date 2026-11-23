@@ -45,7 +45,7 @@ const write = async (r: Rig, origin: typeof MUSE | null, path: string, body = "x
     etag = await r.stub.fileStat(r.bind(null), { path }).then(({ entry }) => entry?.etag ?? "",
                                                                () => "");
   }
-  return r.stub.fileWrite(r.bind(origin), { path, expected_etag: etag, content: text(body) });
+  return r.stub.fileWrite(r.bind(origin), { path, expected_etag: etag, content: body });
 };
 
 /** Everything the manifest holds, to show a refusal left nothing behind. */

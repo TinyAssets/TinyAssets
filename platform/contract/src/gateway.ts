@@ -24,6 +24,7 @@ import { taken } from "./handed.ts";
 import type {
   CreditRead, EgressScope, ListedModel, ListingRead, OneApiScope, ServiceSource, Source,
 } from "./egress-scope.ts";
+import { METERED_COST_MAX } from "./limits.ts";
 import type { ModelRecord } from "./model-record.ts";
 import { Refusal } from "./refusal.ts";
 import { AUTH_HEADER } from "./wake-records.ts";
@@ -118,6 +119,22 @@ export type MeterOutcome =
       readonly served?: string }
   | { readonly state: "failed" }
   | { readonly state: "unknown" };
+
+/**
+ * Whether `cost` is one a metered call settles at, in dollars: a number from 0 to
+ * `METERED_COST_MAX`, so its µ$ is exact in every counter it moves (NaN and Infinity are
+ * not). A cost above the call's reservation is one: what it spent past its hold.
+ */
+export function meteredCost(cost: unknown): cost is number {
+  return typeof cost === "number" && cost >= 0 && cost <= METERED_COST_MAX;
+}
+
+/** A metered call's success at `cost` dollars, or `unknown` for a cost none settles at. */
+export function succeeded(tokens: number, cost: number, served?: string): MeterOutcome {
+  return meteredCost(cost)
+    ? { state: "succeeded", tokens, cost, ...(served === undefined ? {} : { served }) }
+    : { state: "unknown" };
+}
 
 /** What the owner's object answered a reserve: the call's metering, or its refusal's code. */
 export type Reservation = { readonly metering: Metering } | { readonly refused: string };

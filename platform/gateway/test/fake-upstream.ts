@@ -11,7 +11,8 @@
  * - `cmd:echo`, and a body with no `cmd:` word: the reply's text is JSON of what it received
  *   (path, the credential headers, the output-token cap, the service tier), so a test reads
  *   back what the gateway sent; the word `tier` (`steer`) names the tier an Anthropic answer
- *   says it served, and the word `served` the model an answer says served it (a router's).
+ *   says it served, the word `served` the model an answer says served it (a router's), and
+ *   the word `bill` what an OpenRouter answer says it billed.
  * - `cmd:slow-<id>`: one text delta, then holds the stream open; its cancel is recorded
  *   under `<id>`, read back from `https://status.test/cancelled?id=<id>`.
  *
@@ -197,6 +198,7 @@ async function model(request: Request, format: Format): Promise<Response> {
   // OpenAI's Responses answer names the tier it served the call at, as the API does; an
   // Anthropic answer names its served tier in its usage when the word `tier` asks.
   const served = word(request, "tier");
+  const bill = word(request, "bill");
   // The answer names the model the word `served` names (a router's pick), or the one named.
   const payload = (format.start(word(request, "served") ?? name)
     + format.text(reply.slice(0, half))
@@ -208,7 +210,10 @@ async function model(request: Request, format: Format): Promise<Response> {
     .replace('"response":{"id":"resp_fake"}', tier === null ? '"response":{"id":"resp_fake"}'
       : `"response":{"id":"resp_fake","service_tier":"auto"}`)
     .replace('"usage":{"input_tokens":', served === null ? '"usage":{"input_tokens":'
-      : `"usage":{"service_tier":${JSON.stringify(served)},"input_tokens":`);
+      : `"usage":{"service_tier":${JSON.stringify(served)},"input_tokens":`)
+    // OpenRouter's answer reports what it billed when the word `bill` names it, as written.
+    .replace('"usage":{"prompt_tokens":', bill === null ? '"usage":{"prompt_tokens":'
+      : `"usage":{"cost":${bill},"is_byok":false,"prompt_tokens":`);
   return new Response(payload, { headers: { "content-type": "text/event-stream" } });
 }
 

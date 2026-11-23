@@ -24,12 +24,12 @@ import {
   EGRESS_LIMITS, egressPrice,
   LOST_AFTER_S,
 } from "../src/egress";
-import { EGRESS_DEADLINE_S, SPEND_KEPT } from "../../contract/src/limits";
+import { EGRESS_DEADLINE_S, METERED_COST_MAX, SPEND_KEPT } from "../../contract/src/limits";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { apiRules } from "../../contract/src/api-rules";
 import { NO_SANDBOX, SANDBOX_DOORS, SANDBOX_ONLY } from "../src/owner-do";
 import { SYNC_FENCED } from "../src/files";
-import { largestFitting, priced, SETTLED_WITHIN_S } from "../src/money";
+import { costMicros, largestFitting, priced, SETTLED_WITHIN_S } from "../src/money";
 import { MODEL_SETTINGS } from "../../contract/src/policy-document";
 import {
   ANTHROPIC, catalog, type Gated, gated, keySealed, OAUTH, OPENAI, scopeOf,
@@ -1157,11 +1157,60 @@ describe("the spend caps", () => {
     expect((await r.stub.egressReceipts(r.bind())).receipts[0])
       .toMatchObject({ reservation: snapshot.reservation, charge: "succeeded",
                        served: "model-x-2026-01-01" });
+    // A bill within its hold tells the owner nothing.
+    expect((await r.stub.noticeList(r.bind())).notices).toEqual([]);
     expect((await failure(() => r.stub.egressSettle(lease.as(), settle(snapshot.reservation, {
       spend: { ...DONE, served: "a b" } })))).message).toBe("invalid egress settle");
     // A settled charge never moves again.
     await expect(r.sql("UPDATE egress_reservations SET charge = 'held' WHERE charge = 'failed'"))
       .rejects.toThrow(/settled once/);
+  });
+
+  it("record a bill above its hold in full, every cap counting it, and refuse one past " +
+     "METERED_COST_MAX, which no counter holds exactly", async () => {
+    const probe = await gated();
+    const probed = await probe.connect("sk-good");
+    await admitted(probe, await leased(probe), probed);
+    const [{ est_cost: one }] = (await charges(probe)) as [{ est_cost: number }];
+    const r = await gated();
+    const connection = await r.connect("sk-good");
+    // The owner's day has room for three holds; the overspend takes ten.
+    const lease = await cappedLeased(r, { ...ROOMY, daily_cost: one * 3 });
+    const over = await admitted(r, lease, connection);
+    const bill = (one * 10) / 1_000_000;
+    // Past the bound, or no number a counter can hold: refused, and nothing moved.
+    for (const cost of [1e308, METERED_COST_MAX * (1 + 1e-9), Number.MAX_VALUE]) {
+      expect((await failure(() => r.stub.egressSettle(lease.as(), settle(over.reservation, {
+        spend: { ...DONE, cost } })))).message).toBe("invalid egress settle");
+    }
+    expect(await sourceSpend(r)).toEqual([{ p: "d", cost: one }, { p: "m", cost: one }]);
+    expect(() => costMicros(1e308)).toThrow(RangeError);
+    const overspent = async () => (await r.stub.noticeList(r.bind())).notices
+      .filter((notice) => notice.type === "egress_overspent").length;
+    expect(await overspent()).toBe(0);
+    expect(await r.stub.egressSettle(lease.as(), settle(over.reservation, {
+      spend: { ...DONE, cost: bill } }))).toEqual({ settled: true });
+    // The owner is told once, since the caps now count more than any hold said.
+    expect(await overspent()).toBe(1);
+    expect((await r.stub.egressReceipts(r.bind())).receipts[0])
+      .toMatchObject({ reservation: over.reservation, charge: "succeeded", est_cost: one,
+                       cost: one * 10 });
+    expect(await runs(r)).toMatchObject([{ requests: 1, cost: one * 10 }]);
+    expect(await sourceSpend(r)).toEqual([{ p: "d", cost: one * 10 }, { p: "m", cost: one * 10 }]);
+    expect(await refusedWith(r, lease.as(), connection)).toBe("egress_spend_refused");
+    expect((await charges(r)).at(-1)).toMatchObject({ rule: "daily_cost" });
+    // At the bound, exact; and counters past what SQLite's SUM adds still read.
+    const most = await gated();
+    const mostly = await most.connect("sk-good");
+    const box = await cappedLeased(most, { ...ROOMY, daily_cost: one * 3 });
+    const top = await admitted(most, box, mostly);
+    await most.stub.egressSettle(box.as(), settle(top.reservation, {
+      spend: { ...DONE, cost: METERED_COST_MAX } }));
+    expect((await charges(most))[0]).toMatchObject({ cost: METERED_COST_MAX * 1_000_000 });
+    await most.sql("INSERT INTO model_spend (period, source, cost) SELECT period, 'other', " +
+                     "9223372036854775807 FROM model_spend WHERE period LIKE 'd:%'");
+    expect(await refusedWith(most, box.as(), mostly)).toBe("egress_spend_refused");
+    expect((await charges(most)).at(-1)).toMatchObject({ rule: "daily_cost" });
   });
 
   it("let two calls at once never pass a cap between them", async () => {
