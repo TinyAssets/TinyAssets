@@ -410,7 +410,7 @@ export type SettleSent = {
  * What the door table cannot say of a door the doors call, by door: the values the doors build
  * into its row's fields narrower than its types (`values`), that they hand a parsed body on
  * (`handed`), a loose door's parameters after its binding (`loose`), and the fields of its
- * answer that they or their tests read narrower than its row's types (`answer`: a literal, a
+ * answer that their code reads narrower than its row's types (`answer`: a literal, a
  * union's arms, a list's items, an object's fields), held to the owner's own by `OwnerDO
  * implements OwnerDoors`. `tsc` refuses an entry for no door of the table, or one its row
  * leaves no room for: `values` or `handed` but on a field list, a field the row does not list,
@@ -540,7 +540,7 @@ export type DoorLoose<D extends string> =
 type Narrowed<Answer, Narrow> = Answer extends object
   ? Narrow extends object ? Omit<Answer, keyof Narrow> & Narrow : never : Answer;
 /**
- * What the doors, or their tests, read of a door's answer: its row's (`DoorAnswers`, but its
+ * What the doors read of a door's answer: its row's (`DoorAnswers`, but its
  * `unread` fields), each field `DoorTypes` `answer` narrows its narrowing (`owner-doors.ts`
  * holds each to its row's type); an object they pass on where the row declares none.
  */
@@ -553,6 +553,3 @@ export type DoorAnswer<D extends string> = D extends keyof DoorAnswers
  */
 export type OwnerAnswer<D extends string> = DoorAnswer<D>
   & (D extends keyof UnreadAnswers ? UnreadAnswers[D] | null : unknown);
-
-/** An inbound binding as the doors keep its route: its id, revision and route token. */
-export type InboundRoute = DoorAnswers["inboundCreate"];

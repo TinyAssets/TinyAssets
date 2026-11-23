@@ -39,7 +39,7 @@ doors version that reads an answer field with an owner that no longer answers it
   reads an answer's field fails to compile, so the errors are the reads. Rerun from
   `platform/` on a clean tree:
   `node -e 'const f="contract/doors.json",fs=require("fs"),t=JSON.parse(fs.readFileSync(f));for(const r of t.doors)delete r.answer;fs.writeFileSync(f,JSON.stringify(t))' && node contract/requests.ts && npx tsc --noEmit -p . | grep '^doors/src'; git checkout -- .`
-  At this branch it names 71 lines in 14 files, 30 doors: `admissionSet` and `ownerState`
+  At this branch it names 96 errors in 14 files, 30 doors: `admissionSet` and `ownerState`
   `state`, `sessionOpen` `session` (`authorize.ts`); `tierRead` `tier`, `fileRead` `entry`
   and `inline`, `ownerExport` (`app.ts`); `ownerErase` `erasing`, `erasureOutside` `keys`,
   `routes` or null (`erase.ts`); `toolProfile` (`mcp.ts`); `definitionRead`
@@ -184,7 +184,8 @@ doors version that reads an answer field with an owner that no longer answers it
   `Stray` refuses a narrowing of a field the row does not read, or one wider than its row's.
 - `contract/src/owner.ts`: `DoorAnswer` is the row's, each narrowed field `DoorTypes`'s
   (`Narrowed`); `OwnerAnswer` adds the `unread` fields; `DoorTypes` keeps only what the doors'
-  code reads narrower; `InboundRoute` is the table's; `DecideAnswer`, the runner's
+  code reads narrower; `InboundRoute`, which nothing reads once the table declares the inbound
+  answers, is gone (#5843's second review); `DecideAnswer`, the runner's
   (`owner/src/actions.ts` answers it, `sandbox/runner/decide.ts` reads its keys).
   `cutover.json`: the `owner.ts` edit names `importDiscard` no more.
 - `doors/src/inbound.ts` `delivered` reads the doors' answer type; `gateway/memory`'s owner

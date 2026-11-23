@@ -21,7 +21,8 @@
  *   fields it still answers that the doors read no more (`unread`), for the doors' version
  *   before (`deploy/handed.ts`). `tsc` holds the doors' code and the owner's handlers to it
  *   (`contract/requests.ts` writes its types); a row with none is an answer the doors pass
- *   on whole, which only readers outside that pairing read (the runner, the kit, tests).
+ *   on whole, which only readers outside that pairing read (the runner, the kit, tests, and
+ *   outside callers by the tool contract).
  *
  * A door the doors call no more is marked `dropped`: the object still takes it, for the
  * doors' version before, and `OwnerDoors` lacks it (`deploy/handed.ts`).
