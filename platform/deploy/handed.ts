@@ -35,12 +35,6 @@ import { type Listed, type Shape, takes } from "../contract/src/handed.ts";
 import { WORKERS } from "./facts.ts";
 
 const HANDED_JSON = "platform/contract/handed.json";
-/**
- * The shapes' file before `handed.json` (#5808): the binding's alone, each the doors' to the
- * owner. Read only at a commit that holds no `handed.json`, as the stage served when this
- * file came.
- */
-const BINDINGS_JSON = "platform/contract/bindings.json";
 const DOORS_JSON = "platform/contract/doors.json";
 const CUTOVER_JSON = "platform/cutover.json";
 
@@ -65,27 +59,23 @@ export const TREE: Side = Object.freeze({ shapes: tree.shapes as Record<string, 
  */
 export type FileAt = (commit: string, path: string) => string | null;
 
-/** The side of the release at `commit`, read from git by `read`; a commit with neither throws. */
+/** The side of the release at `commit`, read from git by `read`; a commit without both throws. */
 export function sideAt(commit: string, read: FileAt): Before {
   const doors = read(commit, DOORS_JSON);
   const handed = read(commit, HANDED_JSON);
-  const bindings = handed === null ? read(commit, BINDINGS_JSON) : null;
-  if (doors === null || (handed ?? bindings) === null) {
+  if (doors === null || handed === null) {
     throw new Error(`${commit} holds no ${doors === null ? DOORS_JSON : HANDED_JSON}: what it ` +
                     "hands and takes is unknown");
   }
-  const listed = (JSON.parse((handed ?? bindings)!) as { shapes: Record<string, Shape> }).shapes;
-  const shapes = handed !== null ? listed : Object.fromEntries(Object.entries(listed)
-    .map(([name, shape]) => [name, { ...shape, from: "doors", to: "owner" }]));
   const manifest = read(commit, CUTOVER_JSON);
   const edits = manifest === null ? [] : (JSON.parse(manifest) as {
     phases: { cutover: { entries: { edit?: string; names?: string[] }[] } } })
     .phases.cutover.entries;
   const cut = (path: string) => new Set(edits.flatMap((entry) => entry.edit === path
     ? (entry.names ?? []).map((name) => name.replace(/^"(.*)"$/, "$1")) : []));
-  return { shapes, doors: (JSON.parse(doors) as { doors: DoorRow[] }).doors,
-           cutover: { doors: cut(DOORS_JSON),
-                      shapes: cut(handed !== null ? HANDED_JSON : BINDINGS_JSON) } };
+  return { shapes: (JSON.parse(handed) as { shapes: Record<string, Shape> }).shapes,
+           doors: (JSON.parse(doors) as { doors: DoorRow[] }).doors,
+           cutover: { doors: cut(DOORS_JSON), shapes: cut(HANDED_JSON) } };
 }
 
 /** What a problem says of a field, by which of the two is the version before. */

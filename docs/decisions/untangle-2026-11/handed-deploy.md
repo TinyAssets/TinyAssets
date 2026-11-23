@@ -135,5 +135,6 @@ other strict cross-Worker parser is data under the same rule, which runs both wa
 
 ## Owed
 
-- [ ] Once the stage serves a commit with `handed.json` (this PR's or later), `sideAt`'s
-  reading of a commit's `bindings.json` goes (live: the stage serving this PR's commit).
+- [x] Once the stage serves a commit with `handed.json` (this PR's or later), `sideAt`'s
+  reading of a commit's `bindings.json` goes (live: the stage serving this PR's commit). Done
+  (`process/handed-fallback`, `handed-fallback.md`): run 45119864429 deployed d315aaa61.

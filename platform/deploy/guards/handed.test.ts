@@ -186,19 +186,8 @@ describe("a release's side, read from git", () => {
     at[path] ?? null;
   const DOORS = JSON.stringify({ doors: [] });
 
-  it("is its handed.json, or before it its bindings.json's shapes, the doors' to the owner", () => {
-    const shapes = { account: { required: ["owner"], optional: [] } };
-    expect(sideAt("c", files({ "platform/contract/doors.json": DOORS,
-                               "platform/contract/bindings.json": JSON.stringify({ shapes }) }))
-      .shapes).toEqual({ account: { ...shapes.account, from: "doors", to: "owner" } });
-    const handed = { started: STARTED };
-    expect(sideAt("c", files({ "platform/contract/doors.json": DOORS,
-                               "platform/contract/handed.json": JSON.stringify({ shapes: handed }),
-                               "platform/contract/bindings.json": "not read" })).shapes)
-      .toEqual(handed);
-  });
-
-  it("names the cutover's edits of the file it read, and throws for a release with neither", () => {
+  it("names the cutover's edits of its two files, and throws for a release without handed.json",
+     () => {
     const manifest = JSON.stringify({ phases: { cutover: { entries: [
       { edit: "platform/contract/handed.json", names: ["\"account\"", "origin"] },
       { edit: "platform/contract/doors.json", names: ["importRows"] }] } } });

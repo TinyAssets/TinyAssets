@@ -2716,13 +2716,8 @@ describe("the rollout record and mode rollback", () => {
       ({ ...shape, required: [...shape.required, "lease"] })) }),
                 "the shape started does not always hand lease, which the owner's version " +
                 "before requires");
-    // Before handed.json, the serving commit's bindings.json is its shapes, the doors' to the
-    // owner; a commit with neither, a version no tag names a commit of, and a commit this
+    // A commit with no handed.json, a version no tag names a commit of, and a commit this
     // checkout lacks, are unknown.
-    const bindings = { [HANDED]: null, "platform/contract/bindings.json": JSON.stringify({
-      shapes: Object.fromEntries(Object.entries(tree.shapes).slice(0, 13)) }) };
-    expect((await runMode(world({ held: true, before: bindings }), "dark", ["--public"], PUBLIC))
-      .plan).toContain(HELD_HOLD);
     await stops(world({ held: true, before: { [HANDED]: null } }),
                 `${BEFORE} holds no ${HANDED}: what it hands and takes is unknown`);
     const doors = (tag: string | null) => world({ held: true, serving: { ...HELD_SERVING,
