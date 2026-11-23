@@ -41,7 +41,7 @@
  * - Work saved under a grant is rechecked with `standing` against the generation it
  *   was stamped with: a changed, revoked or fenced grant refuses it. Stamps carry no
  *   scopes: a scoped grant's are read live from the row, so a rename needs no new stamp.
- *   An MCP client's held registration (`registrations.ts`) carries that stamp and holds
+ *   An outside client's held registration (`registrations.ts`) carries that stamp and holds
  *   its client's row (`held`), as an agent does, so the free-row bound can never forget
  *   it and turn a standing grant into "no grant".
  *

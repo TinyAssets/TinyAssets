@@ -130,8 +130,8 @@ gone, whether `keyMint` keeps `scopes`, and so whether `centerOf`'s "name one ..
   - `owner/test/ledger.test.ts` "takes an API-key agent's identity from its key" registered
     through the session pairing; it now files the key's card and applies it, and the
     pairing is refused like any outside client's (`OUTSIDE_SESSION`).
-  - `owner/test/registrations.test.ts` "is filed only by an MCP client" now files a key's
-    card, applied as an `api_key` agent.
+  - `owner/test/registrations.test.ts` "is filed only by an MCP client" held the key's
+    refusal; it is "only by an outside client", the key's card being the ledger test's above.
   - `owner/test/record/rv.record.ts` registered its scoped key's agent through the pairing;
     it files and applies the key's card (`Recorders-Differ: rv`).
 
