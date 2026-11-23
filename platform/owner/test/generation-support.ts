@@ -24,7 +24,7 @@ import { objectPrefix } from "../../contract/src/files";
 import { randomHex } from "../../contract/src/ids";
 import { migrate } from "../../contract/src/migrate";
 import { MCP, MUSE, signedIn } from "./ledger-support";
-import { admittedOwner, drainDue, storesOn, through, TIERS } from "./support";
+import { admittedOwner, drainDue, OPEN_RECORD, storesOn, through } from "./support";
 
 export type Line = Record<string, unknown> & { t: string };
 
@@ -67,7 +67,7 @@ export async function owner() {
   const stub: DurableObjectStub<OwnerDO> = await admittedOwner(name);
   const at = signedIn();
   const bind = (origin: typeof MUSE | null = null, extra: Partial<Binding> = {}): Binding =>
-    ({ owner: name, caller: name, origin, tiers: TIERS,
+    ({ owner: name, caller: name, origin, control: OPEN_RECORD,
        ...(origin === null ? {} : { source: MCP, authenticated_at: at }), ...extra });
   const { session } = await stub.sessionOpen(bind(null, { authenticated_at: at }));
   return { name, stub, bind, session: () => bind(null, { session }) };

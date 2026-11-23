@@ -19,10 +19,10 @@ import type { RunReceipt } from "../src/runs";
 import { LEASE_TTL_S } from "../../contract/src/limits";
 import type { Recorded, Script } from "../../ci/fake-sandbox";
 
-import { clockAt, gateFor, TIERS } from "./support";
+import { clockAt, gateFor, OPEN_RECORD, openRecord, TIERS } from "./support";
 import type { SandboxStart } from "../../contract/src/sandbox";
 
-export { TIERS };
+export { OPEN_RECORD, openRecord, TIERS };
 
 /**
  * The object's clock moved on `seconds` (a lease's life and one, by default: every sandbox
@@ -213,7 +213,7 @@ export async function ownerRun(stub: DurableObjectStub<OwnerDO>, binding: Bindin
   if (file !== undefined) {
     await defineAgent(stub, binding, agent, file);
   }
-  const run = await stub.agentSubmit({ ...binding, tiers: TIERS }, {
+  const run = await stub.agentSubmit({ ...binding, control: OPEN_RECORD }, {
     message: "do the thing", client_send_id: `send-${++sent}`, agent_id: agent, ...extra });
   return { run, start: await startOf(stub, run.run_id) };
 }

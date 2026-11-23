@@ -27,7 +27,7 @@ import { CHUNK_BYTES } from "../../contract/src/limits";
 import { DEFAULT_POLICY_DIGEST } from "../../contract/src/policy-document";
 import { QUEUES } from "../../contract/src/queue-names";
 import type { ImportBundle } from "./import-setup";
-import { admitOwner, doorsEnv, OPEN, ownDoor, setControl, TIERS } from "./support";
+import { admitOwner, doorsEnv, OPEN, OPEN_RECORD, ownDoor, setControl } from "./support";
 
 const KEY = randomBytes(32).toString("base64url");
 const BUNDLE: ImportBundle = inject("importBundle");
@@ -527,7 +527,7 @@ describe("the import's check, through the consumer, held to the bundle by the jo
 /** The import's binding for `owner`, as the consumer makes it. */
 function bindImportFor(owner: string, bundle: string) {
   return { binding: { owner, caller: PLATFORM_CALLER, origin: null, import: { bundle },
-                      tiers: TIERS } as Binding,
+                      control: OPEN_RECORD } as Binding,
            stub: stubOf(owner) };
 }
 

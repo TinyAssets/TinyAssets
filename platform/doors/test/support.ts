@@ -12,7 +12,7 @@ import type { DoorAnswer } from "../../contract/src/owner";
 import { QUEUES } from "../../contract/src/queue-names";
 import type { Refusal } from "../../contract/src/refusal";
 import { upstreamConfig } from "../../contract/src/signin";
-import { OPEN, writeControl } from "../../ci/fixtures";
+import { OPEN, OPEN_RECORD, writeControl } from "../../ci/fixtures";
 import { until } from "../../ci/workerd";
 import { now } from "../src/config";
 import type { DoorsEnv } from "../src/env";
@@ -57,7 +57,7 @@ export async function failNextForget(subject: string): Promise<void> {
                             { method: "POST" });
 }
 export const doorsEnv = env as unknown as DoorsEnv;
-export { DARK, OPEN, TIERS } from "../../ci/fixtures";
+export { DARK, OPEN, OPEN_RECORD, TIERS } from "../../ci/fixtures";
 
 /**
  * One request through the doors' own entry, its waitUntil work finished; or through their
@@ -423,7 +423,7 @@ export async function admissionOf(owner: string) {
 
 /** The owner's own binding, as a door takes it from the owner's app. */
 export function ownBinding(owner: string): Binding {
-  return { owner, caller: owner, origin: null, tiers: OPEN.tiers };
+  return { owner, caller: owner, origin: null, control: OPEN_RECORD };
 }
 
 /**

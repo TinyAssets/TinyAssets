@@ -28,11 +28,13 @@ import { PLATFORM_TIER_ONLY } from "../src/admission";
 import { TIER_UNREAD } from "../src/files";
 import { catalog, gated, type Gated, OPENAI } from "./gateway-support";
 import { MCP, MUSE, signedIn } from "./ledger-support";
-import { ALL_SCOPES, defineAgent, hashed, inSession, later, ownerFile, ownerRun, recorder,
-  runBinding, runnerBinding, runnerSandbox, scripted, startOf, TIERS, whileOut,
+import {
+  ALL_SCOPES, defineAgent, hashed, inSession, later, OPEN_RECORD, openRecord, ownerFile, ownerRun,
+  recorder, runBinding, runnerBinding, runnerSandbox, scripted, startOf, TIERS, whileOut,
 } from "./runs-support";
 import { RANKING } from "../../contract/src/paths";
 import type { ActionRule } from "../../contract/src/policy-document";
+import type { Tiers } from "../../contract/src/control";
 import { ADMITTED_FILE_BYTES, ownerSlots } from "../src/holds";
 import { secretOf, until } from "../../ci/workerd";
 import { drainDue, failure, gateFor, laneAt, spaceOf } from "./support";
@@ -141,8 +143,8 @@ describe("a run", () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
     const ask = { message: "hi", client_send_id: "same-1" };
-    const first = await r.stub.agentSubmit(r.bind({ tiers: TIERS }), ask);
-    const again = await r.stub.agentSubmit(r.bind({ tiers: TIERS }), ask);
+    const first = await r.stub.agentSubmit(r.bind(), ask);
+    const again = await r.stub.agentSubmit(r.bind(), ask);
     expect(again.run_id).toBe(first.run_id);
     expect((await recorder(r.stub)).starts).toHaveLength(1);
   });
@@ -151,7 +153,7 @@ describe("a run", () => {
     const r = await gated();
     const { run, start } = await ownerRun(r.stub, r.bind(), SIGNED_IN);
     // While its run is live, an input to the conversation waits its turn, never refused.
-    const waiting = await r.stub.agentSubmit(r.bind({ tiers: TIERS }), {
+    const waiting = await r.stub.agentSubmit(r.bind(), {
       message: "and then", client_send_id: "then-1", conversation_id: run.conversation_id });
     expect(waiting).toMatchObject({ state: "waiting", conversation_id: run.conversation_id,
                                     started_at: null, settled_at: null });
@@ -315,7 +317,7 @@ describe("admission", () => {
       // after, whose admission, written waiting, uses no yes.
       const approved = await r.stub.actionApprove(r.session(), { card_id: card,
                                                                  digest: shown.digest });
-      const after = await r.stub.agentSubmit({ ...r.bind(), tiers: TIERS }, {
+      const after = await r.stub.agentSubmit(r.bind(), {
         message: "and then", client_send_id: "then-1", conversation_id: run.conversation_id });
       expect(after.state).toBe("waiting");
       await r.stub.runEvents(runnerBinding(r, start), { frames: frames(INIT("sess-1")),
@@ -372,19 +374,20 @@ describe("admission", () => {
       .toBe(`${TIER_RUNS} (paid: 10)`);
     // The founder's edit of the record reaches the next run door at once.
     const edited = { ...TIERS, paid: { runs: 11, storage_bytes: 1 } };
-    await r.stub.agentSubmit(r.bind({ tiers: edited }), { message: "x", client_send_id: "e-1" });
+    await r.stub.agentSubmit(r.bind({ control: openRecord(edited) }),
+                             { message: "x", client_send_id: "e-1" });
     expect((await r.sql("SELECT COUNT(*) AS n FROM runs WHERE state = 'running'"))[0])
       .toEqual({ n: 11 });
     // A record past the ceiling, or malformed, is refused, never guessed.
     expect((await failure(() => r.stub.agentSubmit(
-      r.bind({ tiers: { ...TIERS, free: { runs: 1001, storage_bytes: 1 } } }),
+      r.bind({ control: openRecord({ ...TIERS, free: { runs: 1001, storage_bytes: 1 } }) }),
       { message: "x", client_send_id: "e-2" }))).code).toBe("invalid");
   });
 
   it("refuses a run when the control record held no tier numbers", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
-    expect((await failure(() => r.stub.agentSubmit(r.bind({ tiers: null }), {
+    expect((await failure(() => r.stub.agentSubmit(r.bind({ control: openRecord() }), {
       message: "x", client_send_id: "t-1" }))).message).toBe(TIER_UNREAD);
   });
 
@@ -396,7 +399,7 @@ describe("admission", () => {
                                                    scopes: [] });
     // Attended, it runs; on a schedule, it is refused, the refusal kept on the schedule.
     await ownerRun(r.stub, r.bind(), undefined, "coder");
-    const schedule = await r.stub.agentRun(r.bind({ tiers: TIERS }), {
+    const schedule = await r.stub.agentRun(r.bind(), {
       agent: "coder", input: "nightly", at: Date.now() / 1000 + 3600 });
     await fireSchedules(r);
     expect(await r.sql("SELECT trigger FROM run_schedules")).toEqual([]);
@@ -416,7 +419,7 @@ describe("admission", () => {
     await r.stub.grantSet(r.session(), { client: MUSE.client, source: "mcp", mode: "full",
                                          scopes: [], expected_revision: revision,
                                          name: "Muse" });
-    await r.stub.agentRun({ ...client, tiers: TIERS }, { agent: "main", input: "later",
+    await r.stub.agentRun({ ...client, control: OPEN_RECORD }, { agent: "main", input: "later",
                                                          cron: "0 * * * *" });
     // The client's grant moves without the doors' own hook, as a stale stamp finds it.
     await r.sql("UPDATE outside_clients SET generation = generation + 1 WHERE client = ?",
@@ -573,7 +576,7 @@ describe("a run's settle", () => {
     const logged = vi.spyOn(console, "error");
     onTestFinished(() => logged.mockRestore());
     const lines = () => logged.mock.calls.map((call) => String(call[0]));
-    const submit = (id: string) => r.stub.agentSubmit(r.bind({ tiers: TIERS }),
+    const submit = (id: string) => r.stub.agentSubmit(r.bind(),
                                                       { message: "x", client_send_id: id });
     await scripted(r.stub, { answer: "throw" });
     const lost = await submit("s-1");
@@ -627,7 +630,7 @@ describe("a run's settle", () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
     const gate = gateFor(env.SANDBOX_GATE, r.name);
-    const submit = (id: string) => r.stub.agentSubmit(r.bind({ tiers: TIERS }),
+    const submit = (id: string) => r.stub.agentSubmit(r.bind(),
                                                       { message: "x", client_send_id: id });
     const overloaded = (retryAfterS: number) => ({ refuse: {
       code: "object_overloaded", message: "this account is busy", retryAfterS } });
@@ -687,7 +690,7 @@ describe("a run's cancel", () => {
      "start answers with no sandbox or a refusal as cancelled, with no wait", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
-    const submit = (id: string) => r.stub.agentSubmit(r.bind({ tiers: TIERS }),
+    const submit = (id: string) => r.stub.agentSubmit(r.bind({ control: OPEN_RECORD }),
                                                       { message: "x", client_send_id: id });
     const cancels = async (run: string) => (await recorder(r.stub)).cancels
       .filter((cancel) => cancel.run === run).length;
@@ -781,10 +784,10 @@ describe("a client's run doors", () => {
       command_center_id: "alpha", display_name: "Muse", delivery_method: "pull",
       recipe_id: null });
     await r.stub.registerAgent(r.session(), { card_id, digest });
-    expect(await failure(() => r.stub.agentSubmit({ ...client, tiers: TIERS }, {
+    expect(await failure(() => r.stub.agentSubmit({ ...client, control: OPEN_RECORD }, {
       message: "hi", client_send_id: "n-1" })))
       .toMatchObject({ code: "not_granted", message: "outside client capability not granted" });
-    expect((await failure(() => r.stub.agentRun({ ...client, tiers: TIERS }, {
+    expect((await failure(() => r.stub.agentRun({ ...client, control: OPEN_RECORD }, {
       agent: "main", input: "x" }))).message).toBe("outside client capability not granted");
     expect((await recorder(r.stub)).starts).toEqual([]);
   });
@@ -793,7 +796,7 @@ describe("a client's run doors", () => {
 describe("a conversation's inputs", () => {
   /** An input to `conversation`, by the owner. */
   const submit = (r: Gated, conversation: string, message: string, id: string) =>
-    r.stub.agentSubmit(r.bind({ tiers: TIERS }), { message, client_send_id: id,
+    r.stub.agentSubmit(r.bind(), { message, client_send_id: id,
                                                   conversation_id: conversation });
   /** The prompts the sandbox was started on, in order. */
   const prompts = async (r: Gated) => (await recorder(r.stub)).starts.map((s) => s.prompt);
@@ -1080,7 +1083,7 @@ describe("auto and the owner's sign-ins", () => {
 describe("the admission unit", () => {
   /** An input to `conversation`, by the owner. */
   const submit = (r: Gated, conversation: string, message: string, id: string) =>
-    r.stub.agentSubmit(r.bind({ tiers: TIERS }), { message, client_send_id: id,
+    r.stub.agentSubmit(r.bind(), { message, client_send_id: id,
                                                   conversation_id: conversation });
 
   it("refuses an owner not admitted itself, whatever reached it (the lane's race)",
@@ -1114,26 +1117,26 @@ describe("the admission unit", () => {
   });
 
   it("finds a waiting run's turn: first in a conversation with no live run, while the " +
-     "tier has room by the numbers last handed", async () => {
+     "tier has room by the kept record's numbers", async () => {
     const r = await gated();
     const { run } = await ownerRun(r.stub, r.bind(), SIGNED_IN);
     const behind = await submit(r, run.conversation_id, "behind", "t-1");  // its run is live
     // A run of its own conversation that waits for the sandbox: the line's ring starts it.
     await scripted(r.stub, { answer: [{ started: true }, { started: false, code: SANDBOX_WAITING },
                                       { started: true }] });
-    const own = await r.stub.agentSubmit(r.bind({ tiers: TIERS }),
+    const own = await r.stub.agentSubmit(r.bind(),
                                          { message: "own", client_send_id: "t-2" });
     expect([behind.state, own.state]).toEqual(["waiting", "waiting"]);
     const asked = (await recorder(r.stub)).starts.length;  // the first's, and own's wait
-    // The tier's simultaneous runs, by the numbers a door last handed: 1, none, then 2.
-    const started = async (tiers: Binding["tiers"]) => {
-      await r.stub.fileStat(r.bind({ tiers }), { path: "/workspace" });
+    // The tier's simultaneous runs, by the record a door last handed: 1, none, then 2.
+    const started = async (tiers: Tiers | undefined) => {
+      await r.stub.fileStat(r.bind({ control: openRecord(tiers) }), { path: "/workspace" });
       await r.stub.sandboxRung();
       await drainDue(r.stub);
       return (await recorder(r.stub)).starts.slice(asked).map((each) => each.run);
     };
     expect(await started({ ...TIERS, free: { ...TIERS.free, runs: 1 } })).toEqual([]);
-    expect(await started(null)).toEqual([]);
+    expect(await started(undefined)).toEqual([]);
     expect(await started({ ...TIERS, free: { ...TIERS.free, runs: 2 } }))
       .toEqual([own.run_id]);
   });
@@ -1214,7 +1217,7 @@ describe("a run's own calls", () => {
     await r.stub.grantSet(r.session(), { client: MUSE.client, source: "mcp", mode: "full",
                                          scopes: [], expected_revision: revision,
                                          name: "Muse" });
-    const run = await r.stub.agentSubmit({ ...client, tiers: TIERS },
+    const run = await r.stub.agentSubmit({ ...client, control: OPEN_RECORD },
                                          { message: "hi", client_send_id: "g-1" });
     const asRun = runBinding(r, (await recorder(r.stub)).starts.at(-1)!);
     expect(await r.stub.fileStat(asRun, { path: "/workspace" }))
@@ -1250,7 +1253,7 @@ describe("a run's own calls", () => {
       command_center_id: "alpha", display_name: "Muse", delivery_method: "pull",
       recipe_id: null });
     await r.stub.registerAgent(r.session(), { card_id, digest });
-    const run = await r.stub.agentSubmit({ ...client, tiers: TIERS },
+    const run = await r.stub.agentSubmit({ ...client, control: OPEN_RECORD },
                                          { message: "hi", client_send_id: "c-1" });
     expect(run).toMatchObject({ state: "running", initiator: "client" });
     expect(await r.sql("SELECT scopes FROM run_grants")).toEqual([
@@ -1288,7 +1291,7 @@ describe("the runs lane", () => {
       .toEqual([]);
     expect((await recorder(r.stub)).starts).toEqual([]);
     // A cron is its own work: due, it starts one run, unattended.
-    await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent: "main", input: "report",
+    await r.stub.agentRun(r.bind(), { agent: "main", input: "report",
                                                       cron: "30 * * * *" });
     await fireSchedules(r);
     const starts = (await recorder(r.stub)).starts;
@@ -1309,7 +1312,7 @@ describe("the runs lane", () => {
         path: "/workspace/agents/main/agent.json" })).entry!.etag });
     for (const trigger of [{ at: Date.now() / 1000 + 3600 }, { cron: "30 * * * *" }]) {
       const before = (await recorder(r.stub)).starts.length;
-      await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent: "main", input: "report",
+      await r.stub.agentRun(r.bind(), { agent: "main", input: "report",
                                                         ...trigger });
       // The read refused `busy` for the moment, as a full slot pool refuses it: the pass
       // holds the lane until its Retry-After, never failed, the schedule unclaimed and due.
@@ -1356,7 +1359,7 @@ describe("the runs lane", () => {
         `${JSON.stringify(SIGNED_IN)}${" ".repeat(INLINE_BYTES)}`),
       expected_etag: (await r.stub.fileStat(r.bind(), {
         path: "/workspace/agents/main/agent.json" })).entry!.etag });
-    await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent: "main", input: "report",
+    await r.stub.agentRun(r.bind({ control: OPEN_RECORD }), { agent: "main", input: "report",
                                                       cron: "30 * * * *" });
     await gateFor(env.FILES_GATE, await spaceOf(r.stub)).arm("getChunks", { refuse: {
       code: "invalid", message: "invalid: the files plane refuses this read" } });
@@ -1370,7 +1373,7 @@ describe("the runs lane", () => {
      "goes on, the run queued, and its answer is recorded when it comes", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
-    await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent: "main", input: "report",
+    await r.stub.agentRun(r.bind({ control: OPEN_RECORD }), { agent: "main", input: "report",
                                                       at: Date.now() / 1000 + 3600 });
     const sandbox = gateFor(env.SANDBOX_GATE, r.name);
     await sandbox.arm("start", { hold: "before" });

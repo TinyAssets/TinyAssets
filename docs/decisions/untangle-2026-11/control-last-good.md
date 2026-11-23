@@ -81,8 +81,11 @@ outage and a bad write were one case, and both closed every gate.
 
 ## Owed
 
-- [ ] The owner's `platform_tiers` and `platform_signins` folded into its `control_kept` row,
+- [x] The owner's `platform_tiers` and `platform_signins` folded into its `control_kept` row,
   the binding carrying the record read fresh instead of its tiers and switches
   (`untangle/owner-control-row`).
-- [ ] The founder's checklist line: a kill flipped while KV is down doesn't reach a kept copy,
+- [x] The founder's checklist line: a kill flipped while KV is down doesn't reach a kept copy,
   so the kill that needs no KV is the edge switch (slice B1, `untangle/edge-kill`).
+
+Both were taken by `untangle/control-row` (`control-row.md`): the tiers folded, the switches
+owed there; the checklist line written, saying no edge switch exists yet, which it owes.

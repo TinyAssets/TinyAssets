@@ -32,7 +32,7 @@ import { until } from "../../ci/workerd";
 import {
  admissionOf, appCallback, appPost, call, connect, crossed, defineMain, deliver, doorsEnv,
  failNextForget, forgotten, held,
- OPEN,
+ OPEN, OPEN_RECORD,
  grantsOf, ownDoor, refresh, refuseOnce, registerClient, serveFirstPartyDocument, setControl,
  signInApp,
  url,
@@ -50,7 +50,7 @@ function owner(): string {
 }
 
 function ownerBinding(who: string): Binding {
-  return { owner: who, caller: who, origin: null, tiers: OPEN.tiers };
+  return { owner: who, caller: who, origin: null, control: OPEN_RECORD };
 }
 
 /** An owner signed in to its app, with its `main` agent defined. */

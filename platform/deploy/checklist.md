@@ -494,6 +494,16 @@ It never counts as "absent".
   `deploy:control:<run id>` (put it back with `replace`), and reads the write back. It edits
   KV itself, never through the doors, so `outside=off`, the kill switch, works when they
   don't. A missing or malformed record is shown as it is; `replace` gives the whole record.
+  **A kill flipped while KV is down reaches no kept copy.** While KV can't be read, each reader
+  serves the copy it last read well formed (the doors' per-location cache, the owner's and the
+  sandbox's objects' own row), `outside=on` included, until KV answers again; the mode's own
+  read and write go to KV, so they fail too. The kill that needs no KV is an edge switch at
+  Cloudflare, and **there is none yet**: slice B1, two WAF custom rules on the zone kept
+  disabled (`TinyAssets kill: outside`, blocking the doors' outside paths, and `TinyAssets
+  kill: all`, every doors path and the egress host), each toggled from the dashboard or the
+  app, is owed (`untangle/kill-switch-cloudflare`). Until it lands, the one kill that reads no
+  KV is a custom rule you make by hand (Security, WAF, Custom rules) blocking those paths; mode
+  `handback` reads its route record from KV too.
 - **Mode `owner`** asks the doors one op for one owner through the operator channel (`owner`
   and `act`: `state`, `tier=<tier>`, `suspend=<reason>`, `lift=<reason>`, `admit`, `rewrap`
   or `reseal`) and prints their answer between the owner's state before and after it, or

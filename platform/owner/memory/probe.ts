@@ -37,7 +37,7 @@ import { createHash } from "node:crypto";
 
 import { WorkerEntrypoint } from "cloudflare:workers";
 
-import { TIERS } from "../../ci/fixtures";
+import { OPEN_RECORD } from "../../ci/fixtures";
 import { bundledSources } from "../../sources/src/catalog";
 import { signinsOn } from "../../sources/src/signin";
 import {
@@ -750,14 +750,14 @@ const SIGNINS = Object.freeze(signinsOn(
 
 /** The owner's own binding, as the doors hand it. */
 function owner(name: string): Binding {
-  return { owner: name, caller: name, origin: null, tiers: TIERS, signins: SIGNINS } as
+  return { owner: name, caller: name, origin: null, control: OPEN_RECORD, signins: SIGNINS } as
     unknown as Binding;
 }
 
 /** The doors' import binding for `name` (`bindImport`): the platform, a bundle, the tiers. */
 function importing(name: string): Binding {
   return { owner: name, caller: PLATFORM_CALLER, origin: null,
-           import: { bundle: "b".repeat(64) }, tiers: TIERS } as unknown as Binding;
+           import: { bundle: "b".repeat(64) }, control: OPEN_RECORD } as unknown as Binding;
 }
 
 /**

@@ -27,8 +27,8 @@ import { eraseBegun, finished } from "./erasure-support";
 import { MUSE, rig, signedIn, dm } from "./ledger-support";
 import { at, readOn } from "./pages-support";
 import {
-  admittedOwner, failure, gateFor, ownerObject, passEnd, setFiles, spaceOf, starterSeed,
-  storesOn, text, TIERS, tiersAt,
+  admittedOwner, failure, gateFor, OPEN_RECORD, openRecord, ownerObject, passEnd, setFiles,
+  spaceOf, starterSeed, storesOn, text, TIERS, tiersAt,
 } from "./support";
 
 afterEach(() => {
@@ -39,7 +39,7 @@ afterEach(() => {
 async function signedInOwner() {
   const owner = `owner-${crypto.randomUUID()}`;
   const stub = await admittedOwner(owner);
-  const bind: Binding = { owner, caller: owner, origin: null, tiers: TIERS };
+  const bind: Binding = { owner, caller: owner, origin: null, control: OPEN_RECORD };
   const { session } = await stub.sessionOpen({ ...bind, authenticated_at: signedIn() });
   return { owner, stub, bind, session: { ...bind, session } };
 }
@@ -198,19 +198,19 @@ describe("the placement rule", () => {
       stub.collectionWrite(binding, { collection: "board", row_id: rowId, body,
                                       expected_etag: "", private: false });
     const tight = tiers(3 * PLACE_BYTES);
-    await put("a", LARGE, { ...as(name), tiers: tight });
+    await put("a", LARGE, { ...as(name), control: openRecord(tight) });
     expect(refusalOf((await failure(() => put("b", LARGE.replace("é", "e"), {
-      ...as(name), tiers: tight }))))?.facts)
+      ...as(name), control: openRecord(tight) }))))?.facts)
       .toMatchObject({ limit_bytes: SEED.bytes + 3 * PLACE_BYTES, tier: "free" });
     // The same body again is the same chunk: it adds no byte.
-    await put("c", LARGE, { ...as(name), tiers: tight });
+    await put("c", LARGE, { ...as(name), control: openRecord(tight) });
     // A small body kept in its row counts too (the one storage number): its row
     // and its history entry would take the owner past the figure.
     expect(refusalOf((await failure(() => put("d", SMALL, { ...as(name),
-      tiers: tight }))))?.facts)
+      control: openRecord(tight) }))))?.facts)
       .toMatchObject({ limit_bytes: SEED.bytes + 3 * PLACE_BYTES, tier: "free" });
-    expect((await failure(() => put("e", `${LARGE}x`, { ...as(name), tiers: null }))).message)
-      .toBe(TIER_UNREAD);
+    expect((await failure(() => put("e", `${LARGE}x`, { ...as(name), control: openRecord() })))
+      .message).toBe(TIER_UNREAD);
     expect(await sqlIn(stub, "SELECT COUNT(*) AS n FROM file_intents")).toEqual([{ n: 0 }]);
   });
 
@@ -337,7 +337,7 @@ describe("the placement rule, held to the owner's own limits", () => {
   it("placed history is never let go at the tier's storage: the write is refused " +
      "storage_full and every entry is kept (ADR-036)", async () => {
     const { stub, as, name } = await ownerObject();
-    const bind = { ...as(name), tiers: tiers(6 * 2 * PLACE_BYTES) };
+    const bind = { ...as(name), control: openRecord(tiers(6 * 2 * PLACE_BYTES)) };
     let etag = "";
     let refused: Error | null = null;
     let written = 0;
@@ -360,16 +360,24 @@ describe("the placement rule, held to the owner's own limits", () => {
       .toBeLessThanOrEqual(SEED.placedBytes + 6 * 2 * PLACE_BYTES);
   });
 
-  it("a read door with no tier numbers in the record drops the kept ones: fail closed",
-     async () => {
+  it("a read door keeps the record it hands, and one with no tier numbers leaves none: fail " +
+     "closed, a binding that hands none keeping the copy", async () => {
     const { stub, as, name } = await ownerObject();
+    const kept = () => sqlIn(stub, "SELECT text FROM control_kept");
+    const write = (binding: Binding) => failure(() => stub.collectionWrite(binding, {
+      collection: "board", row_id: "r", body: LARGE, expected_etag: "", private: false }));
     await stub.collectionGet(as(name), { collection: "board", row_id: "r" });
-    expect(await sqlIn(stub, "SELECT COUNT(*) AS n FROM platform_tiers")).toEqual([{ n: 1 }]);
-    await stub.collectionGet({ ...as(name), tiers: null }, { collection: "board", row_id: "r" });
-    expect(await sqlIn(stub, "SELECT COUNT(*) AS n FROM platform_tiers")).toEqual([{ n: 0 }]);
-    expect((await failure(() => stub.collectionWrite({ ...as(name), tiers: undefined }, {
-      collection: "board", row_id: "r", body: LARGE, expected_etag: "", private: false })))
-      .message).toBe(TIER_UNREAD);
+    expect(await kept()).toEqual([{ text: OPEN_RECORD }]);
+    await stub.collectionGet({ ...as(name), control: openRecord() },
+                             { collection: "board", row_id: "r" });
+    expect(await kept()).toEqual([{ text: openRecord() }]);
+    const { control: _handed, ...unread } = as(name);
+    expect((await write(unread)).message).toBe(TIER_UNREAD);
+    expect(await kept()).toEqual([{ text: openRecord() }]);
+    // A record the binder found missing or malformed drops the copy.
+    await stub.collectionGet({ ...as(name), control: null }, { collection: "board", row_id: "r" });
+    expect(await kept()).toEqual([]);
+    expect((await write(unread)).message).toBe(TIER_UNREAD);
   });
 
   it("acked placed mail is never let go at the tier's storage: the post is refused " +
@@ -381,7 +389,7 @@ describe("the placement rule, held to the owner's own limits", () => {
     let sent = 0;
     for (let n = 0; n < 8 && refused === null; n++) {
       try {
-        await r.stub.roomPost(r.bind(null, { tiers: tiers(4 * 2 * PLACE_BYTES) }), {
+        await r.stub.roomPost(r.bind(null, { control: openRecord(tiers(4 * 2 * PLACE_BYTES)) }), {
           room_id: dm(muse), client_message_id: `c${n}`,
           body: `${n}`.padEnd(LARGE.length, "é"), parent_id: null });
         sent++;

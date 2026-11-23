@@ -29,7 +29,7 @@ import raw from "../../contract/wake-kinds.json" with { type: "json" };
 import {
   DOT, EVENT, ledgerSubscription, MUSE, registerOn, rig, type Rig, WHSEC, dm
 } from "./ledger-support";
-import { writeControl } from "../../ci/fixtures";
+import { TIERS, writeControl } from "../../ci/fixtures";
 import { clockAt, drainDue, failure, gateFor, storesOn } from "./support";
 import type { RingAnswer, RingRequest } from "../../contract/src/gateway";
 import { connectAt, doorbellOpensRetired } from "./gateway-support";
@@ -85,7 +85,7 @@ async function received(r: Rung): Promise<{ url: string; redirect: string;
 /** The control record: the kill switch on for `owners` only, or off. */
 async function control(owners: readonly string[], outside: "on" | "off" = "on"): Promise<void> {
   await writeControl(env.CONTROL, {
-    outside, ordinary: "canary", canary: owners, inbound: false,
+    outside, ordinary: "canary", canary: owners, inbound: false, tiers: TIERS,
   });
 }
 
