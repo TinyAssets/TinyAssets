@@ -323,7 +323,7 @@ function pureStart(engine: string, over: Partial<StartDoc> = {}): StartDoc {
     [{ connection, provider: "openai",
        egress: { apis: [{ api: "x", base_url: "https://api.example/v1", meter: null }],
                  endpoints: [] } }],
-    () => "4".repeat(32), { ...made, run: PURE_RUN, secret: PURE_SECRET, connection, api: null });
+    () => "4".repeat(32), { ...made, run: PURE_RUN, secret: PURE_SECRET, connection, api: "x" });
   return { run: PURE_RUN, agent: "main", conversation: `cv_${"c".repeat(32)}`, engine,
            credential, model: null, session_id: null, prompt: "p",
            unattended: false, authority: "owner", lease: { lease_id: "b".repeat(32), epoch: 1 },
@@ -1484,7 +1484,7 @@ describe("an API-key run's base URL", () => {
       [{ connection: CONNECTION, provider,
          egress: { apis: [{ api: "x", base_url: "https://api.example/v1", meter: null }],
                    endpoints: [] } }],
-      () => "4".repeat(32), { ...made, run: RUN, secret: SECRET, api: null,
+      () => "4".repeat(32), { ...made, run: RUN, secret: SECRET, api: "x",
                               connection: credential === "api_key" ? CONNECTION : null });
     return { run: RUN, agent: "main", conversation: `cv_${"c".repeat(32)}`, engine, credential,
              model: null, session_id: null, prompt: "p", unattended: false, authority: "owner",

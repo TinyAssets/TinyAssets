@@ -997,7 +997,7 @@ describe("auto and the owner's sign-ins", () => {
     expect((await r.stub.noticeList(r.bind())).notices
       .filter((notice) => notice.type === "model_unranked").map((notice) => notice.detail))
       .toEqual([`${PLAN_MODEL} (claude-code's sign-in): no entry of the model ranking ranks ` +
-                `it, so auto ranked it below every ranked model; rank it in ${RANKING}`]);
+                `it, so it ranked below every ranked model; rank it in ${RANKING}`]);
     // A file that is no ranking refuses the run, never a silent fall back to the platform's.
     for (const [text, message] of [
       ["{\"version\": 1}", `${RANKING}: a model ranking holds only version 2`],
@@ -1083,18 +1083,25 @@ describe("auto and the owner's sign-ins", () => {
     await defineAgent(r.stub, r.bind(), "helper", AUTO_AGENT);
     expect((await ownerRun(r.stub, r.bind(), undefined, "helper")).run)
       .toMatchObject({ credential: "api_key", model: "~anthropic/claude-fable-latest" });
+    // An agent naming its engine and no model is given the same, never its engine's default.
+    expect((await ownerRun(r.stub, r.bind(), { engine: "pi", scopes: [] }, "engine")).run)
+      .toMatchObject({ engine: "pi", model: "~anthropic/claude-fable-latest" });
     expect((await ownerRun(r.stub, r.bind(), { ...AUTO_AGENT, model: BATCH }, "pinned")).run)
       .toMatchObject({ credential: "api_key", model: BATCH });
-    // A key listing only batch variants: `auto` has no source, and an agent naming the
-    // connection on its engine still runs on it.
+    // A key listing only batch variants: no source for an agent that names no model, on
+    // `auto` or on its engine and the connection, saying how to run one; naming one, it runs.
     const s = await gated();
     const only = await keyOn(s, "Batch only", BATCH);
     await defineAgent(s.stub, s.bind(), "helper", AUTO_AGENT);
+    const unpicked = `${NO_SOURCE} (its connections list only models a run is given when its ` +
+      "agent names one (agent.json's model))";
     expect((await failure(() => ownerRun(s.stub, s.bind(), undefined, "helper"))).message)
-      .toMatch(/^no_source/);
-    expect((await ownerRun(s.stub, s.bind(), { engine: "pi", connection: only, scopes: [] },
-                           "named")).run)
-      .toMatchObject({ engine: "pi", credential: "api_key" });
+      .toBe(unpicked);
+    const named = { engine: "pi", connection: only, scopes: [] };
+    expect((await failure(() => ownerRun(s.stub, s.bind(), named, "named"))).message)
+      .toBe(unpicked);
+    expect((await ownerRun(s.stub, s.bind(), { ...named, model: BATCH }, "named")).run)
+      .toMatchObject({ engine: "pi", credential: "api_key", model: BATCH });
   });
 
   it("picks on a key that pays for nothing only a model its source serves such a key and its " +
@@ -1124,6 +1131,8 @@ describe("auto and the owner's sign-ins", () => {
     const free = await keyed(false);
     expect((await ownerRun(free.stub, free.bind(), undefined, "helper")).run)
       .toMatchObject({ credential: "api_key", model: FREE });
+    expect((await ownerRun(free.stub, free.bind(), { engine: "pi", scopes: [] }, "engine")).run)
+      .toMatchObject({ engine: "pi", model: FREE });
     // A model the agent names is its own choice.
     expect((await ownerRun(free.stub, free.bind(), { ...AUTO_AGENT, model: PAID }, "pinned"))
       .run).toMatchObject({ credential: "api_key", model: PAID });
