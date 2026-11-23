@@ -59,6 +59,11 @@ describe("the inbox digest", () => {
     const later = await r.stub.inboxDigest(r.bind(MUSE), { limit: 10, after: again.rooms.cursor,
                                                           head_chars: 3 });
     expect(live(later.rooms.rows).map((row) => [row.row_id, row.head])).toEqual([["m2", "lat"]]);
+    for (const after of [0, "0".repeat(64)]) {
+      expect((await failure(() => r.stub.inboxDigest(r.bind(MUSE), { limit: 10,
+                                                                    after } as never))).code)
+        .toBe("cursor_invalid");
+    }
     // Mail is since its own acknowledged cursor.
     await r.ack(MUSE, first.mail.messages.at(-1)!.seq);
     expect((await r.stub.inboxDigest(r.bind(MUSE), { limit: 10 })).mail.messages)
@@ -345,14 +350,17 @@ describe("the board digest", () => {
       body: "claimed", expected_etag: live(page.rows)[0]!.etag, private: false, history_op: "claim" });
     expect(live((await r.stub.boardDigest(r.bind(MUSE), { limit: 5, after: done.cursor })).rows)
       .map((row) => [row.row_id, row.head])).toEqual([["t1", "claimed"]]);
-    // A cursor is the object's own and the feed's: one made up, altered, or a pull's, is
-    // refused.
+    // A cursor is the object's own and the feed's: one made up, altered, a pull's, or a
+    // number, is refused by name.
     const altered = (page.cursor[0] === "0" ? "1" : "0") + page.cursor.slice(1);
     const pulled = (await r.stub.collectionPull(r.bind(MUSE), { collection: "board",
                                                                 limit: 1 })).cursor;
-    for (const bad of [{ limit: 0 }, { limit: 1, after: "0".repeat(64) },
-                       { limit: 1, after: altered }, { limit: 1, after: pulled },
-                       { limit: 1, head_chars: -1 }, {}]) {
+    for (const after of ["0".repeat(64), altered, pulled, 0]) {
+      expect((await failure(() => r.stub.boardDigest(r.bind(MUSE), { limit: 1,
+                                                                    after } as never))).code)
+        .toBe("cursor_invalid");
+    }
+    for (const bad of [{ limit: 0 }, { limit: 1, head_chars: -1 }, {}]) {
       expect((await failure(() => r.stub.boardDigest(r.bind(MUSE), bad as never))).code)
         .toBe("invalid");
     }
@@ -435,7 +443,7 @@ describe("a digest's reads", () => {
         .map((row) => [row.row_id, row.private, row.deleted]))
         .toEqual([["t", false, true], ["t", true, false]]);
       // Bob's row has the history of its own writes, from its making.
-      expect(store.history(bob, "board", "t", true, null).entries.map((entry) => entry.op))
+      expect(store.history(bob, "board", "t", true, undefined).entries.map((entry) => entry.op))
         .toEqual(Array<string>(6).fill("write"));
       // Cleared as bob's, its private deletion is bob's alone (the owner's clear counts no
       // row it could not see), and the public one stays.

@@ -189,9 +189,9 @@ Trade-offs taken:
 
 ## Owed
 
-- [ ] untangle/cursor-numbers: once the stage's doors hand only string cursors, the owner
+- [x] untangle/cursor-numbers: once the stage's doors hand only string cursors, the owner
   refuses a number for `after` and `before` (`collections.ts` `cursorsOf`) and the test reading
-  one from the start goes.
+  one from the start goes. Done, by name (`cursor_invalid`): `cursor-numbers.md`.
 - [ ] live: after the next owner deploy, the stage's `board_digest` from the start answers a
   64-hex cursor and rows with no `seq` or `change`, and with no board row, no rows from that
   cursor, whatever the rooms hold.
