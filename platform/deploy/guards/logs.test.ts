@@ -5,9 +5,11 @@
  */
 import { describe, expect, it } from "vitest";
 
+import { DARK } from "../../ci/fixtures";
+import { HOST, ZONE } from "../../contract/src/identity";
 import { TELEMETRY_PERMISSION } from "../cloudflare";
 import { type Io, MODES, parse, perform } from "../deploy";
-import { NAMES, WORKERS } from "../facts";
+import { NAMES, NAMESPACES, WORKERS } from "../facts";
 import { EVENTS, LINE_MAX, MINUTES, MINUTES_MAX, PRINT_MAX, redact } from "../logs";
 
 const NOW = new Date("2026-11-23T12:00:00.000Z");
@@ -16,7 +18,8 @@ const ENV = { CLOUDFLARE_API_TOKEN: "cf-token" };
 const QUERY = `/client/v4/accounts/${ACCOUNT}/workers/observability/telemetry/query`;
 
 /** A run's world: the Cloudflare calls it made, the lines it printed, and its Io. */
-function world(answer: (body: Record<string, unknown>) => { status: number; body: unknown }) {
+function world(answer: (body: Record<string, unknown>) => { status: number; body: unknown },
+               control: unknown = { ...DARK, outside: "on", canary: ["user_a"] }) {
   const calls: { method: string; path: string; body: Record<string, unknown> | null }[] = [];
   const printed: string[] = [];
   const unused = () => { throw new Error("a logs run reaches only Cloudflare's API"); };
@@ -28,6 +31,12 @@ function world(answer: (body: Record<string, unknown>) => { status: number; body
       calls.push({ method: init?.method ?? "GET", path, body });
       if (path.startsWith("/client/v4/zones?name=")) {
         return Response.json({ success: true, result: [{ id: "z", account: { id: ACCOUNT } }] });
+      }
+      if (path.startsWith(`/client/v4/accounts/${ACCOUNT}/storage/kv/namespaces?`)) {
+        return Response.json({ success: true, result: [{ title: NAMESPACES["CONTROL"], id: "c" }] });
+      }
+      if (path === `/client/v4/accounts/${ACCOUNT}/storage/kv/namespaces/c/values/c%3Acontrol`) {
+        return new Response(JSON.stringify(control));
       }
       if (path === QUERY && init?.method === "POST") {
         const { status, body: answered } = answer(body!);
@@ -99,8 +108,10 @@ describe("mode logs", () => {
     const w = world(() => ok([]));
     const { plan } = await logs(w);
     expect(w.calls.map((call) => `${call.method} ${call.path.split("?")[0]}`))
-      .toEqual(["GET /client/v4/zones", `POST ${QUERY}`]);
-    const body = w.calls[1]!.body!;
+      .toEqual(["GET /client/v4/zones", `GET /client/v4/accounts/${ACCOUNT}/storage/kv/namespaces`,
+                `GET /client/v4/accounts/${ACCOUNT}/storage/kv/namespaces/c/values/c%3Acontrol`,
+                `POST ${QUERY}`]);
+    const body = w.calls.at(-1)!.body!;
     expect(body).toEqual({
       queryId: "tinyassets-deploy-logs", view: "events", dry: true, limit: EVENTS,
       timeframe: { from: NOW.getTime() - MINUTES * 60_000, to: NOW.getTime() },
@@ -123,7 +134,7 @@ describe("mode logs", () => {
   it("reads one Worker's lines holding a text, over the minutes asked", async () => {
     const w = world(() => ok([]));
     await logs(w, ["--minutes", "15", "--worker", "sandbox", "--filter", "start did not answer"]);
-    const { timeframe, parameters } = w.calls[1]!.body! as
+    const { timeframe, parameters } = w.calls.at(-1)!.body! as
       { timeframe: { from: number }; parameters: { filters: { value?: string }[]; needle: unknown } };
     expect(timeframe.from).toBe(NOW.getTime() - 15 * 60_000);
     expect(parameters.filters[0]!.value).toBe(NAMES["sandbox"]);
@@ -201,6 +212,17 @@ describe("mode logs", () => {
     expect(TELEMETRY_PERMISSION).toMatch(/^Workers Observability Write /);
     const failed = world(() => ({ status: 500, body: { success: false, errors: [{ code: 1 }] } }));
     await expect(logs(failed)).rejects.toThrow("the Workers Logs query failed (500, [1])");
+  });
+
+  it("reads only while the doors serve the stage's accounts alone: its log is public", async () => {
+    // The stage's end (`host` the zone) deletes the mode: after it real owners' lines exist.
+    expect(HOST, "the stage is over: delete mode logs").not.toBe(ZONE);
+    for (const control of [{ ...DARK, outside: "on", ordinary: "all" }, { ...DARK, ordinary: 1 }]) {
+      const w = world(() => ok([]), control);
+      await expect(logs(w)).rejects.toThrow("the job's log is public, so mode logs reads only " +
+                                            "while the control record admits no owner but its canary");
+      expect(w.calls.map((call) => call.path)).not.toContain(QUERY);
+    }
   });
 
   it("stops loudly on an answer out of shape, never reading it as no lines", async () => {

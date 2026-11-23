@@ -3636,8 +3636,22 @@ const rollbackAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => 
  * Mode `logs`: the Workers' error and warn lines of `--minutes` (`--worker`'s alone, those
  * holding `--filter`), redacted and bounded, printed to the job's log; the plan says what was
  * read. It changes nothing, so it is the plan job's alone.
+ *
+ * The job's log is public and a Worker's line may quote an owner's content, which no
+ * redaction by shape takes out, so it reads only while the control record admits no owner
+ * but its canary (the stage's accounts); the stage's end deletes the mode (`logs.test.ts`).
  */
 const logsRead = step<"cloudflare" | "account">(async ({ run, say }, got) => {
+  const namespace = await controlNamespace(got.cloudflare, got.account);
+  const held = namespace === undefined ? undefined
+    : await got.cloudflare.text(got.account, namespace, CONTROL_KEY);
+  const control = held === undefined ? null : controlOf(held);
+  if (control === null || control.ordinary === "all") {
+    throw new Error("the job's log is public, so mode logs reads only while the control record " +
+                    `admits no owner but its canary, and it ${control === null
+                      ? "is missing or one no reader takes" : "admits every owner"}: read the ` +
+                    "Workers' logs in the Cloudflare dashboard; nothing was read");
+  }
   const workers = run.worker === null ? WORKERS : [run.worker];
   const read = await workerLogs(got.cloudflare, got.account, {
     minutes: run.minutes ?? MINUTES, filter: run.filter,

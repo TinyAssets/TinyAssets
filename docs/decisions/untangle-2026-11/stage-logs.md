@@ -77,7 +77,30 @@ only dispatch the workflow.
    of `WORKERS`) and `--filter` (text, no control character). The workflow offers it and its
    three inputs, and its `apply` job skips it as it skips `plan`.
 
+## Review (2026-11-23)
+
+- **Privacy: the mode is the stage's alone.** The job's log of a public repository is public,
+  and a Worker's line may quote an owner's content (a path, a message, a provider's error body
+  quoting a prompt, a file name in a URL), which no redaction by shape takes out. Printing only
+  fixed fields was weighed and refused: the Workers' own messages interpolate ids and refusal
+  text, so the only fixed fields are time, Worker, level and stack frames, which never say why
+  a start failed. So the mode reads only while what it prints can hold no real owner's content:
+  - **At run time,** `logsRead` reads the control record first and stops, reading nothing,
+    unless it is well formed and admits no owner but its canary (`ordinary` not `all`): on the
+    stage, the stage's two accounts.
+  - **At the stage's end,** `logs.test.ts` fails once `identity.json`'s `host` is the zone, so
+    `untangle/stage-end` deletes the mode with the stage. The import, the window and every
+    real owner come after it. From then the founder reads the Workers' logs in the dashboard.
+  - Left, as the stage's: a window that reaches back past a flip of `ordinary` to `all` on the
+    stage host (only the stage's accounts reach it, and the checklist keeps `ordinary` `canary`).
+- **The redactor's runs.** A run of 24 or more takes out UUIDs, ULIDs, WorkOS user ids, E2B
+  sandbox ids with their suffix, and shas. None is a cause, and an owner's id in a public log
+  is better out; a hex or base64 key has the same shape, so no rule tells them apart. Kept.
+
 ## Left
+
+- [ ] untangle/stage-end: deletes mode `logs` with the stage (its test fails once `host` is
+  the zone), the workflow's `minutes`, `worker` and `filter` inputs and the checklist's bullet.
 
 - [ ] live: the founder adds Workers Observability Write (Account, Workers Observability, Edit)
   to the `CLOUDFLARE_API_TOKEN` token; then a dispatch of `logs` on `main` reads the stage's

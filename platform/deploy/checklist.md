@@ -514,7 +514,10 @@ It never counts as "absent".
   as logged. Each line is redacted first (bearer and basic credentials, values named as
   tokens, secrets, keys, keyrings or authorization, JWTs, email addresses, and any long run of
   base64 or hex, such as a key or a sealed route), then cut to its bound, and the printout
-  stops at its own (`logs.ts`). It changes nothing and has no apply job. **Its one owed step is
+  stops at its own (`logs.ts`). It changes nothing and has no apply job. The job's log is
+  public and a line may quote an owner's content, which no redaction by shape takes out, so it
+  reads only while the control record admits no owner but its canary (the stage's accounts),
+  and the stage's end deletes it; after that, read the Workers' logs in the dashboard. **Its one owed step is
   yours:** the query (Workers Observability's `telemetry/query`) takes **Workers Observability
   Write** (in the dashboard, Account, Workers Observability, Edit), which the deploy token
   lacks; until it is added, the mode stops naming it. Add it to the `CLOUDFLARE_API_TOKEN`
