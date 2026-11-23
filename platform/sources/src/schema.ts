@@ -45,7 +45,7 @@
 import type { HookKind } from "../../contract/src/acts";
 import type { HookEvent } from "../../contract/src/agent-definition";
 import type {
-  CreditRead, Endpoint, StrengthRead, Upstream,
+  CreditRead, Endpoint, ListingRead, Upstream,
 } from "../../contract/src/egress-scope";
 import type { EngineEvents } from "../../contract/src/run-events";
 import type { CredentialKind } from "../../contract/src/sandbox";
@@ -427,8 +427,8 @@ export interface SourceRecord {
   readonly not_interactive?: readonly string[];
   /** A gateway source's: how a key of it reports what it can pay for. */
   readonly credit?: Credit;
-  /** A gateway source's: where its vendor lists how strong each model is. */
-  readonly strength?: Strength;
+  /** A gateway source's: where its vendor lists the models it serves a key, and their scores. */
+  readonly listing?: Listing;
   /** A gateway source's: the models its vendor bills as the model each call is routed to. */
   readonly routers?: readonly Router[];
   readonly cli?: CliSpec;
@@ -469,12 +469,15 @@ export interface Credit {
 }
 
 /**
- * Where a gateway source's vendor lists how strong each model is, from the vendor's page
- * (`cite`): the read (`contract/src/egress-scope.ts` `StrengthRead`), a `GET` among the
- * record's endpoints, whose answer's rows give each model's id and its score, higher
- * stronger. `auto` orders the models no ranking entry places by it (`owner/src/auto.ts`).
+ * Where a gateway source's vendor lists the models it serves a key, from the vendor's page
+ * (`cite`): the read (`contract/src/egress-scope.ts` `ListingRead`), a `GET` among the
+ * record's endpoints, whose answer's rows give each model's id and, where the vendor gives
+ * one, its score, higher stronger. A connection's models are its catalog's that the listing
+ * lists (`owner/src/connections.ts`), and `auto` orders the models no ranking entry places by
+ * their scores (`owner/src/auto.ts`). Named only once the listing's ids were read against the
+ * catalog's, so a spelling the catalog does not share drops no model it serves.
  */
-export interface Strength extends StrengthRead {
+export interface Listing extends ListingRead {
   readonly cite: string;
 }
 

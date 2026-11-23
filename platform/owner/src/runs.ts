@@ -1165,8 +1165,12 @@ export class Runs {
         }
       }
     }
+    // A model `auto` is named that no key lists (its vendor no longer serves it) says so.
+    const unlisted = file.engine === AUTO && file.model !== null
+      && !keys.some((key) => key.models.some((model) => model.id === file.model));
     throw unattendedOnly ? new Refusal("unattended_refused", UNATTENDED_REFUSED)
-      : new Refusal("no_source", NO_SOURCE);
+      : new Refusal("no_source", unlisted ? `${NO_SOURCE} (no connected key lists ${file.model})`
+        : NO_SOURCE);
   }
 
   /** The owner's own spending caps, for an API-key run on `source`: off unless set. */

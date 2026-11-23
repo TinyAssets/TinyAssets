@@ -23,7 +23,7 @@
  *   `x-goog-api-key` starting `AIza-good`.
  * - OpenRouter's key exchange (`openrouter.ai/api/v1/auth/keys`): JSON in; the code
  *   `or-good` buys `sk-or-bought`, `or-badkey` a key with a space; any other is `403`. Its model list: `200` for a bearer
- *   key starting `sk-or-`, one model scored (the strength read); its key's limits
+ *   key starting `sk-or-`, one model listed and scored (the listing read); its key's limits
  *   (`openrouter.ai/api/v1/key`) the free tier for one starting `sk-or-free`, no limit for
  *   any other starting `sk-or-`.
  * - A test OAuth server (`auth.test/token`): the code `good-code` gets `at-good`, any

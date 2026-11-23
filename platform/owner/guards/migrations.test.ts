@@ -91,7 +91,7 @@ describe("no REPLACE against an exported table (review L5-2)", () => {
  * it is of. A shape is one schema's: changed with no migration, two generations of one schema
  * would read two ways. Pinned again, with its count, at each new migration.
  */
-const EXPORT_SHAPE = { schema: 32, sha256:
+const EXPORT_SHAPE = { schema: 33, sha256:
   "c33e3a62020f259faf5a52aeadf081843c5e60fd6af8f5c55e69c8d9b9ae9449" };
 
 describe("every migration says how a generation from before it is brought forward", () => {
