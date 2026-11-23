@@ -43,7 +43,8 @@
  * only its CLI's environment holds (its URLs carry it). Every call of a run's (its MCP door,
  * its model and server calls) presents that secret, so a run id alone authorizes nothing,
  * and the egress door holds each call to its own run's connections (`egress.ts`). A run
- * given a model its agent does not name tells the owner which (`MODEL_CHOSEN`).
+ * given a model its agent does not name tells the owner which (`MODEL_CHOSEN`); the owner
+ * reads which its own next run would be given, the same pick telling nothing (`agentModel`).
  * The runner's own doors (its events, the sign-in report) take the runner's secret, which
  * no CLI holds.
  *
