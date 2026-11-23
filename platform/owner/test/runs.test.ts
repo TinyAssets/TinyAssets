@@ -1108,10 +1108,14 @@ describe("auto and the owner's sign-ins", () => {
   it("tells the owner, once for each agent and model, of a run given a model its agent does " +
      "not name, with the remedy", async () => {
     const [base] = await catalog(OPENAI);
-    const listed = (...ids: string[]) => ids.map((id) => ({ ...base!, id }));
     const r = await gated();
-    const weaker = await r.connect("sk-good", OPENAI, "Weaker", listed("gpt-5.1-codex"),
-                                   "openrouter_user_models_v1");
+    // Each key's models, as its setup check and the gateway's catalog list them.
+    const keyOn = async (display: string, id: string) => {
+      const models = [{ ...base!, id }];
+      await r.gateway.arm("models", { answer: { models } });
+      return r.connect("sk-good", OPENAI, display, models, "openrouter_user_models_v1");
+    };
+    const weaker = await keyOn("Weaker", "gpt-5.1-codex");
     const told = async () => (await r.stub.noticeList(r.bind())).notices
       .filter((notice) => notice.type === "model_chosen").map((notice) => notice.detail)
       .reverse();
@@ -1125,9 +1129,7 @@ describe("auto and the owner's sign-ins", () => {
     // An agent that names its model is not told, nor is a run refused once its model is
     // chosen (a stronger key's, over the owner's cap).
     await ownerRun(r.stub, r.bind(), { ...engine, model: "gpt-5.1-codex" }, "pinned");
-    const stronger = await r.connect("sk-good", OPENAI, "Stronger",
-                                     listed("~anthropic/claude-fable-latest"),
-                                     "openrouter_user_models_v1");
+    const stronger = await keyOn("Stronger", "~anthropic/claude-fable-latest");
     const { generation, policy } = await r.stub.policyRead(r.bind());
     await r.stub.policyWrite(r.session(), { expected_generation: generation, policy: {
       ...policy, models: { ...policy.models, daily_cost: 100 } } });
