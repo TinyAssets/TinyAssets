@@ -65,6 +65,20 @@ function codes(answer: Answer): string {
   return JSON.stringify((envelope(answer).errors ?? []).map((error) => error.code ?? 0));
 }
 
+/** Whether `answer`'s errors carry Cloudflare's error code `code`. */
+function carries(answer: Answer, code: number): boolean {
+  return (envelope(answer).errors ?? []).some((error) => error.code === code);
+}
+
+/** `answer`'s envelope when it answered success; any other answer throws: `what` failed. */
+function succeeded(what: string, answer: Answer): Envelope {
+  const body = envelope(answer);
+  if (answer.status !== 200 || body.success !== true) {
+    throw new Error(`${what} failed (${answer.status}, ${codes(answer)})`);
+  }
+  return body;
+}
+
 /**
  * The query that reads a listing's next page, or null at its last: the cursor it answered,
  * or the next page number while `page * per_page` is short of `total_count` (wrangler's own
@@ -403,12 +417,7 @@ export class Cloudflare {
 
   /** A call's envelope when it answered success; any other answer throws: `what` failed. */
   async #ok(what: string, path: string, init?: RequestInit): Promise<Envelope> {
-    const answer = await this.#call(path, init);
-    const body = envelope(answer);
-    if (answer.status !== 200 || body.success !== true) {
-      throw new Error(`${what} failed (${answer.status}, ${codes(answer)})`);
-    }
-    return body;
+    return succeeded(what, await this.#call(path, init));
   }
 
   /** A JSON body's write, its envelope as `#ok` checks it. */
@@ -544,12 +553,12 @@ export class Cloudflare {
    */
   async annotations(account: string, script: string, version: string):
       Promise<{ readonly tag: string | null; readonly trigger: string | null }> {
-    const result = await this.#version(account, script, version);
-    if (result === null) {
+    const read = await this.#version(account, script, version);
+    if (read === null) {
       throw new Error(`reading the version ${version} of ${script} failed: Cloudflare's versions ` +
                       `API holds no such version (${NO_VERSION})`);
     }
-    const noted = (result as { annotations?: Record<string, unknown> } | null)?.annotations;
+    const noted = (read.result as { annotations?: Record<string, unknown> } | null)?.annotations;
     const text = (value: unknown) => typeof value === "string" && value !== "" ? value : null;
     return { tag: text(noted?.["workers/tag"]), trigger: text(noted?.["workers/triggered_by"]) };
   }
@@ -560,21 +569,14 @@ export class Cloudflare {
   }
 
   /**
-   * The Worker `script`'s version `version` as Cloudflare's versions API reads it, or null only
-   * when it answers that it holds no such version (`NO_VERSION`); any other answer throws.
+   * Cloudflare's versions API's read of the Worker `script`'s version `version`, or null only
+   * when it answers that it holds no such version (`NO_VERSION`); any other failure throws.
    */
-  async #version(account: string, script: string, version: string): Promise<unknown> {
+  async #version(account: string, script: string, version: string): Promise<Envelope | null> {
     const answer = await this.#call(
       `/accounts/${account}/workers/scripts/${script}/versions/${version}`);
-    const body = envelope(answer);
-    if (answer.status === 200 && body.success === true) {
-      return body.result ?? {};
-    }
-    if ((body.errors ?? []).some((error) => error.code === NO_VERSION)) {
-      return null;
-    }
-    throw new Error(`reading the version ${version} of ${script} failed (${answer.status}, ${
-      codes(answer)})`);
+    return carries(answer, NO_VERSION) ? null
+      : succeeded(`reading the version ${version} of ${script}`, answer);
   }
 
   /** The tag of the Worker `script`'s version `version` (`workers/tag`), or null when untagged. */
@@ -636,7 +638,7 @@ export class Cloudflare {
     } catch {
       // An error body that is not JSON names no code: the read failed.
     }
-    if (status === 404 && (envelope(answer).errors ?? []).some((error) => error.code === 10009)) {
+    if (status === 404 && carries(answer, 10009)) {
       return undefined;
     }
     throw new Error(`reading ${key} failed (${status}, ${codes(answer)})`);
@@ -717,8 +719,7 @@ export class Cloudflare {
     if (answer.status === 200) {
       return answer.body;
     }
-    if (answer.status === 404 && (envelope(answer).errors ?? []).some((error) =>
-      error.code === 10007)) {
+    if (answer.status === 404 && carries(answer, 10007)) {
       return undefined;
     }
     throw new Error(`reading ${key} of the R2 bucket ${bucket} failed (${answer.status}, ` +

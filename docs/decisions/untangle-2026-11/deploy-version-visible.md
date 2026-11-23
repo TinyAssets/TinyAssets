@@ -51,7 +51,8 @@ failed past its read might have half-applied, so a retry acts on a state not rea
    version, false only when it answers code 100146 (`NO_VERSION`); any other answer throws.
    The code alone is read, since nothing documents the status it comes with. `annotations`
    reads through the same private `#version`, so the path is written once, and a missing
-   version now says so.
+   version now says so. `#version` checks success with `succeeded`, as `#ok` does, and finds
+   the code with `carries`, as the KV and R2 reads find theirs (the review's commit).
 3. **`uploaded`.** It runs after each `versions upload` and before the first `versions deploy`,
    on `READ_BACK`. Past the bound it throws: "Cloudflare's versions API did not list <worker>'s
    version <id> 60 s after its upload, so nothing deployed it (a Cloudflare incident? check
