@@ -42,7 +42,8 @@
  * agent's MCP servers are bound to) and the SHA-256 of the run's own 256-bit secret, which
  * only its CLI's environment holds (its URLs carry it). Every call of a run's (its MCP door,
  * its model and server calls) presents that secret, so a run id alone authorizes nothing,
- * and the egress door holds each call to its own run's connections (`egress.ts`).
+ * and the egress door holds each call to its own run's connections (`egress.ts`). A run
+ * given a model its agent does not name tells the owner which (`MODEL_CHOSEN`).
  * The runner's own doors (its events, the sign-in report) take the runner's secret, which
  * no CLI holds.
  *
@@ -133,6 +134,14 @@ export const NO_SOURCE = "no_source: no connected source can run this agent's en
 export const MODEL_UNRANKED = "model_unranked";
 const UNRANKED_DETAIL = "no entry of the model ranking ranks it, so it ranked below every " +
   `ranked model; rank it in ${RANKING}`;
+/**
+ * The notice of a run given a model its agent does not name: told once for each agent, model
+ * and connection or sign-in, so the owner knows what each agent runs, and pays for, without
+ * reading every run's line.
+ */
+export const MODEL_CHOSEN = "model_chosen";
+const CHOSEN_DETAIL = "chosen for it because its agent.json names no model; name a model in " +
+  "agent.json to pin one";
 /** Why no source runs an agent naming no model whose keys list only models it must name. */
 const UNPICKED = "its connections list only models a run is given when its agent names one " +
   "(agent.json's model)";
@@ -767,6 +776,10 @@ export class Runs {
       runId, sha256Hex(secret), ask.stamp === null ? null : JSON.stringify(ask.stamp),
       ask.origin === null ? null : JSON.stringify(ask.origin), JSON.stringify(scopes),
       chosen.connection, JSON.stringify(ask.connectors), now);
+    if (ask.file.model === null) {
+      this.#host.noticeOnce(MODEL_CHOSEN, `${ask.agent}: its runs are given ${chosen.model} on ` +
+        `${chosen.connection ?? `${chosen.engine}'s sign-in`}, ${CHOSEN_DETAIL}`);
+    }
     this.#prune();
     return { run: runId, conversation: conversationId, existing: false, engine: chosen.engine,
              credential: chosen.credential, connection: chosen.connection, model: chosen.model,

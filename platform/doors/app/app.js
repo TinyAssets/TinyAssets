@@ -427,7 +427,9 @@ async function agents(arg) {
          h("p", { class: "muted" }, "An agent is a folder of files: its agent.json and its " +
            "AGENTS.md. This writes both; you change them later as files."),
          field("Name", name),
-         field("Engine", engine, "What runs the agent: a provider's own app in your sandbox."),
+         field("Engine", engine, "What runs the agent: a provider's own app in your sandbox. " +
+           "Each run is given the strongest model it can run on what you connected, shown on " +
+           "the run's line; name a model in its agent.json to pin one."),
          field("Runs on", credential),
          field("API key connection", connection, "Only for an agent that runs on an API key."),
          h("div", { class: "field" }, h("span", {}, "What its runs may do"),

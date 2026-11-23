@@ -8,7 +8,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { LEDGER_LIMITS } from "../src/ledger";
-import { VENDOR_HELD } from "../src/runs";
+import { MODEL_CHOSEN, VENDOR_HELD } from "../src/runs";
 import { nativeId } from "../../contract/src/binding";
 import { RUN_STARTS_NONE } from "../src/owner-do";
 import { gated, type Gated } from "./gateway-support";
@@ -21,6 +21,12 @@ import { drainDue, failure } from "./support";
 
 const SIGNED_IN = Object.freeze({ engine: "claude-code", credential: "vendor_login_in_sandbox",
                                   scopes: ALL_SCOPES });
+
+/** The owner's notices but the one of the model its agents' runs are given (`runs.test.ts`). */
+async function notices(r: Gated) {
+  return (await r.stub.noticeList(r.bind())).notices
+    .filter((notice) => notice.type !== MODEL_CHOSEN);
+}
 
 describe("a run's own schedules (the founder, 2026-11-03)", () => {
   /** The owner's run of `main`, holding `scopes`, and its own MCP binding. */
@@ -124,7 +130,9 @@ describe("a scheduled run's result", () => {
     const { messages } = await r.stub.mailboxRead(r.bind(), { limit: 50 });
     expect(messages.map((message) => [message.room_id, message.body]))
       .toEqual([[dm(nativeId("main")), "Your brief: nothing due today."]]);
-    expect((await r.stub.noticeList(r.bind())).notices).toEqual([]);
+    // Scheduled, unattended: the owner told once of the model its runs are given.
+    expect((await r.stub.noticeList(r.bind())).notices.map((notice) => notice.type))
+      .toEqual([MODEL_CHOSEN]);
   });
 
   it("posts nothing when its engine stopped at a deferred call, the run settled tool_deferred " +
@@ -180,7 +188,7 @@ describe("a scheduled run's result", () => {
       .toEqual(["storage_busy", undefined]);
     expect(await r.stub.agentStatus(r.bind(), { run_id: start.run }))
       .toMatchObject({ state: "running" });
-    expect((await r.stub.noticeList(r.bind())).notices).toEqual([]);
+    expect(await notices(r)).toEqual([]);
     // The ceiling clears; the runner posts the batch again: the run settles, its reply posted.
     await r.sql("UPDATE ledger_usage SET messages = ?", held);
     expect(await r.stub.runEvents(runnerBinding(r, start), done))
@@ -188,7 +196,7 @@ describe("a scheduled run's result", () => {
     const { messages } = await r.stub.mailboxRead(r.bind(), { limit: 50 });
     expect(messages.map((message) => [message.room_id, message.body]))
       .toEqual([[dm(nativeId("main")), "The brief."]]);
-    expect((await r.stub.noticeList(r.bind())).notices).toEqual([]);
+    expect(await notices(r)).toEqual([]);
   });
 
   it("is refused at the wall, its run settled with a notice, when the ceiling cannot clear: " +
@@ -218,9 +226,9 @@ describe("a scheduled run's result", () => {
                                          session_id: `s-${start.run}` } },
                { seq: 2, at: 2, event: { type: "result", result: "The brief." } }],
       end: { exit_code: 0 } })).toMatchObject({ settled: "succeeded" });
-    const notices = (await r.stub.noticeList(r.bind())).notices;
-    expect(notices.map((notice) => notice.type)).toEqual(["mail_reply_refused"]);
-    expect(notices[0]!.detail).toMatch(/^main: storage_full: /);
+    const told = await notices(r);
+    expect(told.map((notice) => notice.type)).toEqual(["mail_reply_refused"]);
+    expect(told[0]!.detail).toMatch(/^main: storage_full: /);
     expect((await r.stub.mailboxRead(r.bind(), { limit: 50 })).messages).toEqual([]);
   });
 });
@@ -344,10 +352,10 @@ describe("the vendor's limit (ADR-034 decision 7)", () => {
     expect([await held(r, "other"),
             await r.sql("SELECT next_at, last_error FROM run_schedules WHERE client IS " +
                         "NOT NULL")]).toEqual(before);
-    const notices = (await r.stub.noticeList(r.bind())).notices;
-    expect(notices.map((notice) => notice.type)).toEqual(["vendor_limit"]);
-    expect(notices[0]!.detail).toContain("main: Claude refused a run on its plan's sign-in");
-    expect(notices[0]!.detail).toContain(new Date(reset * 1000).toISOString());
+    const told = await notices(r);
+    expect(told.map((notice) => notice.type)).toEqual(["vendor_limit"]);
+    expect(told[0]!.detail).toContain("main: Claude refused a run on its plan's sign-in");
+    expect(told[0]!.detail).toContain(new Date(reset * 1000).toISOString());
   });
 
   it("stops a cron where the vendor states no reset, until a run of the agent is served",

@@ -1157,8 +1157,9 @@ describe("the spend caps", () => {
     expect((await r.stub.egressReceipts(r.bind())).receipts[0])
       .toMatchObject({ reservation: snapshot.reservation, charge: "succeeded",
                        served: "model-x-2026-01-01" });
-    // A bill within its hold tells the owner nothing.
-    expect((await r.stub.noticeList(r.bind())).notices).toEqual([]);
+    // A bill within its hold tells the owner of no overspend.
+    expect((await r.stub.noticeList(r.bind())).notices
+      .filter((notice) => notice.type === "egress_overspent")).toEqual([]);
     expect((await failure(() => r.stub.egressSettle(lease.as(), settle(snapshot.reservation, {
       spend: { ...DONE, served: "a b" } })))).message).toBe("invalid egress settle");
     // A settled charge never moves again.
