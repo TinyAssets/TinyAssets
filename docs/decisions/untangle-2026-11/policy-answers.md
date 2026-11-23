@@ -28,9 +28,11 @@ door, a yes in session and a no with none), with no view or case of its own.
   once, to the owner. It is a ported half-flow, not a current one, so it gets no kind here.
   Its cards, if any are filed, are policy proposal cards and are listed and declined as such.
 - **What an agent can propose that applies.** No agent can read the owner's policy
-  (`policyRead` is caller `owner`; no tool reads it), so no agent can build a whole document
-  at the current generation, the only change an apply takes. Every proposal an outside agent
-  files today is one only the owner can act on by hand, or decline.
+  (`policyRead` is caller `owner`; no tool reads it), but every `policy_propose` answer names
+  the current `generation` and the default document is public, so an agent can file a whole
+  document at the current generation, the only change an apply takes, without knowing what
+  it replaces. An apply replaces the document whole: whatever the proposal leaves out (the
+  owner's `ask` and `never` rules, its allowed hosts, its tools) goes (review, 2026-11-23).
 - **#5826's mechanism** (`action-answers.md`): each store keeps its own list door; the app's
   `KINDS` names each kind's list route, what its card shows, and its yes and no, each posting
   the card's id and the digest shown; `waitingPage` is every card's page.
@@ -49,7 +51,8 @@ door, a yes in session and a no with none), with no view or case of its own.
 1. **A policy proposal is one more kind of `KINDS`**: list `policy/proposals`
    (`policyProposals`, caller `owner`: the pending cards, oldest first, each its id, digest,
    filing time, client, null for the owner's own agents, and change), the change shown as its
-   JSON, "Apply" (`policy/apply`) and "Decline" (`policy/decline`).
+   JSON beside the owner's settings now, which an apply replaces whole, "Apply"
+   (`policy/apply`) and "Decline" (`policy/decline`).
 2. **The yes is its own door, in session**: `policyApply` (caller `session`, rule
    `proposal_apply`, gate `units` as `policyWrite`) takes the card's id and digest and writes
    the card's own document as the owner's write, the card marked applied in the same
@@ -66,13 +69,14 @@ door, a yes in session and a no with none), with no view or case of its own.
 5. **`policyProposal`, the one-card read, is `dropped`** one deploy, as #5826 kept
    `actionRequest`: the doors' version before lists it.
 6. **No key request kind**, for the reasons above; its removal is owed (below).
-7. **`actionRequest` goes now.** The stage serves 1685c187d (#5826 included) on all six
-   Workers (deploy run 45210631747). The kit's plan holds the tree against the versions the
+7. **`actionRequest` goes now.** The stage serves 5d7073f70 on all six Workers (deploy run
+   45217169623; 45215267847 put the other five there and its rollback 45216810978 left the
+   doors on 1685c187d, #5826 included, the doors' version before that run's). The kit's plan holds the tree against the versions the
    stage serves (`deploy.ts`, `handedHold` on each Worker's version before): against
-   1685c187d and a1f0e0b19 it is `[]`, against b8424315e it is "the door actionRequest is
-   gone, which the doors' version before calls". So: this PR's deploy pairs the new owner with
-   doors 1685c187d, which call `actionRequests`; a rollback of this PR's run takes the doors
-   back to 1685c187d and the owner to a version that still takes it; run 45210631747's own
+   5d7073f70, 1685c187d and a1f0e0b19 it is `[]`, against b8424315e it is "the door
+   actionRequest is gone, which the doors' version before calls". So: this PR's deploy pairs
+   the new owner with doors 5d7073f70, which call `actionRequests`; a rollback of this PR's
+   run takes the doors back to 5d7073f70 and the owner to a version that still takes it; run 45210631747's own
    rollback (doors to b8424315e) is refused by `rollbackAsk` once a deploy since serves
    (drift); and were it rolled back before this deploys, the plan refuses this deploy, named.
    No pairing a deploy or a rollback can reach calls it. Both rows and its handler go.
@@ -98,8 +102,10 @@ door, a yes in session and a no with none), with no view or case of its own.
   first. Keying cards by the proposer would be a migration of the table for no harm seen.
 - A proposal made against a generation since passed stays pending until declined or evicted,
   where a held call is swept: it is the owner's to read either way, and the card says so.
-- The card shows the change as its JSON: plain words per change is a feature editor the
-  platform does not build (Direction 3).
+- The card shows the change as its JSON, and beside it the owner's settings as they stand,
+  which an apply replaces whole (`namesFor` reads them with the askers' names; review,
+  2026-11-23): what Apply takes away is on the card, not only what it writes. Plain words per
+  change, or a diff, is a feature editor the platform does not build (Direction 3).
 - `Policy.applyKeyRequest` keeps its own copy of the card check, owed with its removal.
 
 ## Owed
@@ -108,8 +114,9 @@ door, a yes in session and a no with none), with no view or case of its own.
   `proposal`, `dropped` first, then `Policy.applyKeyRequest` and its proofs), after
   `untangle/scoped-key-agent` lands, since both change the mint.
 - [ ] `untangle/policy-proposal-shape`: research what an agent's proposal should be so the
-  owner's Apply can take it (no agent reads the policy, so none can build a whole document),
-  as the major agents' rule suggestions are (Claude Code's "don't ask again").
+  owner's Apply can take it without replacing the document whole (an agent reads no policy,
+  so a whole document it files replaces settings it never saw), as the major agents' rule
+  suggestions are (Claude Code's "don't ask again").
 - [ ] live: once the stage serves no doors version before this one, take out `policyProposal`
   (both tables' rows and its handler) and `policyWrite`'s dropped `proposal`.
 - [ ] live: after the next deploy of the owner and the doors, on the stage: claude.ai's

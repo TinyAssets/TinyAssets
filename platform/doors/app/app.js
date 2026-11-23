@@ -263,9 +263,12 @@ const KINDS = Object.freeze([
   { list: "policy/proposals",
     title: () => "A change to your settings",
     asker: (card, names) => card.client === null ? "your own agent" : appOf(card.client, names),
-    lines: (card) => [h("pre", {}, JSON.stringify(card.change, null, 2))],
-    note: () => "Applying makes these your settings, once, if they are a whole set made " +
-      "against your settings as they stand. Any other change is yours to make, or to decline.",
+    lines: (card, names) => [["Proposed: ", h("pre", {}, JSON.stringify(card.change, null, 2))],
+                             ["Your settings now, which applying replaces whole: ",
+                              h("pre", {}, JSON.stringify(names.policy, null, 2))]],
+    note: () => "Applying replaces all your settings with the proposed ones, once, if they are " +
+      "a whole set made against your settings as they stand: whatever they leave out (a rule, " +
+      "an allowed host) goes. Any other change is yours to make, or to decline.",
     yes: { words: "Apply", route: "policy/apply",
            said: () => "Applied: your settings are the ones proposed." },
     no: { words: "Decline", route: "policy/decline",
@@ -279,14 +282,17 @@ async function waitingCards() {
     .sort((a, b) => a.card.filed_at - b.card.filed_at);
 }
 
-/** What the cards' askers are named by: the connected apps, and the apps TinyAssets knows. */
+/**
+ * What the cards are shown with: the connected apps and the apps TinyAssets knows, which name
+ * their askers, and the owner's settings as they stand, which a proposal's apply replaces.
+ */
 async function namesFor(cards) {
   if (cards.length === 0) {
-    return { clients: [], known: [] };
+    return { clients: [], known: [], policy: null };
   }
-  const [{ clients }, { apps: known }] = await Promise.all([call("grants"),
-                                                           call("tools/agents_list")]);
-  return { clients, known };
+  const [{ clients }, { apps: known }, { policy }] = await Promise.all([
+    call("grants"), call("tools/agents_list"), call("policy")]);
+  return { clients, known, policy };
 }
 
 /**

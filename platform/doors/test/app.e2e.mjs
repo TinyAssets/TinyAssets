@@ -851,7 +851,9 @@ test("every card waiting on the owner is on Home, and its page, where a refusal,
       [held, ["asked by main, started by Muse", "Act: workspace.files", "At: fileMkdir",
               "In conversation: conv-1", '"path":"/workspace/held"', "resumes its run"],
        [["Allow once", "actions/approve"], ["Deny", "actions/refuse"]]],
-      [proposal, ["asked by your own agent", '"allow": "github.com"', "yours to make"],
+      [proposal, ["asked by your own agent", '"allow": "github.com"',
+                  "Your settings now, which applying replaces whole", '"mode": "open"',
+                  "whatever they leave out", "yours to make"],
        [["Apply", "policy/apply"], ["Decline", "policy/decline"]]],
     ]) {
       // Each notice on Home links to its card's page.

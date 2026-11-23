@@ -394,7 +394,7 @@ The owner's policy SHALL be one validated document whose digest is rechecked on 
 
 #### Scenario: A proposal answered on its page
 - **WHEN** an outside client proposes a change and the owner opens the page its answer names, signed in
-- **THEN** the card shows who asks and the change; the owner's yes in session applies a whole policy made at the current generation once, any other change is refused there, and a no without a session deletes the card
+- **THEN** the card shows who asks, the change and the owner's settings it would replace whole; the owner's yes in session applies a whole policy made at the current generation once, any other change is refused there, and a no without a session deletes the card
 
 ### Requirement: An action rule holds where the action is seen
 The owner's action rules SHALL be one `actions` table, empty until the owner writes one (Fact 15): each names an act of `contract/acts.json`, `ask` or `never`, and MAY name the MCP tools that do it. It SHALL hold only where its act is seen (the doors naming it, its CLI tool kinds, its tools), and `acts.json` SHALL name what nothing of ours sees. A rule nothing could see SHALL be refused. The old rule tables, spend caps and egress `ask` SHALL NOT be policy.
