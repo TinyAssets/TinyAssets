@@ -2820,6 +2820,21 @@ describe("the rollout record and mode rollback", () => {
       ({ ...shape, required: [...shape.required, "lease"] })) }),
                 "the shape started does not always hand lease, which the owner's version " +
                 "before requires");
+    // A type: b65adb647's doors hand boardDigest's cursor as an integer, which this owner
+    // takes as a string alone.
+    const DOOR_TABLE = "platform/contract/doors.json";
+    const table = JSON.parse(readFileSync(join(REPO, DOOR_TABLE), "utf8")) as {
+      doors: { door: string; args: { optional: Record<string, object> } }[] };
+    const typed = (type: object) => ({ [DOOR_TABLE]: JSON.stringify({ doors: table.doors.map(
+      (row) => row.door !== "boardDigest" ? row : { ...row, args: { ...row.args, optional: {
+        ...row.args.optional, after: type } } }) }) });
+    await stops(world({ held: true, before: typed({ type: "integer" }) }),
+                "so nothing is changed: boardDigest no longer takes after as integer, which the " +
+                "doors' version before hands");
+    // One the doors serving declare no type of is held by name alone, and the plan says so.
+    expect((await runMode(world({ held: true, before: typed({}) }), "dark", ["--public"], PUBLIC))
+      .plan).toContain(`${HELD_HOLD}; held by name alone, the doors' version before declaring ` +
+                       "no type: boardDigest after");
     // A commit with no handed.json, a version no tag names a commit of, and a commit this
     // checkout lacks, are unknown.
     await stops(world({ held: true, before: { [HANDED]: null } }),
