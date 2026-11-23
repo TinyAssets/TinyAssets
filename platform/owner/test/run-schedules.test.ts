@@ -14,7 +14,7 @@ import { RUN_STARTS_NONE } from "../src/owner-do";
 import { gated, type Gated } from "./gateway-support";
 import { MCP, MUSE, rig, signedIn, dm } from "./ledger-support";
 import {
-  ALL_SCOPES, defineAgent, ownerRun, recorder, runBinding, runnerBinding, startOf, TIERS,
+  ALL_SCOPES, defineAgent, OPEN_RECORD, ownerRun, recorder, runBinding, runnerBinding, startOf,
   whileOut,
 } from "./runs-support";
 import { drainDue, failure } from "./support";
@@ -80,7 +80,7 @@ describe("a run's own schedules (the founder, 2026-11-03)", () => {
         command_center_id: "alpha", display_name: "Muse", delivery_method: "pull",
         recipe_id: null });
       await r.stub.registerAgent(r.session(), { card_id, digest });
-      const run = await r.stub.agentSubmit({ ...client, tiers: TIERS },
+      const run = await r.stub.agentSubmit({ ...client, control: OPEN_RECORD },
                                            { message: "hi", client_send_id: "s-1" });
       const binding = runBinding(r, await startOf(r.stub, run.run_id));
       const asked = () => r.stub.agentRun(binding, { agent: "main", input: "x",
@@ -104,7 +104,7 @@ describe("a scheduled run's result", () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
     for (const result of ["Your brief: nothing due today.", "", "  NO_REPLY\n"]) {
-      await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent: "main", input: "brief",
+      await r.stub.agentRun(r.bind(), { agent: "main", input: "brief",
                                                         at: Date.now() / 1000 + 3600 });
       await r.sql("UPDATE run_schedules SET next_at = ? WHERE next_at IS NOT NULL",
                   Date.now() / 1000 - 1);
@@ -131,7 +131,7 @@ describe("a scheduled run's result", () => {
      "though the end came in a later batch, after a vendor's limit it got past", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
-    await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent: "main", input: "brief",
+    await r.stub.agentRun(r.bind(), { agent: "main", input: "brief",
                                                       at: Date.now() / 1000 + 3600 });
     await r.sql("UPDATE run_schedules SET next_at = ? WHERE next_at IS NOT NULL",
                 Date.now() / 1000 - 1);
@@ -158,7 +158,7 @@ describe("a scheduled run's result", () => {
      async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
-    await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent: "main", input: "brief",
+    await r.stub.agentRun(r.bind(), { agent: "main", input: "brief",
                                                       at: Date.now() / 1000 + 3600 });
     await r.sql("UPDATE run_schedules SET next_at = ? WHERE next_at IS NOT NULL",
                 Date.now() / 1000 - 1);
@@ -195,7 +195,7 @@ describe("a scheduled run's result", () => {
      "the archive blocked by a full storage", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
-    await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent: "main", input: "brief",
+    await r.stub.agentRun(r.bind(), { agent: "main", input: "brief",
                                                       at: Date.now() / 1000 + 3600 });
     await r.sql("UPDATE run_schedules SET next_at = ? WHERE next_at IS NOT NULL",
                 Date.now() / 1000 - 1);
@@ -242,8 +242,8 @@ describe("scheduled results", () => {
       command_center_id: "alpha", display_name: "Muse", delivery_method: "pull",
       recipe_id: null });
     await r.stub.registerAgent(r.session(), { card_id, digest });
-    await r.stub.agentRun({ ...client, tiers: TIERS }, { agent: "main", input: "say the line",
-                                                         at: Date.now() / 1000 + 3600 });
+    await r.stub.agentRun({ ...client, control: OPEN_RECORD }, {
+      agent: "main", input: "say the line", at: Date.now() / 1000 + 3600 });
     await r.sql("UPDATE run_schedules SET next_at = ? WHERE next_at IS NOT NULL",
                 Date.now() / 1000 - 1);
     await r.stub.fileMkdir(r.bind(), { path: `/workspace/d-${crypto.randomUUID()}`,
@@ -267,7 +267,7 @@ describe("a run's run tools", () => {
   it("read and cancel only as its agent's run_graph allows", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
-    const brief = await r.stub.agentRun(r.bind({ tiers: TIERS }), {
+    const brief = await r.stub.agentRun(r.bind(), {
       agent: "main", input: "the morning brief", cron: "0 7 * * *" }) as { schedule_id: string };
     const { start } = await ownerRun(r.stub, r.bind(), { ...SIGNED_IN, scopes: [] }, "narrow");
     const binding = runBinding(r, start);
@@ -309,8 +309,8 @@ describe("the vendor's limit (ADR-034 decision 7)", () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
     await defineAgent(r.stub, r.bind(), "other", SIGNED_IN);
-    await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent: "main", input: "brief", cron: CRON });
-    await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent: "other", input: "x", cron: CRON });
+    await r.stub.agentRun(r.bind(), { agent: "main", input: "brief", cron: CRON });
+    await r.stub.agentRun(r.bind(), { agent: "other", input: "x", cron: CRON });
     // A client's schedule of main runs in that client's own sandbox, on its own sign-in.
     await r.sql("INSERT INTO run_schedules (id, agent, input, trigger, cron, next_at, client, " +
                 "stamp, origin, created_at) VALUES (?, 'main', 'x', 'cron', ?, ?, ?, '{}', " +
@@ -354,7 +354,7 @@ describe("the vendor's limit (ADR-034 decision 7)", () => {
      async () => {
     const r = await gated();
     const { start } = await ownerRun(r.stub, r.bind(), SIGNED_IN);
-    await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent: "main", input: "brief", cron: CRON });
+    await r.stub.agentRun(r.bind(), { agent: "main", input: "brief", cron: CRON });
     await r.stub.runEvents(runnerBinding(r, start), { frames: [
       { seq: 1, at: 1, event: { type: "assistant", message: { content: [] },
                                 error: "billing_error" } },
@@ -376,7 +376,7 @@ describe("the vendor's limit (ADR-034 decision 7)", () => {
      async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
-    await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent: "main", input: "brief", cron: CRON });
+    await r.stub.agentRun(r.bind(), { agent: "main", input: "brief", cron: CRON });
     await r.sql("UPDATE run_schedules SET next_at = ?", Date.now() / 1000 - 1);
     await r.stub.fileMkdir(r.bind(), { path: "/workspace/limited", expected_etag: null });
     await whileOut(r.name, "start", () => drainDue(r.stub), async () => {

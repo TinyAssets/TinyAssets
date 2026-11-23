@@ -20,7 +20,7 @@ import { LEDGER_LIMITS } from "../src/ledger";
 import { INBOUND_DOOR, INBOUND_ONLY } from "../src/owner-do";
 import { sqlIn } from "../../ci/workerd";
 import { rig } from "./ledger-support";
-import { failure, inGate, storesOn, TIERS } from "./support";
+import { failure, inGate, OPEN_RECORD, storesOn } from "./support";
 
 function pending(): { stub: DurableObjectStub; owner: string } {
   const owner = `owner-${crypto.randomUUID()}`;
@@ -240,8 +240,8 @@ describe("an inbound event at the object's door, as the doors hand it", () => {
   /** Event `id` with `body` accepted at the object's door for `binding`, at its revision 1. */
   function accept(r: Awaited<ReturnType<typeof rig>>, binding: string, id: string,
                   body = "{\"x\":1}", at = Math.floor(Date.now() / 1000)) {
-    return r.stub.inboundAccept({ owner: r.owner, caller: r.owner, origin: null, tiers: TIERS,
-                                  inbound: { binding, revision: 1 } },
+    return r.stub.inboundAccept({ owner: r.owner, caller: r.owner, origin: null,
+                                  control: OPEN_RECORD, inbound: { binding, revision: 1 } },
                                 { event_id: id, event_at: at, body: new TextEncoder().encode(body),
                                   headers: {} });
   }
@@ -253,7 +253,7 @@ describe("an inbound event at the object's door, as the doors hand it", () => {
      async () => {
     const r = await rig();
     const binding = await capability(r);
-    const inbound = { owner: r.owner, caller: r.owner, origin: null, tiers: TIERS,
+    const inbound = { owner: r.owner, caller: r.owner, origin: null, control: OPEN_RECORD,
                       inbound: { binding, revision: 1 } };
     expect(await failure(() => r.stub.grantList(inbound)))
       .toMatchObject({ code: "refused", message: INBOUND_ONLY });
@@ -316,7 +316,7 @@ describe("an inbound event at the object's door, as the doors hand it", () => {
                                                            expected_revision: 1, enabled: true });
     expect(set).toMatchObject({ revision: 2 });
     expect(await r.stub.inboundAccept({ owner: r.owner, caller: r.owner, origin: null,
-                                        tiers: TIERS, inbound: { binding, revision: 2 } },
+                                        control: OPEN_RECORD, inbound: { binding, revision: 2 } },
                                       { event_id: "evt-a", event_at: Math.floor(Date.now() / 1000),
                                         body: new TextEncoder().encode("{}"), headers: {} }))
       .toMatchObject({ state: "admitted" });

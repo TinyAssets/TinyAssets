@@ -8,8 +8,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   CONTROL_KEY, CONTROL_TEXT_MAX, type ControlKeeper, type ControlRead, type ControlStore,
-  FRESH_ONLY, type FreshAct, inboundGate, type Kept, outsideOpen, ownerOpen, parseControl,
-  readControl, requireFresh, RUNS_CEILING, TIER_STORAGE_MAX, tiersOf,
+  FRESH_ONLY, type FreshAct, freshRecord, inboundGate, type Kept, outsideOpen, ownerOpen,
+  parseControl, readControl, requireFresh, RUNS_CEILING, TIER_STORAGE_MAX,
 } from "../src/control";
 
 const GATES = Object.freeze({ outside: "on", ordinary: "all", canary: [], inbound: true });
@@ -40,8 +40,10 @@ describe("the control record", () => {
 
   it("opens the inbound door only on a record read well formed with it on", () => {
     const control = parseControl(GATES)!;
-    expect(inboundGate({ kind: "read", control })).toBe(control);
-    expect(inboundGate({ kind: "read", control: { ...control, inbound: false } })).toBe("off");
+    const text = JSON.stringify(GATES);
+    expect(inboundGate({ kind: "read", control, text })).toBe(control);
+    expect(inboundGate({ kind: "read", control: { ...control, inbound: false }, text }))
+      .toBe("off");
     expect(inboundGate({ kind: "missing" })).toBe("off");
     expect(inboundGate({ kind: "malformed" })).toBe("unavailable");
     expect(inboundGate({ kind: "unreadable" })).toBe("unavailable");
@@ -82,7 +84,8 @@ describe("a read of the control record", () => {
   it("keeps each well-formed read's text, written only when it changes", async () => {
     const keeper = memory();
     for (let read = 0; read < 3; read++) {
-      expect((await readControl(store(OPEN), keeper)).kind).toBe("read");
+      expect(await readControl(store(OPEN), keeper))
+        .toEqual({ kind: "read", control: parseControl(JSON.parse(OPEN)), text: OPEN });
     }
     expect([keeper.copy?.text, keeper.writes]).toEqual([OPEN, 1]);
     const off = JSON.stringify({ ...GATES, outside: "off" });
@@ -132,7 +135,7 @@ describe("a read of the control record", () => {
 
 describe("a kept copy", () => {
   const kept = { kind: "kept", control: parseControl(JSON.parse(OPEN))!, read_at: 1 } as const;
-  const read: ControlRead = { ...kept, kind: "read" };
+  const read: ControlRead = { kind: "read", control: kept.control, text: OPEN };
 
   it("opens every gate the copy opens", () => {
     expect([outsideOpen(kept, "a"), ownerOpen(kept, "a"), inboundGate(kept)])
@@ -156,9 +159,10 @@ describe("a kept copy", () => {
     }
   });
 
-  it("hands the object no numbers to keep, as an outage with no copy doesn't", () => {
-    expect([tiersOf(kept), tiersOf({ kind: "unreadable" })]).toEqual([undefined, undefined]);
-    expect([tiersOf(read), tiersOf({ kind: "malformed" }), tiersOf({ kind: "missing" })])
-      .toEqual([TIERS, null, null]);
+  it("hands the object no record to keep, as an outage with no copy doesn't", () => {
+    expect([freshRecord(kept), freshRecord({ kind: "unreadable" })])
+      .toEqual([undefined, undefined]);
+    expect([freshRecord(read), freshRecord({ kind: "malformed" }),
+            freshRecord({ kind: "missing" })]).toEqual([OPEN, null, null]);
   });
 });

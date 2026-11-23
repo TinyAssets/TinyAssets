@@ -2,20 +2,22 @@
  * The platform's gates, as code mode's calls read them in the object.
  *
  * The doors read the control record (`contract/src/control.ts`, its own `CONTROL` namespace)
- * once per request (`doors/src/control.ts`), and hand its tier numbers and switched-on
- * sign-ins in the binding (`doors/src/binder.ts`, `withAccount`). A `code` call then runs its
- * script's tool calls in the object for as long as its caller waits, so the object reads the
- * same record again at each of them, with the doors' own rules: an outside client's calls
- * need outside access on and the maintenance gate to admit its owner (`outsideOpen`,
- * fail-closed), a run's or the owner's the maintenance gate alone (`ownerOpen`). The
- * namespace holds the control record alone, so binding it reaches no owner's state; the
- * object only reads it.
+ * once per request (`doors/src/control.ts`), and hand the record read fresh and its
+ * switched-on sign-ins in the binding (`doors/src/binder.ts`, `withAccount`). A `code` call
+ * then runs its script's tool calls in the object for as long as its caller waits, so the
+ * object reads the same record again at each of them, with the doors' own rules: an outside
+ * client's calls need outside access on and the maintenance gate to admit its owner
+ * (`outsideOpen`, fail-closed), a run's or the owner's the maintenance gate alone
+ * (`ownerOpen`). The namespace holds the control record alone, so binding it reaches no
+ * owner's state; the object only reads it.
  *
  * One read serves a script's calls for `CONTROL_FRESH_MS`, far within KV's own 60 s for a
  * flip to reach every location, so a script of many calls does not cost a KV read each.
  *
  * Each read keeps its copy in the object's own SQLite (`objectKeeper`), which serves it when
- * KV can't be read, as the doors' keeper serves theirs.
+ * KV can't be read, as the doors' keeper serves theirs. It is the object's one copy: the
+ * record a binding hands is kept there too (`owner-do.ts`, its bind), and the tier numbers are
+ * read from it (`admission.ts`).
  */
 import {
   type ControlKeeper, type ControlRead, type ControlStore, MAINTENANCE, OUTSIDE_OFF,

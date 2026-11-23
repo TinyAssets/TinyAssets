@@ -2,7 +2,7 @@ import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { vi } from "vitest";
 
-import { HELD_WAIT_MS, TIERS } from "../../ci/fixtures";
+import { HELD_WAIT_MS, OPEN_RECORD, openRecord, TIERS } from "../../ci/fixtures";
 import { sqlIn } from "../../ci/workerd";
 import { bundledSources } from "../../sources/src/catalog";
 import { signinsOn } from "../../sources/src/signin";
@@ -36,7 +36,7 @@ export const text = (value: string): Uint8Array => new TextEncoder().encode(valu
 export const EVERY_SIGNIN: readonly string[] = Object.freeze(signinsOn(
   bundledSources(), Object.fromEntries(bundledSources().ids().map((id) => [id, true]))));
 
-export { TIERS };
+export { OPEN_RECORD, openRecord, TIERS };
 
 /** A lane pass's end as the schedule hands it (`Lane.run`'s `until`): `LANE_PASS_S` on. */
 export function passEnd(): number {
@@ -479,7 +479,7 @@ export async function admitted(name: string): Promise<Stub> {
  * is reconciled (the `starterReceipts` door), so no test races the seed's alarm.
  */
 export async function seeded(stub: Stub, name: string): Promise<Stub> {
-  const binding: Binding = { owner: name, caller: name, origin: null, tiers: TIERS };
+  const binding: Binding = { owner: name, caller: name, origin: null, control: OPEN_RECORD };
   for (let tries = 0; tries < 200; tries++) {
     const { version, carried } = await stub.starterReceipts(binding);
     if (version === carried) {
@@ -559,7 +559,7 @@ export async function unseededObject(): Promise<Owner> {
   return {
     name,
     stub: await admitted(name),
-    as: (caller, owner = name) => ({ owner, caller, origin: null, tiers: TIERS }),
+    as: (caller, owner = name) => ({ owner, caller, origin: null, control: OPEN_RECORD }),
   };
 }
 

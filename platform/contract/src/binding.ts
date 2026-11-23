@@ -8,6 +8,7 @@ import type { Vendor } from "./apps.ts";
 import { keyed, object, whole } from "./checks.ts";
 import { sha256Hex } from "./digest.ts";
 import { HEX16, HEX32, HEX64, RUN_ID } from "./ids.ts";
+import { controlOf } from "./control.ts";
 import { Refusal, type RefusalCode } from "./refusal.ts";
 import { principal } from "./text.ts";
 
@@ -88,11 +89,13 @@ export interface Binding {
    */
   readonly run?: string;
   /**
-   * The tier numbers of the platform's control record (`admission.ts`), as the binder read
-   * them for a run door: never a request field, and never the owner's tier, which is the
-   * object's own row. None when the binder could not read the record fresh (`tiersOf`).
+   * The platform's control record as the binder read it fresh for this call (`freshRecord`):
+   * its text, well formed, or null when it found none or a malformed one. Never a request
+   * field. The object keeps it as its one copy of the record (`control_kept`), which its tier
+   * numbers are read from (`admission.ts`); the owner's tier is the object's own row. None
+   * when the binder could not read the record fresh: the object keeps its own.
    */
-  readonly tiers?: unknown;
+  readonly control?: string | null;
   /**
    * The served records whose vendor sign-in the platform's control record switches on, as
    * the binder read it for this call (`signins.ts`, `switches`): never a request field. The
@@ -136,8 +139,8 @@ export interface Binding {
 // error. A parser refuses anything else as `invalid`. The two doors that take no binding
 // (`UNBOUND_DOORS`, `doors.ts`) take the kind `none`.
 
-/** The tier numbers and switched-on sign-ins a door's binding carries, as the binder read them. */
-type Gated = Pick<Binding, "tiers" | "signins">;
+/** The control record and switched-on sign-ins a door's binding carries, as the binder read. */
+type Gated = Pick<Binding, "control" | "signins">;
 
 /**
  * The owner's own account, acting itself or through a verified outside client (an MCP
@@ -168,9 +171,9 @@ export type InboundBinding = Pick<Binding, "owner" | "caller"> & Gated & {
  */
 export type ReservedBinding = Pick<Binding, "owner"> & {
   readonly caller: typeof PLATFORM_CALLER; readonly origin: null };
-/** The cutover's import: the reserved caller with the verified bundle and the tier numbers. */
-export type ImportBinding = ReservedBinding & {
-  readonly import: NonNullable<Binding["import"]>; readonly tiers: unknown };
+/** The cutover's import: the reserved caller with the verified bundle and the control record. */
+export type ImportBinding = ReservedBinding & Pick<Binding, "control"> & {
+  readonly import: NonNullable<Binding["import"]> };
 
 function invalid(kind: string): never {
   throw new Refusal("invalid", `invalid ${kind} binding`);
@@ -220,6 +223,12 @@ function vendor(value: unknown, kind: string): Vendor | null {
     ? Object.freeze({ id, verified }) : invalid(kind);
 }
 
+/** The control record as the binder read it fresh: a text the contract parses, or null. */
+function record(value: unknown, kind: string): string | null {
+  return value === null || (typeof value === "string" && controlOf(value) !== null) ? value
+    : invalid(kind);
+}
+
 /** The owner's own principal, as its caller too, with no outside client. */
 function own(given: Record<string, unknown>, kind: string): string {
   const owner = principal(given["owner"]);
@@ -238,7 +247,7 @@ export function accountBinding(value: unknown): AccountBinding {
   const kind = "account";
   const given = fields(value, kind, ["owner", "caller", "origin"],
                        ["source", "authenticated_at", "session", "grant", "expires_at", "vendor",
-                        "tiers", "signins"]);
+                        "control", "signins"]);
   const has = (key: string) => key in given;
   return Object.freeze({
     owner: principal(given["owner"]), caller: principal(given["caller"]),
@@ -250,7 +259,7 @@ export function accountBinding(value: unknown): AccountBinding {
     ...(has("grant") ? { grant: text(given["grant"], kind) } : {}),
     ...(has("expires_at") ? { expires_at: integer(given["expires_at"], 0, kind) } : {}),
     ...(has("vendor") ? { vendor: vendor(given["vendor"], kind) } : {}),
-    ...(has("tiers") ? { tiers: given["tiers"] } : {}),
+    ...(has("control") ? { control: record(given["control"], kind) } : {}),
     ...(has("signins") ? { signins: given["signins"] } : {}),
   });
 }
@@ -331,14 +340,14 @@ export function runBinding(value: unknown): RunBinding {
 export function inboundBinding(value: unknown): InboundBinding {
   const kind = "inbound";
   const given = fields(value, kind, ["owner", "caller", "origin", "inbound"],
-                       ["tiers", "signins"]);
+                       ["control", "signins"]);
   const owner = own(given, kind);
   const { binding, revision } = fields(given["inbound"], kind, ["binding", "revision"]);
   return Object.freeze({
     owner, caller: owner, origin: null,
     inbound: Object.freeze({ binding: hex(binding, HEX32, kind),
                              revision: integer(revision, 1, kind) }),
-    ...("tiers" in given ? { tiers: given["tiers"] } : {}),
+    ...("control" in given ? { control: record(given["control"], kind) } : {}),
     ...("signins" in given ? { signins: given["signins"] } : {}),
   });
 }
@@ -353,12 +362,13 @@ export function reservedBinding(value: unknown): ReservedBinding {
 /** An import binding (`ImportBinding`), or `invalid`. */
 export function importBinding(value: unknown): ImportBinding {
   const kind = "import";
-  const given = fields(value, kind, ["owner", "caller", "origin", "import", "tiers"]);
+  const given = fields(value, kind, ["owner", "caller", "origin", "import"], ["control"]);
   const owner = platform(given, kind);
   const { bundle } = fields(given["import"], kind, ["bundle"]);
   return Object.freeze({ owner, caller: PLATFORM_CALLER, origin: null,
                          import: Object.freeze({ bundle: hex(bundle, HEX64, kind) }),
-                         tiers: given["tiers"] });
+                         ...("control" in given ? { control: record(given["control"], kind) }
+                           : {}) });
 }
 
 /**

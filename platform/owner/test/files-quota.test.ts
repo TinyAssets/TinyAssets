@@ -25,8 +25,8 @@ import { migrate } from "../../contract/src/migrate";
 import { rig, type Rig } from "./ledger-support";
 import { TIER_UNREAD } from "../src/files";
 import {
-  crowd, drainDue, failure, fileCounters, inFiles, laneAt, namedCode, passEnd, setFiles,
-  starterSeed, text, TIERS, tiersAt,
+  crowd, drainDue, failure, fileCounters, inFiles, laneAt, namedCode, openRecord, passEnd,
+  setFiles, starterSeed, text, TIERS, tiersAt,
 } from "./support";
 
 const W = "/workspace";
@@ -570,13 +570,14 @@ describe("the files policy", () => {
     const r = await rig();
     const big = (n: number) => new Uint8Array(INLINE_BYTES + 1).fill(n);
     const put = (path: string, n: number, tiers: unknown = TIERS) =>
-      r.stub.fileWrite(r.bind(null, { tiers }), { path, expected_etag: null, content: big(n) });
+      r.stub.fileWrite(r.bind(null, { control: openRecord(tiers) }),
+                       { path, expected_etag: null, content: big(n) });
     // The tier's figure, as the binder hands it from the control record: the seed and one
     // file.
     const room = SEED.bytes + INLINE_BYTES + 1;
     const small = tiersAt(room, TIERS.paid.storage_bytes);
     await put(`${W}/a`, 1, small);
-    expect((await r.stub.fileUsage(r.bind(null, { tiers: small }))).limits.max_bytes)
+    expect((await r.stub.fileUsage(r.bind(null, { control: openRecord(small) }))).limits.max_bytes)
       .toBe(room);
     expect(refusalOf((await failure(() => put(`${W}/b`, 2, small))))?.facts)
       .toMatchObject({ limit_bytes: room, tier: "free",
@@ -595,7 +596,7 @@ describe("the files policy", () => {
     await r.stub.fileWrite(r.bind(null), { path: `${W}/a`, expected_etag: null,
                                            content: new Uint8Array(INLINE_BYTES + 1) });
     // A control record with no tiers: the kept numbers go, and no figure takes their place.
-    const none = r.bind(null, { tiers: null });
+    const none = r.bind(null, { control: openRecord() });
     expect((await r.stub.fileUsage(none)).limits.max_bytes).toBeNull();
     expect((await failure(() => r.stub.fileWrite(none, {
       path: `${W}/b`, expected_etag: null, content: new Uint8Array(INLINE_BYTES + 1).fill(7) })))

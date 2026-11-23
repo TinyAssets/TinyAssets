@@ -13,7 +13,7 @@ import { PLATFORM_CALLER } from "../../contract/src/binding";
 import type { ChunkStore } from "../../contract/src/files";
 import type { OwnerDoors } from "../../contract/src/owner-doors";
 import { refusalOf } from "../../contract/src/refusal";
-import { HELD_WAIT_MS, TIERS } from "../fixtures";
+import { HELD_WAIT_MS, OPEN_RECORD } from "../fixtures";
 import type { GateControl } from "../gate";
 
 /** A binding called by a name its type does not have. */
@@ -80,7 +80,7 @@ async function owner(stub: (name: string) => Owner) {
   const name = `owner-${crypto.randomUUID()}`;
   await stub(name).admissionSet({ owner: name, caller: PLATFORM_CALLER, origin: null },
                                 { admit: true });
-  return { name, base: { owner: name, caller: name, origin: null, tiers: TIERS } };
+  return { name, base: { owner: name, caller: name, origin: null, control: OPEN_RECORD } };
 }
 const gated = (name: string): Owner => e.OWNER.getByName(name);
 const direct = (name: string): Owner => e.REAL_OWNER.getByName(name);
@@ -235,7 +235,7 @@ describe("the owner Worker as an auxiliary, behind the owner gate", () => {
 
   it("passes the owner's real refusal through as it crosses without the gate", async () => {
     const name = `owner-${crypto.randomUUID()}`;
-    const base = { owner: name, caller: name, origin: null, tiers: TIERS };
+    const base = { owner: name, caller: name, origin: null, control: OPEN_RECORD };
     const read = (stub: (name: string) => Owner) => outcome(() => stub(name).policyRead(base));
     const real = await read(direct);
     expect(real).toMatchObject({ name: "Refusal", code: "owner_unadmitted" });

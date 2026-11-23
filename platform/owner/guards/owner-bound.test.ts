@@ -615,7 +615,6 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                      bytes: ROW + INPUT_BYTES + 4 * STAMP_CHARS + ORIGIN_CHARS + 4 * 256 + 256,
                      by: "SCHEDULES_KEPT, each its input, stamp, origin and last error",
                      indexes: { run_schedules_due: key(NUMBER, SCHEDULE_ID_CHARS) } },
-    platform_tiers: { rows: 1, bytes: ROW + 4 * KIB, by: "one row" },
     control_kept: { rows: 1, bytes: ROW + CONTROL_TEXT_MAX + NUMBER,
                     by: "one row: the record's text, at most CONTROL_TEXT_MAX bytes" },
     platform_signins: { rows: 1, bytes: ROW + SIGNIN_LIST_CHARS + NUMBER,

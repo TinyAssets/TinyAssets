@@ -179,7 +179,7 @@ export interface RunHost {
   unadmitted(): Refusal | null;
   /** The owner's own tier (`admission.ts`). */
   tier(): TierName;
-  /** The tier numbers last kept (`admission.ts`), or null when none were. */
+  /** The kept record's tier numbers (`admission.ts`), or null when it holds none. */
   tiers(): Tiers | null;
   /** The owner's active connections the sandbox may reach (a stored egress scope), with their models. */
   reachable(): readonly Usable[];
