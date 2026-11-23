@@ -9,7 +9,7 @@
  * - `credit`: what a connection's key can pay for, where its source reports it.
  * - `models`: the models a connection's blob reaches by the catalog now (`forward.ts`).
  * - `listing`: the models a connection's source's vendor lists its key served, with their
- *   scores; `strength`, the scored ones alone, for an owner before #5833 (`forward.ts`).
+ *   scores (`forward.ts`).
  * - `forward`: raw passthrough for sandbox egress (`forward.ts`).
  * - `reseal`, `resealDoorbell`: a connection's or a doorbell subscription's blob resealed
  *   under the active kid at the next version (the sweep that retires a kid).
@@ -21,9 +21,8 @@
  * `EgressGateway`, which serves only `forward`: the egress door (the binder) streams a
  * sandbox's request through it once the owner's object admitted the request, so the
  * object sleeps while the bytes flow (research §5.4 step 4). The owner Worker binds the
- * default entrypoint: `refresh`, `revokeAtProvider`, `credit`, `models`, `listing`,
- * `strength`, `reseal`, `resealDoorbell` and `ringDoorbell`. No entrypoint serves another's
- * methods.
+ * default entrypoint: `refresh`, `revokeAtProvider`, `credit`, `models`, `listing`, `reseal`,
+ * `resealDoorbell` and `ringDoorbell`. No entrypoint serves another's methods.
  *
  * Every method takes the owner, connection and version the blob is bound to from its
  * caller, and the seal holds the call to them: the gateway never chooses an owner. Each
@@ -43,9 +42,7 @@ import {
 } from "../../contract/src/gateway";
 import { resealDoorbell, ringDoorbell, sealDoorbell, verifyDoorbell } from "./doorbell";
 import { codeOf, failureResponse, guarded } from "./failure";
-import {
-  credit, forwardMetered, forwardRead, listing, models, strength, verify,
-} from "./forward";
+import { credit, forwardMetered, forwardRead, listing, models, verify } from "./forward";
 import type { GatewayEnv } from "./env";
 import { binding, open, reseal, seal } from "./keyring";
 import { exchange, refresh, revokeAtProvider } from "./oauth";
@@ -162,11 +159,6 @@ export default class Gateway extends WorkerEntrypoint<GatewayEnv>
   async listing(owner: string, connection: string, version: number, blob: string,
                 read: unknown): Promise<ModelListing> {
     return guarded(() => listing(this.env, binding(owner, connection, version), blob, read));
-  }
-
-  async strength(owner: string, connection: string, version: number, blob: string,
-                 read: unknown): ReturnType<typeof strength> {
-    return guarded(() => strength(this.env, binding(owner, connection, version), blob, read));
   }
 
   async reseal(owner: string, connection: string, version: number,
