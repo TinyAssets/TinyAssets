@@ -37,10 +37,16 @@ and then makes the start require a model.
   file under `contract/`) was weighed and rejected: a second copy held equal by a guard.
 - **The layer table** lets the probes import the runner, the contract and the records. One
   entry more: the gateway's `catalog.ts`, which itself imports only the contract and pi-ai.
-- **What it moves:** the probes' digest, and so the pair's tag, now moves with a pi-ai bump
-  (it already moved with every record and contract change it reads). A bump then needs a pair
-  check before its deploy, which is the check the bump wants: the template's engines on the
-  models runs will be given.
+- **What it moves:**
+  - The probes' digest, and so the pair's tag, now moves with a pi-ai bump (it already moved
+    with every record and contract change it reads). A bump then needs a pair check before its
+    deploy, which is the check the bump wants: the template's engines on the models runs will
+    be given.
+  - The probes bundle grows from 238 KiB to 5.25 MiB (the catalog and its adapters), uploaded
+    twice a pair check, each under the plan's install bound (120 s). The runner, which every
+    sandbox installs, is unchanged in size.
+  - The template guard's copy of the tree takes `catalog.ts` and links the installed packages
+    it imports.
 
 ### Which model on each API
 
