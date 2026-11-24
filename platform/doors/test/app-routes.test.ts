@@ -1,10 +1,11 @@
 /**
  * The owner app's own routes on the owner surface, each one door: the
  * account (tier, the control record's numbers, file usage), notices, policy (code mode's
- * switch and the owner's custom tools), a client's profile (`grants/set`, never a revoke),
- * an agent's files as text, the source records' public facts, the tool table's names, and
- * the owner calling a table tool as itself. Each takes only the owner's first-party token,
- * and each widening the owner's session.
+ * switch and the owner's custom tools), a client's profile (`grants/set`, never a revoke,
+ * and a disconnected app's revoke lifted), an agent's files as text and their kept versions
+ * removed, a main agent turned off or deleted, a mail chain, the source records' public facts,
+ * the tool table's names, and the owner calling a table tool as itself. Each takes only the
+ * owner's first-party token, and each widening the owner's session.
  */
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -146,6 +147,32 @@ describe("the owner app's settings routes", () => {
     expect(await listed(tokens)).toEqual(profileNames("directory"));
   });
 
+  it("let a disconnected app connect again only once the owner sets its grant", async () => {
+    const who = owner();
+    const app = await signInApp({ owner: who });
+    const client = await registerClient("Back");
+    await listed(await connect(client, { owner: who }));
+    const origin = await mcpOrigin(client.clientId, client.redirectUri);
+    await answered(await appPost("grants/revoke", app.access_token, null,
+                                 { client: origin.client }));
+    // Its client id is the same on every connect, so a new sign-in alone stays refused.
+    const signedIn = await connect(client, { owner: who });
+    await expect(legacyTool(signedIn.access_token, "agents_list", {}))
+      .rejects.toThrow('/mcp answered 403: {"error":"outside client revoked"}');
+    const { clients } = await answered(await appPost("grants", app.access_token, null, {})) as
+      { clients: Record<string, unknown>[] };
+    const row = clients.find((c) => c["client"] === origin.client)!;
+    expect(row["mode"]).toBe("revoked");
+    expect(await answered(await appPost("grants/set", app.access_token, app.session, {
+      client: origin.client, source: "mcp", mode: "full", scopes: [],
+      expected_revision: row["revision"], name: row["name"], profile: row["profile"],
+      agent: row["agent"] }))).toMatchObject({ client: origin.client, mode: "full" });
+    // Its revoke is lifted, and its fence stands: only a sign-in made after the revoke
+    // connects it (`grants.test.ts`), never this one from before.
+    await expect(legacyTool(signedIn.access_token, "agents_list", {})).rejects.toThrow(
+      '/mcp answered 403: {"error":"a fresh sign-in is required after a revoke"}');
+  });
+
   it("list the owner's notices, and the tool table's names", async () => {
     const app = await signInApp({ owner: owner() });
     expect(await answered(await appPost("notices", app.access_token, null, {})))
@@ -225,6 +252,31 @@ describe("the owner app's file routes", () => {
                                    text }));
     expect((await answered(await appPost("files/read", token, null, { path })))["text"])
       .toBe(text);
+  });
+
+  it("keep every version until the owner removes an older one's content or every older one",
+     async () => {
+    const { access_token: token, session } = await signInApp({ owner: owner() });
+    const path = "/workspace/notes.md";
+    const first = await answered(await appPost("files/write", token, session,
+                                               { path, expected_etag: "", text: "key=secret" }));
+    await answered(await appPost("files/write", token, session, {
+      path, expected_etag: (first["entry"] as { etag: string }).etag, text: "key=<rotated>" }));
+    const kept = async () => (await answered(await appPost("tools/file_history", token, null,
+      { path, limit: 10 })))["changes"] as { version: number; content_id: string | null }[];
+    const [current, older] = await kept();
+    expect(await answered(await appPost("files/redact", token, null,
+                                        { path, version: current!.version }), 403))
+      .toEqual({ error: "the current version is never redacted; write a new one first" });
+    expect(await answered(await appPost("files/redact", token, null,
+                                        { path, version: older!.version })))
+      .toEqual({ redacted: older!.version });
+    expect((await kept()).map((c) => c.content_id === null)).toEqual([false, true]);
+    expect(await answered(await appPost("files/purge", token, null, { path })))
+      .toEqual({ purged: 1 });
+    expect((await kept()).map((c) => c.version)).toEqual([current!.version]);
+    expect((await answered(await appPost("files/read", token, null, { path })))["text"])
+      .toBe("key=<rotated>");
   });
 
   it("take no change to an agent's definition from the token alone", async () => {
@@ -428,6 +480,46 @@ describe("an app's agent registration, answered in the owner app", () => {
                                         { card_id: filed.card_id, digest: filed.digest })))
       .toMatchObject({ command_center_id: "work" });
     expect(await mailbox(tokens)).toEqual([null, null]);
+  });
+
+  it("is turned off and deleted there in session, and the owner reads its mail's chain",
+     async () => {
+    const who = owner();
+    const { access_token: token, session } = await signInApp({ owner: who });
+    const tokens = await connect(await registerClient("Muse"), { owner: who });
+    const apply = async () => {
+      const { card_id, digest } = await file(tokens);
+      return answered(await appPost("registrations/apply", token, session, { card_id, digest }));
+    };
+    const { agent_id } = await apply() as { agent_id: string };
+    const off = { agent_id, reason: "turned off by the owner" };
+    expect(await answered(await appPost("agent/disable", token, null, off), 403))
+      .toEqual({ error: "interactive owner session required" });
+    expect(await answered(await appPost("agent/disable", token, session, off)))
+      .toMatchObject({ agent_id, disabled_reason: "turned off by the owner" });
+    expect(await mailbox(tokens)).toEqual([NOT_AN_AGENT, NOT_AN_AGENT]);
+    // Its app asks to join again, and once applied it is back.
+    await apply();
+    expect(await mailbox(tokens)).toEqual([null, null]);
+    // The owner's mail to it, read back whole from the message.
+    const { agents } = await answered(await appPost("tools/agents_list", token, null, {})) as
+      { agents: { agent_id: string; room_id: string }[] };
+    const posted = await answered(await appPost("tools/room_post", token, null, {
+      room_id: agents[0]!.room_id, client_message_id: "c1", body: "good morning",
+      parent_id: null }));
+    const read = { message_id: posted["message_id"], limit: 10 };
+    expect(await answered(await appPost("mail/chain", token, null, read))).toMatchObject({
+      messages: [{ message_id: posted["message_id"], body: "good morning" }], more: false });
+    const gone = { agent_id };
+    expect(await answered(await appPost("agent/delete", token, null, gone), 403))
+      .toEqual({ error: "interactive owner session required" });
+    expect(await answered(await appPost("agent/delete", token, session, gone)))
+      .toEqual({ agent_id, messages: 1 });
+    expect(await answered(await appPost("mail/chain", token, null, read), 403))
+      .toEqual({ error: "no such message held" });
+    expect(await answered(await appPost("tools/agents_list", token, null, {})))
+      .toMatchObject({ agents: [] });
+    expect(await mailbox(tokens)).toEqual([NOT_AN_AGENT, NOT_AN_AGENT]);
   });
 });
 

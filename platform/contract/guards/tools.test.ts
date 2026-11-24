@@ -30,10 +30,11 @@ const RUN_TOOLS: readonly string[] = Object.freeze(["converse", "run_graph", "ru
                                                     "run_cancel"]);
 /**
  * What a run's own MCP door never serves: `converse`, since work between agents is mail
- * (ADR-034 decision 11). The other run tools it serves: an owner's agents may each do what
- * any other may (the founder, 2026-11-03), so a run launches, schedules, reads and cancels.
+ * (ADR-034 decision 11), and `agent_register`, since a run files no agent card (the owner's
+ * `own_card`). The other run tools it serves: an owner's agents may each do what any other
+ * may (the founder, 2026-11-03), so a run launches, schedules, reads and cancels.
  */
-const NEVER_RUN: readonly string[] = Object.freeze(["converse"]);
+const NEVER_RUN: readonly string[] = Object.freeze(["converse", "agent_register"]);
 /** The file readers' tools: ChatGPT's search and fetch among them. */
 const READERS: readonly string[] = Object.freeze(["file_read", "search", "fetch"]);
 /** The file writers' tools: the additive write-back first. */
@@ -239,7 +240,7 @@ describe("tool table guard", () => {
   });
 
   it("lists exactly each profile's tools: the directory's all but code, a run's all but " +
-     "converse and the mailbox tools, custom's by default all", () => {
+     "converse, agent_register and the mailbox tools, custom's by default all", () => {
     const all = toolNames();
     expect(Object.keys(profiles).sort()).toEqual(["custom", "directory", "run"]);
     expect(profileNames("directory")).toEqual(all.filter((name) => name !== "code"));

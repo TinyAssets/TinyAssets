@@ -5,7 +5,7 @@
 import {
   call, follow, randomText, Refused, RESOURCE, signIn, signOut, signedIn, whenSignedOut,
 } from "/app/static/api.js";
-import { action, bytes, eventShown, field, fill, h, when } from "/app/static/view.js";
+import { action, bytes, confirmed, eventShown, field, fill, h, when } from "/app/static/view.js";
 
 /**
  * What the doors answer at an owner-surface path, as they type it (`call`).
@@ -642,10 +642,12 @@ async function agent(name) {
 async function edit(box, path, after, fresh = false) {
   let etag = "";
   let text = "";
+  const kept = h("div", {});
   if (!fresh) {
     const read = await call("files/read", { path });
     if (read.text === null) {
-      fill(box, h("p", { class: "muted" }, `${path} is not shown here: ${read.why}.`));
+      fill(box, h("p", { class: "muted" }, `${path} is not shown here: ${read.why}.`), kept);
+      await versions(kept, path);
       return;
     }
     etag = read.entry.etag;
@@ -663,8 +665,41 @@ async function edit(box, path, after, fresh = false) {
     }
     etag = written.entry.etag;
     say(`Saved ${path}.`);
-    await after();
-  }, report)));
+    await Promise.all([after(), versions(kept, path)]);
+  }, report)), kept);
+  if (!fresh) {
+    await versions(kept, path);
+  }
+}
+
+/**
+ * A file's kept versions, newest first: an older one's content removed (a secret written by
+ * mistake), or every older one at once. Neither can be undone, and nothing else removes them
+ * while you keep every version.
+ */
+async function versions(box, path) {
+  const { changes, next } = await call("tools/file_history", { path, limit: 50 });
+  const [current, ...older] = changes;
+  const again = () => versions(box, path);
+  fill(box, h("h3", {}, "Kept versions"),
+       h("ul", {}, changes.map((c) => h("li", {}, `${when(c.at)}: ${c.op} by ${c.writer} `,
+         c === current ? h("span", { class: "muted" }, "(current)")
+           : c.content_id === null ? h("span", { class: "muted" }, "(no content kept)")
+             : confirmed("Remove its content", "Remove this version's content? It cannot be " +
+                 "read or restored from this version again; another version with the same " +
+                 "content keeps its own. This cannot be undone.", "Remove it", async () => {
+               await call("files/redact", { path, version: c.version });
+               say(`Removed that version's content from ${path}.`);
+               await again();
+             }, report, { class: "danger" })))),
+       next === null ? null : h("p", { class: "muted" }, "Older versions are not listed here."),
+       older.length === 0 ? null : confirmed("Remove older versions", `Remove every version ` +
+         `of ${path} but the current one, listed or not? This cannot be undone.`, "Remove them",
+       async () => {
+         await call("files/purge", { path });
+         say(`Removed every older version of ${path}.`);
+         await again();
+       }, report, { class: "danger" }));
 }
 
 async function ensureDirs(dir) {
@@ -680,13 +715,12 @@ async function ensureDirs(dir) {
  */
 function doorbell(agent, kinds) {
   if (kinds.length === 0) {
-    return h("p", { class: "muted" }, "No main agent's app takes a pasted wake-up.");
+    return [h("p", { class: "muted" }, "No main agent's app takes a pasted wake-up.")];
   }
   const kind = h("select", {}, kinds.map((k) => h("option", { value: k.id }, k.agents)));
   const url = h("input", { type: "text", placeholder: "The address your app showed you", autocomplete: "off" });
   const secret = h("input", { type: "password", autocomplete: "off" });
-  return h("div", { class: "card" },
-    h("b", {}, agent.display_name),
+  return [
     h("p", { class: "muted" }, "Paste the address and token its app showed you to wake it " +
       "when something changes for it. TinyAssets seals the token and never shows it again."),
     field("Its app", kind), field("Address", url), field("Token", secret),
@@ -695,7 +729,33 @@ function doorbell(agent, kinds) {
                                      url: url.value.trim(), secret: secret.value });
       secret.value = "";
       say(`Saved. ${agent.display_name} is woken when something changes for it.`);
-    }, report));
+    }, report)];
+}
+
+/**
+ * A main agent: its wake-up while it is on; turning it off, which keeps its mail with you
+ * and frees what it had not read; and deleting it, its rooms' mail with it.
+ */
+function mainAgent(agent, kinds) {
+  const name = agent.display_name;
+  const on = agent.disabled_reason === null;
+  return h("div", { class: "card" },
+    h("b", {}, name),
+    on ? doorbell(agent, kinds)
+      : h("p", { class: "muted" }, "Turned off. It comes back when its app asks to join " +
+          "again and you apply it."),
+    on ? action("Turn off", async () => {
+      await call("agent/disable", { agent_id: agent.agent_id, reason: "turned off by the owner" });
+      say(`Turned off ${name}. Its mail stays with you.`);
+      await apps();
+    }, report, { class: "quiet" }) : null,
+    confirmed("Delete", `Delete ${name} and all its mail with you and your agents? Its app ` +
+      "stays connected until you disconnect it. This cannot be undone.", `Delete ${name}`,
+    async () => {
+      await call("agent/delete", { agent_id: agent.agent_id });
+      say(`Deleted ${name} and all its mail.`);
+      await apps();
+    }, report, { class: "danger" }));
 }
 
 // -- Rooms and board ------------------------------------------------------------------
@@ -1016,6 +1076,7 @@ async function apps(arg = null) {
     await apps();
   };
   const outside = clients.filter((c) => c.source !== "api_key" && c.mode !== "revoked");
+  const disconnected = clients.filter((c) => c.source !== "api_key" && c.mode === "revoked");
   const named = (c) => appName(c, known);
   const unconnected = known.filter((app) => app.id !== null && !app.connected);
   paint(turn,
@@ -1040,9 +1101,8 @@ async function apps(arg = null) {
          h("h2", {}, "Your main agents"),
          h("p", { class: "muted" }, "A main agent is an app's own agent (a Claude scheduled " +
            "task, ChatGPT, a Grok routine) that joined your rooms and board."),
-         mains.filter((a) => a.disabled_reason === null).length === 0
-           ? h("p", { class: "muted" }, "No main agent has joined yet.")
-           : mains.filter((a) => a.disabled_reason === null).map((a) => doorbell(a, kinds))),
+         mains.length === 0 ? h("p", { class: "muted" }, "No main agent has joined yet.")
+           : mains.map((a) => mainAgent(a, kinds))),
        h("section", {},
          h("h2", {}, "Connect another assistant"),
          h("p", { class: "muted" }, "Every assistant you connect shares this same workspace: " +
@@ -1088,7 +1148,19 @@ async function apps(arg = null) {
                    say(`Disconnected ${named(c)}.`);
                    await apps();
                  }, report, { class: "danger" })));
-             }))))));
+             })))),
+         disconnected.length === 0 ? null : [
+           h("h2", {}, "Apps you disconnected"),
+           h("p", { class: "muted" }, "A disconnected app cannot connect again until you let " +
+             "it. It comes back with everything; narrow it above once it is back."),
+           h("ul", {}, disconnected.map((c) => h("li", {}, named(c), " ",
+             action("Let it connect again", async () => {
+               await call("grants/set", { client: c.client, source: c.source, mode: "full",
+                 scopes: [], expected_revision: c.revision, name: c.name, profile: c.profile,
+                 agent: c.agent });
+               say(`${named(c)} may connect again: connect it from the app itself.`);
+               await apps();
+             }, report, { class: "quiet" }))))]));
 }
 
 // -- API keys -------------------------------------------------------------------------
@@ -1160,17 +1232,31 @@ async function data(arg) {
 
 // -- Past runs: newest first, a page at a time ---------------------------------------
 
+/** A mail chain from one of its messages, oldest first, a page at a time, in `box`. */
+async function chain(box, messageId, after = 0) {
+  const { messages, more } = await call("mail/chain", { message_id: messageId, limit: 50,
+                                                        after });
+  fill(box, h("h2", {}, "The mail"),
+       h("ul", {}, messages.map((m) => h("li", {},
+         h("b", {}, m.sender_id), ` ${m.body ?? "(too long to show here)"} `,
+         m.truncated ? h("span", { class: "muted" }, "(cut here) ") : null,
+         h("small", {}, when(m.created_at))))),
+       more ? action("Read on", () => chain(box, messageId, messages.at(-1).seq), report,
+                     { class: "quiet" }) : null);
+}
+
 async function history(arg) {
   const turn = turnOf("history", arg);
   const before = arg === null ? undefined : Number(arg);
   const { runs, next } = await call("runs", before === undefined ? {} : { before });
+  const mail = h("div", {});
   paint(turn,
        h("h1", {}, "Past runs"),
        h("section", {},
          runs.length === 0 ? h("p", { class: "muted" }, "No runs yet.")
            : h("div", { class: "scroll" }, h("table", {},
              h("thead", {}, h("tr", {}, ["Agent", "State", "Engine", "Started", "Ended",
-                                         "Conversation"].map((t) => h("th", {}, t)))),
+                                         "Conversation", "Mail"].map((t) => h("th", {}, t)))),
              h("tbody", {}, runs.map((run) => h("tr", {},
                h("td", {}, h("a", { href: `#agents/${encodeURIComponent(run.agent)}` },
                              run.agent)),
@@ -1178,8 +1264,11 @@ async function history(arg) {
                h("td", {}, run.engine),
                h("td", {}, run.started_at === null ? "—" : when(run.started_at)),
                h("td", {}, run.settled_at === null ? "—" : when(run.settled_at)),
-               h("td", {}, h("code", {}, run.conversation_id))))))),
-         next === null ? null : h("p", {}, h("a", { href: `#history/${next}` }, "Older runs"))));
+               h("td", {}, h("code", {}, run.conversation_id)),
+               h("td", {}, run.mail === null ? "—" : action("Read the mail",
+                 () => chain(mail, run.mail), report, { class: "quiet" }))))))),
+         next === null ? null : h("p", {}, h("a", { href: `#history/${next}` }, "Older runs")),
+         mail));
 }
 
 const SCREENS = Object.freeze({ home, agents, history, rooms, sources, apps, keys, data });

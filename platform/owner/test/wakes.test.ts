@@ -743,7 +743,7 @@ describe("the wakes lane of the object's one schedule", () => {
 });
 
 /**
- * Five rules of the registry's, each failing its test if it is dropped.
+ * A rule of the registry's, failing its test if it is dropped.
  */
 describe("the registry's quieter rules", () => {
   it("refuses a subscribe for its own agent once that agent is disabled", async () => {
@@ -754,26 +754,6 @@ describe("the registry's quieter rules", () => {
     expect([refused.code, refused.message])
       .toEqual(["refused", "not this caller's subscribing agent"]);
     expect(await r.sql("SELECT * FROM wake_callbacks")).toEqual([]);
-  });
-
-  it("lets an outside caller disable its own agent only by both halves of its identity",
-     async () => {
-    const r = await rig();
-    const muse = await r.register(MUSE);
-    for (const from of [{ client: MUSE.client, family: DOT.family },
-                        { client: DOT.client, family: MUSE.family }]) {
-      const refused = await r.inLedger((ledger) => {
-        try {
-          ledger.disable(muse, "x", from);
-          return "disabled";
-        } catch (error) {
-          return (error as Error).message;
-        }
-      });
-      expect(refused).toBe("an outside caller disables only its own agent");
-    }
-    const [agent] = (await r.stub.outsideAgents(r.bind(null))).agents;
-    expect(agent!.disabled_reason).toBeNull();
   });
 
 });

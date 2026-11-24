@@ -111,7 +111,7 @@
       "tool": {
         "name": "agents_list", "title": "List agents", "readOnlyHint": true,
         "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
-        "description": "List the agents registered for this connection, the owner's own agents, each with the room_id it is reached in (null until this connection is a registered agent: agent_register), and which of the owner's AI apps are connected to TinyAssets, each one not connected with its connect_url, the page with its connect step. One answer holds as many as fit; when it carries next, read again with after set to it for the rest."
+        "description": "List the agents registered for this connection, the owner's own agents, each with the room_id it is reached in (null until the owner approves this connection's agent registration), and which of the owner's AI apps are connected to TinyAssets, each one not connected with its connect_url, the page with its connect step. One answer holds as many as fit; when it carries next, read again with after set to it for the rest."
       },
       "answer": {
         "required": {
@@ -440,6 +440,10 @@
         "name": "file_history", "title": "File history", "readOnlyHint": true,
         "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
         "description": "List a path's kept versions, newest first."
+      },
+      "answer": {
+        "required": { "changes": { "type": "array" }, "next": { "type": ["integer", "null"] } },
+        "optional": {}
       }
     },
     {
@@ -843,7 +847,7 @@
       "answer": { "required": { "forgotten": { "type": "boolean" } }, "optional": {} }
     },
     {
-      "door": "grantForgetRevoked", "class": "reduce", "capability": null,
+      "door": "grantForgetRevoked", "class": "reduce", "capability": null, "dropped": true,
       "args": {
         "refused": "invalid policy request", "required": { "clients": { "type": "array" } },
         "optional": {}
@@ -1103,6 +1107,10 @@
           "after": { "type": "integer" }, "body_offset": { "type": "integer" },
           "body_message_id": { "type": "string" }
         }
+      },
+      "answer": {
+        "required": { "messages": { "type": "array" }, "more": { "type": "boolean" } },
+        "optional": {}
       }
     },
     {

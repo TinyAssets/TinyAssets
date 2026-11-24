@@ -812,6 +812,109 @@ test("a connected app whose agent was deleted says so on its row, and its save n
   }
 });
 
+test("a main agent is turned off or deleted from its card, and a disconnected app is let " +
+     "connect again", { timeout: 60_000 }, async () => {
+  // No app connects in this harness, so the doors' lists are answered with a main agent on,
+  // one off and a disconnected app; each answer goes to the real doors.
+  const agent = (agent_id, display_name, disabled_reason) => ({ agent_id, display_name,
+    disabled_reason, command_center_id: "main", delivery_method: "pull", room_id: null });
+  const mains = { agents: [agent("agent_on", "Muse", null),
+                           agent("agent_off", "Dot", "turned off by the owner")],
+                  owner_agents: [], apps: [] };
+  const gone = { client: "d".repeat(64), source: "mcp", mode: "revoked", scopes: [], revision: 4,
+                 revoked_at: 1, vendor: null, vendor_verified: 0, name: "Back",
+                 profile: "directory", agent: "main", agent_live: true, first_seen: 0,
+                 last_seen: 0 };
+  const listedAgents = (route) => route.fulfill({ json: mains });
+  const listedGrants = (route) => route.fulfill({ json: { clients: [gone] } });
+  await page.route("**/app/api/tools/agents_list", listedAgents);
+  await page.route("**/app/api/grants", listedGrants);
+  const sent = (path) => page.waitForRequest((request) =>
+    request.url().endsWith(`/app/api/${path}`));
+  try {
+    // From another screen: the test before ends on this one, which a goto would not redraw.
+    await page.goto(`${ORIGIN}/app#home`);
+    await page.getByRole("heading", { name: "Home", exact: true }).waitFor();
+    await page.goto(`${ORIGIN}/app#apps`);
+    const on = page.locator(".card", { hasText: "Muse" });
+    const off = page.locator(".card", { hasText: "Dot" });
+    await off.getByText(/^Turned off\. It comes back when its app asks to join again/).waitFor();
+    assert.equal(await off.getByRole("button", { name: "Turn off" }).count(), 0);
+    const disabling = sent("agent/disable");
+    await on.getByRole("button", { name: "Turn off" }).click();
+    assert.deepEqual((await disabling).postDataJSON(),
+                     { agent_id: "agent_on", reason: "turned off by the owner" });
+    // The real doors know no such agent, and say so.
+    await page.locator("#notice .message.bad", { hasText: "agent not found" }).waitFor();
+    // Delete asks first, naming what goes.
+    await off.getByRole("button", { name: "Delete" }).click();
+    await off.getByText(/^Delete Dot and all its mail .* This cannot be undone\.$/).waitFor();
+    const deleting = sent("agent/delete");
+    await off.getByRole("button", { name: "Delete Dot" }).click();
+    assert.deepEqual((await deleting).postDataJSON(), { agent_id: "agent_off" });
+    await page.locator("#notice .message.bad", { hasText: "agent not found" }).waitFor();
+    // A disconnected app is listed apart, and let back by setting its grant again.
+    const back = page.locator("li", { hasText: "Back" });
+    const setting = sent("grants/set");
+    await back.getByRole("button", { name: "Let it connect again" }).click();
+    assert.deepEqual((await setting).postDataJSON(), {
+      client: gone.client, source: "mcp", mode: "full", scopes: [], expected_revision: 4,
+      name: "Back", profile: "directory", agent: "main" });
+    await page.locator("#notice .message.bad").waitFor();
+  } finally {
+    await page.unroute("**/app/api/tools/agents_list", listedAgents);
+    await page.unroute("**/app/api/grants", listedGrants);
+  }
+});
+
+test("a run that mail started shows its mail, and a file's older versions are removed",
+     { timeout: 120_000 }, async () => {
+  // The owner's mail to its own agent starts that agent's run, which names the mail.
+  await page.goto(`${ORIGIN}/app#rooms`);
+  await page.getByLabel(/^Message/).fill("read me back");
+  await page.getByRole("button", { name: "Post" }).click();
+  await page.locator(".message.good", { hasText: "Posted." }).waitFor();
+  // The runs lane starts it on the owner's own schedule; wait for Past runs to list it.
+  const read = page.getByRole("button", { name: "Read the mail" }).first();
+  for (const deadline = Date.now() + 60_000; await read.count() === 0;) {
+    assert.ok(Date.now() < deadline, "no run that mail started is listed");
+    await page.goto(`${ORIGIN}/app#history`);
+    await page.getByRole("heading", { name: "Past runs", exact: true }).waitFor();
+    await page.locator("main p.muted", { hasText: "Loading" }).waitFor({ state: "detached" });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  await read.click();
+  await page.getByRole("heading", { name: "The mail", exact: true }).waitFor();
+  await page.locator("li", { hasText: /good morning|read me back/ }).first().waitFor();
+  // A file saved twice keeps both versions until the owner removes the older one's content,
+  // then every older version.
+  await page.goto(`${ORIGIN}/app#agents/helper`);
+  await page.getByPlaceholder("skills/notes/SKILL.md").fill("versions.md");
+  await page.getByRole("button", { name: "New file" }).click();
+  const kept = page.locator("li", { hasText: /: [a-z]+ by / });
+  for (const text of ["key=secret", "key=<rotated>"]) {
+    await page.locator("textarea.editor").fill(text);
+    await page.getByRole("button", { name: "Save" }).click();
+    await page.locator(".message.good", { hasText: "Saved" }).waitFor();
+  }
+  await kept.nth(1).waitFor();
+  assert.equal(await kept.count(), 2);
+  await kept.first().getByText("(current)").waitFor();
+  // Each asks first, saying what goes.
+  await kept.nth(1).getByRole("button", { name: "Remove its content" }).click();
+  await kept.nth(1).getByText(/^Remove this version's content\? .* cannot be undone\.$/).waitFor();
+  await kept.nth(1).getByRole("button", { name: "Remove it", exact: true }).click();
+  await page.locator(".message.good", { hasText: "Removed that version's content" }).waitFor();
+  await kept.nth(1).getByText("(no content kept)").waitFor();
+  await page.getByRole("button", { name: "Remove older versions" }).click();
+  await page.getByText(/^Remove every version of .* but the current one/).waitFor();
+  await page.getByRole("button", { name: "Remove them", exact: true }).click();
+  await page.locator(".message.good", { hasText: "Removed every older version" }).waitFor();
+  await page.getByRole("button", { name: "Remove older versions" }).waitFor({ state: "detached" });
+  assert.equal(await kept.count(), 1);
+  assert.equal(await page.locator("textarea.editor").inputValue(), "key=<rotated>");
+});
+
 test("every card waiting on the owner is on Home, and its page, where a refusal, an " +
      "approve_url and a notice lead, shows what it asks and sends each answer by the card " +
      "shown", { timeout: 60_000 }, async () => {

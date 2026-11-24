@@ -402,7 +402,7 @@ describe("outside agents register from a verified identity", () => {
     const [muse, dot] = [await r.register(MUSE), await r.register(DOT, "Dot")];
     for (const [binding, reason] of [
       [r.session(MUSE), "an outside client's call never carries the owner's session"],
-      [r.bind(MUSE), "interactive owner session required"],
+      [r.bind(MUSE), "only the owner may turn off its agents"],
     ] as const) {
       const refused = await failure(() => r.stub.disableAgent(binding,
                                                               { agent_id: muse, reason: "x" }));
@@ -410,17 +410,6 @@ describe("outside agents register from a verified identity", () => {
     }
     expect((await r.stub.disableAgent(r.session(null), { agent_id: dot, reason: "owner" }))
       .disabled_reason).toBe("owner");
-    // The ledger's own rule, for an in-process caller acting as an outside agent.
-    expect(await r.inLedger((ledger) => {
-      try {
-        ledger.disable(dot, "x", MUSE);
-        return "disabled";
-      } catch (error) {
-        return (error as Error).message;
-      }
-    })).toBe("an outside caller disables only its own agent");
-    expect((await r.inLedger((ledger) => ledger.disable(muse, "done", MUSE)))
-      .disabled_reason).toBe("done");
   });
 
   it("refuses an outside client's call carrying the owner's session at every door",
@@ -473,15 +462,16 @@ describe("outside agents register from a verified identity", () => {
     const muse = await r.register(MUSE);
     const policy = { agent_id: muse, max_wakes_per_hour: 30, batch_window_s: 0,
                      expected_generation: 1 };
-    for (const [binding, reason] of [
-      [r.session(MUSE), "an outside client's call never carries the owner's session"],
-      [r.bind(null), "interactive owner session required"],
-      [r.bind(MUSE), "only the owner may change its agents' policy"],
+    for (const [binding, reason, deleting] of [
+      [r.session(MUSE), "an outside client's call never carries the owner's session", null],
+      [r.bind(null), "interactive owner session required", null],
+      [r.bind(MUSE), "only the owner may change its agents' policy",
+       "only the owner may delete its agents"],
     ] as const) {
-      for (const call of [() => r.stub.policyWakeLimits(binding, policy),
-                          () => r.stub.deleteAgent(binding, { agent_id: muse })]) {
-        expect((await failure(call)).message).toBe(reason);
-      }
+      expect((await failure(() => r.stub.policyWakeLimits(binding, policy))).message)
+        .toBe(reason);
+      expect((await failure(() => r.stub.deleteAgent(binding, { agent_id: muse }))).message)
+        .toBe(deleting ?? reason);
     }
     const [agent] = (await r.stub.outsideAgents(r.bind(null))).agents;
     expect([agent!.max_wakes_per_hour, agent!.revision]).toEqual([null, 1]);
