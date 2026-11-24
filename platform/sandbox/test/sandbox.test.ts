@@ -153,7 +153,7 @@ const AGENT_HOOKS = agentHooks(JSON.stringify({ hooks: {
 function start(over: Partial<SandboxStart> = {}): SandboxStart {
   return {
     run: RUN, agent: "main", conversation: `cv_${hex(32, "c")}`, engine: "claude-code",
-    credential: "vendor_login_in_sandbox", model: null, session_id: null, prompt: "hello",
+    credential: "vendor_login_in_sandbox", model: "model-1", session_id: null, prompt: "hello",
     unattended: false, authority: "owner", lease: LEASE,
     route: `v1.k1.${"r".repeat(16)}.${"r".repeat(43)}`,
     tokens: { sync_token: "sync", runner_token: hex(64, "d") },

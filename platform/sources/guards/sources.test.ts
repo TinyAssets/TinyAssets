@@ -943,10 +943,19 @@ describe("an engine record that does not fit", () => {
     ["a plan model with no citation",
      cli((s) => { delete at(s, "login.model")["citation"]; }),
      /cli\.login\.model has exactly id, citation; missing \["citation"\]/],
-    ["no model_argv to pass the plan's model",
-     cli((s) => { delete at(s, "engine")["model_argv"]; }),
-     /cli\.engine\.model_argv is present on a record that signs in/],
   ])("refuses a sign-in with %s: a plan always ranks by a real model", (_what, record, said) => {
+    expect(refused(record)).toMatch(said);
+  });
+
+  it.each([
+    ["a sign-in with no model_argv", cli((s) => { delete at(s, "engine")["model_argv"]; }),
+     /cli\.engine has exactly .*; missing \["model_argv"\]/],
+    ["a key engine with no model_argv", cli((s) => { delete at(s, "engine")["model_argv"]; }, pi),
+     /cli\.engine has exactly .*; missing \["model_argv"\]/],
+    ["a model_argv that drops the model", cli((s) => {
+      at(s, "engine")["model_argv"] = ["--provider", "{provider}"]; }, pi),
+     /cli\.engine\.model_argv carries \{model\}: every run names its model/],
+  ])("refuses %s: every run passes the model it is given", (_what, record, said) => {
     expect(refused(record)).toMatch(said);
   });
 

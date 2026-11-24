@@ -185,7 +185,11 @@ export interface StartDoc {
   readonly conversation: string;
   readonly engine: string;
   readonly credential: "vendor_login_in_sandbox" | "api_key";
-  readonly model: string | null;
+  /**
+   * The model the run is given. Protocol 5's record keeps `string|null` (frozen): its Workers
+   * before #5842 could hand null, and none serves (`probe-model.md`).
+   */
+  readonly model: string;
   readonly session_id: string | null;
   readonly prompt: string;
   readonly unattended: boolean;

@@ -325,7 +325,7 @@ function pureStart(engine: string, over: Partial<StartDoc> = {}): StartDoc {
                  endpoints: [] } }],
     () => "4".repeat(32), { ...made, run: PURE_RUN, secret: PURE_SECRET, connection, api: "x" });
   return { run: PURE_RUN, agent: "main", conversation: `cv_${"c".repeat(32)}`, engine,
-           credential, model: null, session_id: null, prompt: "p",
+           credential, model: "model-1", session_id: null, prompt: "p",
            unattended: false, authority: "owner", lease: { lease_id: "b".repeat(32), epoch: 1 },
            config: { generation: 1, egress: { mode: "open", destinations: [] },
                      env: { ...made.env, ...keyed }, inherit: ["PATH"] },
@@ -1487,7 +1487,7 @@ describe("an API-key run's base URL", () => {
       () => "4".repeat(32), { ...made, run: RUN, secret: SECRET, api: "x",
                               connection: credential === "api_key" ? CONNECTION : null });
     return { run: RUN, agent: "main", conversation: `cv_${"c".repeat(32)}`, engine, credential,
-             model: null, session_id: null, prompt: "p", unattended: false, authority: "owner",
+             model: "model-1", session_id: null, prompt: "p", unattended: false, authority: "owner",
              lease: { lease_id: "b".repeat(32), epoch: 1 },
              config: { generation: 1, egress: { mode: "open", destinations: [] },
                        env: { ...made.env, ...keyed }, inherit: ["PATH"] },
