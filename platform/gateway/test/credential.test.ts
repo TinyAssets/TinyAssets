@@ -27,7 +27,8 @@ describe("source", () => {
     ...["pi-messages", "azure-openai-responses", "google-vertex"].map((api) =>
       [`the API ${api}`, onApi({ api })] as [string, unknown]),
     ["a base URL off the sealed origins", onApi({ base_url: "https://evil.test" })],
-    ["an http base URL", onApi({ base_url: "http://api.openai.com" })],
+    ["an http base URL", { ...onApi({ base_url: "http://api.openai.com" }),
+      endpoints: [{ origin: "http://api.openai.com", paths: ["/*"], methods: ["POST"] }] }],
     ["an IP-literal base URL", { ...onApi({ base_url: "https://10.0.0.1" }),
       endpoints: [{ origin: "https://10.0.0.1", paths: ["/*"], methods: ["POST"] }] }],
     ["an IPv6 origin", { ...onApi({ base_url: "https://[::1]" }),

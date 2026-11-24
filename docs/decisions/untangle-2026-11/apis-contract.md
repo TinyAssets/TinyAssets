@@ -57,7 +57,9 @@ releases before it, it kept:
   #5837. That guard is there for the envelope (the scheme, the ring, the binding, the
   refusals); the plaintext's grammar of a commit no Worker serves is not its to hold. It
   keeps holding that main's code opens today's envelope, and today's code reads what it
-  opened.
+  opened. The grammar a rollback does reach is the base branch's (the version before, which
+  `deploy.ts` rolls back to), so the guard reads today's plaintext with that one (review:
+  without it, a writer shipped before its reader passed every guard).
 
 ### What cannot go yet, and why
 
@@ -90,8 +92,9 @@ releases before it, it kept:
    `modelUpstream` (`source`, `keySource`, `keyExchangeSource`) reads `apis` only, and
    `upstream`, which opens a blob, reads a blob of the old spelling as its one row: the one
    place left that a blob sealed before is read, dropped with `egressScope`'s old reader.
-4. **The keyring guard holds the envelope, not an old grammar.** Today's blobs open on main's
-   keyring (`openValue`), and the value is today's credential.
+4. **The keyring guard holds the envelope, and the grammar a rollback reaches.** Today's blobs
+   open on main's keyring (`openValue`), the value is today's credential, and the base
+   branch's `credential` (`ci/history.ts` `baseOf`) reads it as today's does.
 5. **The gateway spec** says `verify` answers every source in the one spelling.
 
 ## Problems found (untangle step 2)
@@ -105,7 +108,8 @@ releases before it, it kept:
   tolerance lived as long as the blobs'. Fixed: the old spelling is read where a blob is
   opened (`upstream`) only.
 - `gateway/guards/keyring-main.test.ts`: held today's plaintext to a pre-#5837 grammar, so
-  it would have refused the contract. Fixed: it holds the envelope.
+  it would have refused the contract. Fixed: it holds the envelope, and the base branch's
+  grammar reads today's plaintext.
 - Tests that sealed in the old spelling (`credential.test.ts`'s declared endpoint,
   `entry.test.ts`'s Vercel source) and the one that held `handed`'s answer
   (`forward.test.ts`): now the `apis` spelling, and the seal input's old spelling is
@@ -114,7 +118,8 @@ releases before it, it kept:
   and its open of a plaintext on a retired API, set `api` or `base_url` beside the record's
   `apis` since #5837, so each was refused for the extra key whatever the rule under test
   did: they could not fail. Each now changes the API's row (`onApi`); a mutation that lets
-  any API seal fails four of them.
+  any API seal fails four of them. The http case seals an http origin too (review), so the
+  https rule refuses it, not the origin match.
 - `owner/test/connections.test.ts` "keeps maxModels of the largest built-in record" grew each
   record's id by five characters, so with every record naming its API (`"api":
   "anthropic-messages"`, 27 bytes) its 1,024 records came to 640 KiB and one byte, past

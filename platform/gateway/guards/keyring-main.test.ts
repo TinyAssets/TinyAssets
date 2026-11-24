@@ -6,9 +6,10 @@
  * and run as it was.
  *
  * - Main's golden credentials and doorbells, checked in, open under today's code.
- * - Blobs sealed today open on main's code (a credential's on its envelope, read by today's
- *   grammar: main's predates upstreams naming their APIs, and no Worker serves it), and
- *   main's fresh blobs on today's.
+ * - Blobs sealed today open on main's code, a credential's plaintext read by the base
+ *   branch's grammar (`baseOf`), the version a rollback of this deploy reaches (main's
+ *   predates upstreams naming their APIs, and no rollback reaches it); and main's fresh
+ *   blobs on today's.
  * - Every malformed ring, every tampered or relabelled blob, every retired kid and every
  *   blob of its own domain past the 64 KiB bound is answered with main's own refusal.
  * - No data key the files Worker wrapped opens here, under the very same ring, and no
@@ -16,7 +17,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { type Tree, treeAt } from "../../ci/history";
+import { baseOf, type Tree, treeAt } from "../../ci/history";
 import VECTORS from "../../ci/keyring-vectors.json" with { type: "json" };
 import { parseRing, sealBlob } from "../../contract/src/envelope";
 import { CONNECTION_BLOB_MAX } from "../../contract/src/limits";
@@ -50,16 +51,23 @@ const bell = (kid: "k1" | "k2") =>
 const same = (value: unknown) => value;
 
 let tree: Tree;
+let base: Tree;
 let main: { keyring: Keyring; doorbell: Doorbell };
+/** The base branch's credential grammar. */
+let before: typeof credential;
 
 beforeAll(async () => {
   tree = treeAt(VECTORS.commit, ["platform/contract", "platform/gateway/src"]);
+  base = treeAt(baseOf(), ["platform/contract", "platform/gateway/src"]);
   main = { keyring: await tree.load("platform/gateway/src/keyring.ts"),
            doorbell: await tree.load("platform/gateway/src/doorbell.ts") };
+  before = (await base.load<{ credential: typeof credential }>(
+    "platform/gateway/src/credential.ts")).credential;
 });
 
 afterAll(() => {
   tree.remove();
+  base.remove();
 });
 
 /** What a call ends as: "ok", or its refusal's code. */
@@ -115,18 +123,21 @@ describe("main's golden blobs", () => {
 });
 
 describe("today's blobs", () => {
-  it("open on main's code as credentials, resealed and swept ones included", async () => {
-    // Each plaintext as sealed, in the one spelling today's code writes (HELD's).
+  it("open on main's code as credentials, read by the base branch's, resealed and swept ones " +
+     "included", async () => {
+    // Each plaintext as sealed, in the one spelling today's code writes (HELD's), and as the
+    // base branch reads it.
+    const read = (value: unknown) => [value, before(value)];
     const sealed = await keyring.seal(ROTATED, BOUND, CREDENTIAL);
     const opened = await main.keyring.openValue(ROTATED, BOUND, sealed.blob, same);
-    expect([opened.kid, opened.value]).toEqual(["k2", HELD]);
+    expect([opened.kid, ...read(opened.value)]).toEqual(["k2", HELD, HELD]);
     const resealed = await keyring.reseal(ROTATED, BOUND, CREDENTIAL);
-    expect((await main.keyring.openValue(ROTATED, { ...BOUND, version: resealed.version },
-                                         resealed.blob, same)).value)
-      .toEqual({ ...HELD, sealed_at: expect.any(Number) });
+    const again = { ...HELD, sealed_at: expect.any(Number) };
+    expect(read((await main.keyring.openValue(ROTATED, { ...BOUND, version: resealed.version },
+                                              resealed.blob, same)).value)).toEqual([again, again]);
     const swept = (await keyring.open(ROTATED, BOUND, VECTORS.gateway.k1)).resealed!;
-    expect((await main.keyring.openValue(RETIRED, { ...BOUND, version: swept.version },
-                                         swept.blob, same)).value).toEqual(HELD);
+    expect(read((await main.keyring.openValue(RETIRED, { ...BOUND, version: swept.version },
+                                              swept.blob, same)).value)).toEqual([HELD, HELD]);
   });
 
   it("open on main's code as doorbells", async () => {
