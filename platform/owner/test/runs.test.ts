@@ -513,7 +513,7 @@ describe("a run's settle", () => {
     const connection = await r.connect("sk-pi");
     await defineAgent(r.stub, r.bind(), "main", { engine: "pi", credential: "api_key",
                                                   connection, scopes: [] });
-    // pi 1.4.0's `--mode json` stream: each attempt's message ends, then pi says it retries.
+    // pi's `--mode json` stream: each attempt's message ends, then pi says it retries.
     const attempt = (said: string) => [
       { type: "message_end", message: { role: "assistant", content: [], stopReason: "error",
                                         errorMessage: said } },

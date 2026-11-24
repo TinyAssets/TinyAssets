@@ -38,11 +38,11 @@ const TEMPLATE = join(PLATFORM, "sandbox", "template");
  */
 const SDK_RELEASE = "2.62.0";
 /**
- * The image's recipe as E2B's SDK serializes it (`Template.to_json`, `SDK_RELEASE`): 21 steps.
- * Its copies' hashes take each staged file's mode: git's, 0644 (`image.ts` stages so). A new
+ * The image's recipe as E2B's SDK serializes it (`Template.to_json`, `SDK_RELEASE`). Its
+ * copies' hashes take each staged file's mode: git's, 0644 (`image.ts` stages so). A new
  * recipe is a new image: a paid build, then the pin PR.
  */
-const RECIPE = "34819aeb6ee19eb38c62c27ad60f195fadb34f4cbcf8ca2ea55d6ba94161a4ac";
+const RECIPE = "2977340fdbb980c7ada5b3489ce2f0b4676db82fcb963c9b0ff19a5d097516f0";
 
 /**
  * E2B's SDK as far as the image's steps reach it (`Template`, `Template.to_json`), written
