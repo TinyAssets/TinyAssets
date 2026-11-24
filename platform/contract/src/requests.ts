@@ -152,7 +152,6 @@ export interface DoorRequests {
     readonly expected_generation: number;
     readonly policy: Readonly<Record<string, unknown>>;
   };
-  readonly policyProposal: { readonly request_id: string };
   readonly policyApply: { readonly card_id: string; readonly digest: string };
   readonly policyDecline: { readonly card_id: string; readonly digest: string };
   readonly policyWakeLimits: {

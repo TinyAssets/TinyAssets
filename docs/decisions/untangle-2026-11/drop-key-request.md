@@ -80,7 +80,8 @@
   the mint keeps scopes is owed with a key's agent (below).
 - `policy_propose` still files a `{ type: "api_key_request" }` change, as any change object:
   a card the owner can only decline, as with any change that is no whole policy. What a
-  proposal should be is `untangle/policy-proposal-shape` (`policy-answers.md`).
+  proposal should be is `untangle/policy-proposal-shape` (`policy-answers.md`), which refuses
+  any change that is no delta when it is filed.
 - The Python stack's `api_key_request_counts` (its rate limiter) and the import's rules that
   drop it are another thing of the same name, and stay.
 

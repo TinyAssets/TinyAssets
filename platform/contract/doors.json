@@ -144,7 +144,7 @@
       "door": "policyPropose", "class": "work", "capability": "propose_policy",
       "args": {
         "refused": "invalid policy request",
-        "required": { "change": { "type": "object", "description": "The proposed change" } },
+        "required": { "change": { "type": "object", "description": "Only what changes, at least one of: set, settings nested as the policy is ({\"egress\": {\"mode\": \"allowlist\"}}, {\"codemode\": {\"on\": true}}, {\"models\": {\"daily_cost\": 5000000}}; null puts one back to its default); add and remove, entries of the two lists: actions, action rules ({\"act\": \"share\", \"do\": \"ask\" or \"never\", \"agent\": an agent's id, \"tools\": [\"mcp:server:tool\"]}, agent and tools optional), and egress.destinations, the hosts the owner's runs may reach while egress.mode is allowlist ({\"egress\": {\"destinations\": [{\"host\": \"api.github.com\", \"port\": 443}]}}). Nothing it does not name changes" } },
         "optional": {
           "request_id": { "type": "string", "description": "Your id for this proposal, for retries" }
         }
@@ -152,7 +152,7 @@
       "tool": {
         "name": "policy_propose", "title": "Propose policy change", "readOnlyHint": false,
         "destructiveHint": false, "idempotentHint": false, "openWorldHint": false,
-        "description": "Propose a change to the owner's policy, for the owner to apply or decline. The answer's approve_url is the owner's page of it: give it to your user, who opens it signed in to TinyAssets."
+        "description": "Propose a change to the owner's settings, for the owner to apply or decline: name only what changes (a rule or host to add or remove, a setting to set), as a \"don't ask again\" suggestion does; applying it changes nothing else, whatever the owner has set. The answer's approve_url is the owner's page of it: give it to your user, who opens it signed in to TinyAssets."
       }
     },
     {
@@ -745,13 +745,6 @@
         "required": {
           "expected_generation": { "type": "integer" }, "policy": { "type": "object" }
         },
-        "optional": {}, "dropped": ["proposal"]
-      }
-    },
-    {
-      "door": "policyProposal", "class": "read", "capability": null, "dropped": true,
-      "args": {
-        "refused": "invalid policy request", "required": { "request_id": { "type": "string" } },
         "optional": {}
       }
     },

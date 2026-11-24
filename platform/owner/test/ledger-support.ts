@@ -62,6 +62,11 @@ export function origin(n: number): Origin {
   return { client: hex.repeat(8), family: "f".repeat(56) + hex };
 }
 
+/** The `n`th distinct policy proposal's change, for tests that file many: a run's token cap. */
+export function asking(n = 0): { set: { models: { turn_tokens: number } } } {
+  return { set: { models: { turn_tokens: 1000 + n } } };
+}
+
 type Row = Record<string, SqlStorageValue>;
 
 /** A doorbell that answers from a script: an outcome, or `crash` to die mid-send. */

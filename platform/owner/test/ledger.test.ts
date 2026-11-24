@@ -14,7 +14,7 @@ import { MIGRATIONS } from "../src/schema";
 import { apiKeyOrigin } from "../../contract/src/binding";
 import { migrate } from "../../contract/src/migrate";
 import { policyDigest } from "../../contract/src/policy-document";
-import { DOT, MCP, MUSE, origin, rig, subscription, dm } from "./ledger-support";
+import { asking, DOT, MCP, MUSE, origin, rig, subscription, dm } from "./ledger-support";
 import { failure, ownerObject, starterSeed } from "./support";
 
 describe("the sender is the verified identity", () => {
@@ -714,11 +714,10 @@ describe("the policy store's counters", () => {
     await r.stub.outsideAgents(r.bind(DOT));
     await r.stub.outsideAgents(r.bind(origin(7)));  // a free row
     await r.stub.grantRevoke(r.bind(null), { client: DOT.client });  // a row the owner set
-    const change = { type: "policy_proposal", expected_generation: 1, policy: {} };
-    await r.stub.policyPropose(r.bind(MUSE), { change, request_id: "a" });
-    await r.stub.policyPropose(r.bind(MUSE), { change: { ...change, n: 3 }, request_id: "c" });
-    await r.stub.policyPropose(r.bind(null), { change: { ...change, n: 2 }, request_id: "b" });
-    await r.stub.policyPropose(r.bind(null), { change });
+    await r.stub.policyPropose(r.bind(MUSE), { change: asking(), request_id: "a" });
+    await r.stub.policyPropose(r.bind(MUSE), { change: asking(3), request_id: "c" });
+    await r.stub.policyPropose(r.bind(null), { change: asking(2), request_id: "b" });
+    await r.stub.policyPropose(r.bind(null), { change: asking() });
     await failure(() => r.stub.policyWrite(r.bind(null), { expected_generation: 1,
                                                           policy: {} as never }));
     await r.sql("UPDATE policy_proposals SET applied_at = 5 WHERE request_id = 'a'");
