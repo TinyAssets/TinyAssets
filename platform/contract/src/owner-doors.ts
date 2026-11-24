@@ -50,8 +50,8 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
   roomPost(binding: Binding, request: DoorRequest<"roomPost">): Promise<DoorAnswer<"roomPost">>;
   /**
    * List the agents registered for this connection, the owner's own agents, each with the room_id
-   * it is reached in (null until this connection is a registered agent: agent_register), and which
-   * of the owner's AI apps are connected to TinyAssets, each one not connected with its
+   * it is reached in (null until the owner approves this connection's agent registration), and
+   * which of the owner's AI apps are connected to TinyAssets, each one not connected with its
    * connect_url, the page with its connect step. One answer holds as many as fit; when it carries
    * next, read again with after set to it for the rest.
    */
@@ -267,8 +267,6 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
     Promise<DoorAnswer<"grantRevoke">>;
   grantForget(binding: Binding, request: DoorRequest<"grantForget">):
     Promise<DoorAnswer<"grantForget">>;
-  grantForgetRevoked(binding: Binding, request: DoorRequest<"grantForgetRevoked">):
-    Promise<DoorAnswer<"grantForgetRevoked">>;
   keyMint(binding: Binding, request: DoorRequest<"keyMint">): Promise<DoorAnswer<"keyMint">>;
   keyList(binding: Binding): Promise<DoorAnswer<"keyList">>;
   ownerErase(binding: Binding, request: DoorRequest<"ownerErase">):
@@ -419,7 +417,7 @@ type Loose =
       | "admissionSet" | "wakeEvents" | "signinEvents" | "tierSet" | "egressOpen" | "egressReserve"
       | "egressBeat" | "egressSettle";
 /** The doors the doors call no more, which the object still takes, its types with it. */
-type Dropped = "policyProposal";
+type Dropped = "policyProposal" | "grantForgetRevoked";
 /** What `DoorTypes` may say of a door, by its row. */
 type Parts<D> = (D extends keyof DoorAnswers ? "answer" : never)
   | (D extends keyof DoorRequests ? "values" | "handed"

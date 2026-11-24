@@ -1381,23 +1381,17 @@ export class Ledger {
   }
 
   /**
-   * A disabled agent can neither read nor ack, so its unacked mail is released: it no
-   * longer holds the ledger and is evicted in turn (a re-enabled agent may still read
-   * what is left). Its open wakes are suppressed and its subscriptions erased. The owner
-   * disables any agent; an outside caller (`origin`) only its own.
+   * The owner turns an agent off. A disabled agent can neither read nor ack, so its unacked
+   * mail is released: it no longer holds the ledger and is evicted in turn (a re-enabled
+   * agent may still read what is left). Its open wakes are suppressed and its subscriptions
+   * erased.
    */
-  disable(agentId: string, reason: unknown, origin: Origin | null = null,
-          now: number = clock()): Agent {
+  disable(agentId: string, reason: unknown, now: number = clock()): Agent {
     printable(reason, 200, "reason");
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
-      const agent = this.#agent(agentId);
-      if (agent === undefined) {
+      if (this.#agent(agentId) === undefined) {
         throw new Refusal("refused", "agent not found");
-      }
-      if (origin !== null && (origin.client !== agent.outside_client
-                              || origin.family !== agent.outside_family)) {
-        throw new Refusal("refused", "an outside caller disables only its own agent");
       }
       this.#erase(agentId, true);
       sql.exec("UPDATE outside_agents SET disabled_reason = ?, revision = revision + 1 " +
@@ -3622,13 +3616,9 @@ export const ledgerDoors = Object.freeze({
     }
     return o.ledger.register(origin, binding.source, r as unknown as Registration);
   },
-  /**
-   * The owner disables any agent in its session. An outside client cannot reach it: it
-   * holds no owner session, and its call never carries one.
-   */
-  disableAgent(o: LedgerDoorNeeds, { account: { origin }, r, request }: Call<DisableRequest>):
-      Agent {
-    return o.ledger.disable(request.agent_id, r["reason"], origin);
+  /** Only the owner itself, in its session, turns an agent off. */
+  disableAgent(o: LedgerDoorNeeds, { r, request }: Call<DisableRequest>): Agent {
+    return o.ledger.disable(request.agent_id, r["reason"]);
   },
   /**
    * Only the owner itself, in its session, sets an agent's doorbell where its wake kind's

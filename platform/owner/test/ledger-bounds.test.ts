@@ -240,7 +240,7 @@ describe("the ledger's bounds", () => {
       const later = now + 10 * 365 * 86_400;
       const [agent] = ledger.agents(null);
       ledger.post(null, dm(agent!.agent_id), "c-later", "body later", null, later);
-      ledger.disable(agent!.agent_id, "revoked", null, later);
+      ledger.disable(agent!.agent_id, "revoked", later);
     });
     expect(await r.sql("SELECT COUNT(*) AS n, MIN(settled_at) AS first, " +
                        "SUM(state = 'suppressed') AS suppressed FROM ledger_wakes"))

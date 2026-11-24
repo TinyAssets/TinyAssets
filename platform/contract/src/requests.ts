@@ -330,6 +330,10 @@ export interface DoorAnswers {
   readonly fileStat: { readonly entry: object | null };
   readonly fileList: { readonly entries: readonly (string | number | boolean | object | null)[] };
   readonly fileWrite: { readonly entry?: object } & object;
+  readonly fileHistory: {
+    readonly changes: readonly (string | number | boolean | object | null)[];
+    readonly next: number | null;
+  };
   readonly fileUsage: {
     readonly entries: number;
     readonly chunk_bytes: number;
@@ -450,6 +454,10 @@ export interface DoorAnswers {
     readonly instructions: Uint8Array | null;
     readonly soul: Uint8Array | null;
     readonly skills: readonly (string | number | boolean | object | null)[];
+  };
+  readonly mailChain: {
+    readonly messages: readonly (string | number | boolean | object | null)[];
+    readonly more: boolean;
   };
   readonly wakeEvents: { readonly events: readonly (string | number | boolean | object | null)[] };
   readonly fileRead: { readonly entry: object; readonly inline?: Uint8Array };

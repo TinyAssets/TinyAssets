@@ -239,6 +239,6 @@ and every code of one, is as before.
 - [ ] live: the stage and its rollback target serve doors from this tree; then
   `deploy/handed.ts`'s by-name fallback (`untyped`) and the plan line naming it go
   (untangle/door-types-fallback).
-- [ ] untangle/uncalled-doors: `disableAgent`, `deleteAgent`, `mailChain`,
+- [x] untangle/uncalled-doors: `disableAgent`, `deleteAgent`, `mailChain`,
   `grantForgetRevoked`, `fileRedact` and `fileHistoryPurge` have no caller but tests: research
   whether the app owes each a route, or it goes.
