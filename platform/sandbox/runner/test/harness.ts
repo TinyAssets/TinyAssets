@@ -974,7 +974,7 @@ export function startDoc(doors: Doors, engine: string, over: Partial<StartDoc> =
   const credential = over.credential ?? rec.cli.credential[0]!;
   return {
     run, agent: "main", conversation: `cv_${"c".repeat(32)}`, engine, credential,
-    model: null, session_id: null, prompt: "do the thing", unattended: false,
+    model: "model-1", session_id: null, prompt: "do the thing", unattended: false,
     authority: "owner", lease: { lease_id: "b".repeat(32), epoch: 1 },
     config: { generation: 1, egress: { mode: "open", destinations: [] },
               env: { HOME: "{home}", ...rec.cli.home_env, ...rec.cli.env },

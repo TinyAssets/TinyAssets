@@ -362,6 +362,9 @@ function routes() {
     "storage": { door: "storageUsage" },
     "agent/doorbell": { serve: doorbell },
     "agent/doorbell/end": { door: "agentDoorbellEnd" },
+    "agent/disable": { door: "disableAgent" },
+    "agent/delete": { door: "deleteAgent" },
+    "mail/chain": { door: "mailChain" },
     "agent/wake-limits": { door: "policyWakeLimits" },
     "agent/doorbell/kinds": { body: "empty", serve: async () => doorbellKinds() },
     "account": { body: "empty", serve: account },
@@ -395,6 +398,8 @@ function routes() {
     "files/upload/begin": { door: "fileUploadBegin" },
     "files/upload/commit": { door: "fileUploadCommit" },
     "files/upload/abort": { door: "fileUploadAbort" },
+    "files/redact": { door: "fileRedact" },
+    "files/purge": { door: "fileHistoryPurge" },
     ...Object.fromEntries(Object.entries(HOOK_ROUTES).map(([path, hook]) =>
       [path, { serve: ({ env, owner, body }: Served) => hook(env, owner, body) }])),
     "keys/revoke": { serve: ({ env, owner, body }) => revokeKey(env, owner, body) },

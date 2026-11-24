@@ -13,11 +13,17 @@
  *   synced session paths, allows unattended runs only with a citation, and has no
  *   single-inference `invoke` (ADR-033 decision 2). Every key's `engines` are CLI records
  *   that run on that provider's key.
+ * - An engine's lock that carries a package the gateway runs on (its catalog, pi-ai) carries
+ *   the platform lock's own copy, version and integrity: the engine resolves a run's model,
+ *   and takes its API, from the catalog it carries, and the gateway lists and ranks every
+ *   connection's models by its own, so the two are one. On each provider such an engine keys,
+ *   a model's id is on one API (`docs/decisions/untangle-2026-11/pi-catalog.md`).
  */
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { isModelType } from "@earendil-works/pi-ai/models";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { describe, expect, it } from "vitest";
 
@@ -269,6 +275,41 @@ describe("the engine records", () => {
       const scripted = Object.values(lock.packages).some((item) =>
         item["hasInstallScript"] === true);
       expect(install.lifecycle_scripts === true, record.id).toBe(scripted);
+    }
+  });
+
+  it("carry the gateway's own copy of every package the gateway runs on", () => {
+    type Lock = { packages: Record<string, { version?: string; integrity?: string }> };
+    const read = (path: string) => JSON.parse(readFileSync(path, "utf8")) as Lock;
+    const platform = read(join(PLATFORM, "package-lock.json")).packages;
+    const gateway = JSON.parse(readFileSync(join(PLATFORM, "gateway", "package.json"),
+                                            "utf8")) as { dependencies: Json };
+    const npm = engines.filter((record) => record.cli!.install.manager === "npm");
+    const carried: string[] = [];
+    for (const name of Object.keys(gateway.dependencies)) {
+      const own = platform[`gateway/node_modules/${name}`] ?? platform[`node_modules/${name}`]!;
+      for (const record of npm) {
+        const lock = read(join(SOURCES, "locks", record.id, "package-lock.json")).packages;
+        for (const [path, entry] of Object.entries(lock)) {
+          if (path.endsWith(`node_modules/${name}`)) {
+            carried.push(record.id);
+            expect({ version: entry.version, integrity: entry.integrity }, `${record.id} ${path}`)
+              .toEqual({ version: own.version, integrity: own.integrity });
+          }
+        }
+      }
+    }
+    expect(carried.length).toBeGreaterThan(0);
+    // The engine then resolves a run's model by its id alone, whatever its case (pi's
+    // `resolveCliModel`), and takes that entry's API: so on each provider it keys, an id is on
+    // one API, the one the owner hands the run's base.
+    for (const record of engines.filter((each) => carried.includes(each.id))) {
+      for (const provider of Object.keys(record.cli!.api_key_env ?? {})) {
+        const ids = builtinProviders().find((each) => each.id === provider)!.getModels()
+          .filter((model) => isModelType(model, "chat")).map((model) => model.id.toLowerCase());
+        expect(ids.filter((id, at) => ids.indexOf(id) !== at), `${record.id} ${provider}`)
+          .toEqual([]);
+      }
     }
   });
 
@@ -943,10 +984,19 @@ describe("an engine record that does not fit", () => {
     ["a plan model with no citation",
      cli((s) => { delete at(s, "login.model")["citation"]; }),
      /cli\.login\.model has exactly id, citation; missing \["citation"\]/],
-    ["no model_argv to pass the plan's model",
-     cli((s) => { delete at(s, "engine")["model_argv"]; }),
-     /cli\.engine\.model_argv is present on a record that signs in/],
   ])("refuses a sign-in with %s: a plan always ranks by a real model", (_what, record, said) => {
+    expect(refused(record)).toMatch(said);
+  });
+
+  it.each([
+    ["a sign-in with no model_argv", cli((s) => { delete at(s, "engine")["model_argv"]; }),
+     /cli\.engine has exactly .*; missing \["model_argv"\]/],
+    ["a key engine with no model_argv", cli((s) => { delete at(s, "engine")["model_argv"]; }, pi),
+     /cli\.engine has exactly .*; missing \["model_argv"\]/],
+    ["a model_argv that drops the model", cli((s) => {
+      at(s, "engine")["model_argv"] = ["--provider", "{provider}"]; }, pi),
+     /cli\.engine\.model_argv carries \{model\}: every run names its model/],
+  ])("refuses %s: every run passes the model it is given", (_what, record, said) => {
     expect(refused(record)).toMatch(said);
   });
 

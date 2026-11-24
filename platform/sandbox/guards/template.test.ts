@@ -18,7 +18,9 @@
  */
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { chmodSync, cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync, cpSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -38,11 +40,11 @@ const TEMPLATE = join(PLATFORM, "sandbox", "template");
  */
 const SDK_RELEASE = "2.62.0";
 /**
- * The image's recipe as E2B's SDK serializes it (`Template.to_json`, `SDK_RELEASE`): 21 steps.
- * Its copies' hashes take each staged file's mode: git's, 0644 (`image.ts` stages so). A new
+ * The image's recipe as E2B's SDK serializes it (`Template.to_json`, `SDK_RELEASE`). Its
+ * copies' hashes take each staged file's mode: git's, 0644 (`image.ts` stages so). A new
  * recipe is a new image: a paid build, then the pin PR.
  */
-const RECIPE = "34819aeb6ee19eb38c62c27ad60f195fadb34f4cbcf8ca2ea55d6ba94161a4ac";
+const RECIPE = "2977340fdbb980c7ada5b3489ce2f0b4676db82fcb963c9b0ff19a5d097516f0";
 
 /**
  * E2B's SDK as far as the image's steps reach it (`Template`, `Template.to_json`), written
@@ -140,17 +142,19 @@ let tree: string | null = null;
 
 /**
  * A copy of what the image, the runner and the probes are made from, to change (each change
- * put back after its test): the contract, the records and their locks, the runner and the
- * template. One for the file.
+ * put back after its test): the contract, the records and their locks, the runner, the
+ * template, and the gateway's catalog the probes' plan names models by, with the installed
+ * packages it imports. One for the file.
  */
 function copied(): string {
   if (tree === null) {
     tree = temp("ta-tree-");
     for (const part of ["contract/src", "contract/identity.json", "contract/acts.json",
                         "contract/egress.json", "sources", "sandbox/runner", "sandbox/template",
-                        "sandbox/build"]) {
+                        "sandbox/build", "gateway/src/catalog.ts"]) {
       cpSync(join(PLATFORM, part), join(tree, part), { recursive: true });
     }
+    symlinkSync(join(PLATFORM, "node_modules"), join(tree, "node_modules"));
   }
   return tree;
 }

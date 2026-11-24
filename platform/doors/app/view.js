@@ -84,6 +84,18 @@ export function action(text, act, report, props = {}) {
   return button;
 }
 
+/**
+ * A button for what cannot be undone: it asks `question` first, and its `sure` button runs
+ * `act` (`props` its).
+ */
+export function confirmed(text, question, sure, act, report, props = {}) {
+  const box = h("div", { class: "row" });
+  fill(box, action(text, async () => fill(box, h("span", {}, question),
+                                          action(sure, act, report, props)),
+                   report, { class: "quiet" }));
+  return box;
+}
+
 // -- the runner's events, in words ----------------------------------------------------
 // The sandbox's runner sends its own events as codes and facts, never the words a person
 // reads: these are those words, so a wording change ships with the

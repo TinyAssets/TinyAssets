@@ -337,13 +337,10 @@ export function invocation(record: Served, start: StartDoc,
     ? start.urls.mcp_bare : start.urls.mcp);
   const values: Record<string, string> = {
     bin: binPath(record), home, system, agent: start.agent,
-    run_secret: runSecret(start.urls.mcp),
+    run_secret: runSecret(start.urls.mcp), model: start.model,
   };
   if (mcp.file !== undefined) {
     values["mcp_config"] = fill(mcp.file, values);
-  }
-  if (start.model !== null) {
-    values["model"] = start.model;
   }
   if (start.session_id !== null) {
     values["sid"] = start.session_id;
@@ -397,7 +394,7 @@ export function invocation(record: Served, start: StartDoc,
   const argv = [
     values["bin"]!,
     ...(credential?.argv ?? []).map((arg) => fill(arg, values)),
-    ...(start.model === null ? [] : modelArgs(cli.engine.model_argv ?? [], values)),
+    ...modelArgs(cli.engine.model_argv, values),
     ...(start.unattended ? cli.unattended_argv.map((arg) => fill(arg, values)) : []),
     ...(cli.definition.native.argv ?? []).map((arg) => fill(arg, values)),
     ...options.skills.flatMap((skill) => (cli.definition.skills.argv_each ?? [])

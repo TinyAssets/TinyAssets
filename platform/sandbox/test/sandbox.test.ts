@@ -153,7 +153,7 @@ const AGENT_HOOKS = agentHooks(JSON.stringify({ hooks: {
 function start(over: Partial<SandboxStart> = {}): SandboxStart {
   return {
     run: RUN, agent: "main", conversation: `cv_${hex(32, "c")}`, engine: "claude-code",
-    credential: "vendor_login_in_sandbox", model: null, session_id: null, prompt: "hello",
+    credential: "vendor_login_in_sandbox", model: "model-1", session_id: null, prompt: "hello",
     unattended: false, authority: "owner", lease: LEASE,
     route: `v1.k1.${"r".repeat(16)}.${"r".repeat(43)}`,
     tokens: { sync_token: "sync", runner_token: hex(64, "d") },
@@ -294,7 +294,8 @@ describe("a start", () => {
     expect(look!).toBeLessThanOrEqual(Date.now() + LEASE_TTL_S * 1000);
   });
 
-  it("refuses a run whose doors are not https on the egress host", async () => {
+  it("refuses a run whose doors are not https on the egress host, or that names no model",
+     async () => {
     const who = owner();
     for (const url of [`http://${EGRESS_HOST}/r/${RUN}/events`,
                        `https://elsewhere.example/r/${RUN}/events`,
@@ -310,6 +311,13 @@ describe("a start", () => {
         stub(who).start(start({ hosts: hosts as never })));
       expect(got).toBe("sandbox_start_failed");
       expect(String(causes)).toMatch(/vendor hosts/);
+    }
+    // It names its model (an owner before #5842 handed null): no engine runs its default.
+    for (const model of [null, undefined, ""]) {
+      const { got, causes } = await faulted(() =>
+        stub(who).start(start({ model: model as never })));
+      expect(got).toBe("sandbox_start_failed");
+      expect(String(causes)).toMatch(/its model/);
     }
     expect((await seen()).calls).toEqual([]);
   });

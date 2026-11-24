@@ -21,7 +21,9 @@ import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import { builtinCatalog } from "../../gateway/src/catalog";
 import { bundledSources } from "../../sources/src/catalog";
+import { newerFirst, pickable, shippedRanking } from "../../sources/src/ranking";
 import { served } from "../../sources/src/served";
 import { runEnv } from "../../sources/src/run-env";
 import { sandboxEnv } from "../../contract/src/egress";
@@ -327,7 +329,7 @@ function pureStart(engine: string, over: Partial<StartDoc> = {}): StartDoc {
                  endpoints: [] } }],
     () => "4".repeat(32), { ...made, run: PURE_RUN, secret: PURE_SECRET, connection, api: "x" });
   return { run: PURE_RUN, agent: "main", conversation: `cv_${"c".repeat(32)}`, engine,
-           credential, model: null, session_id: null, prompt: "p",
+           credential, model: "model-1", session_id: null, prompt: "p",
            unattended: false, authority: "owner", lease: { lease_id: "b".repeat(32), epoch: 1 },
            config: { generation: 1, egress: { mode: "open", destinations: [] },
                      env: { ...made.env, ...keyed }, inherit: ["PATH"] },
@@ -1489,7 +1491,7 @@ describe("an API-key run's base URL", () => {
       () => "4".repeat(32), { ...made, run: RUN, secret: SECRET, api: "x",
                               connection: credential === "api_key" ? CONNECTION : null });
     return { run: RUN, agent: "main", conversation: `cv_${"c".repeat(32)}`, engine, credential,
-             model: null, session_id: null, prompt: "p", unattended: false, authority: "owner",
+             model: "model-1", session_id: null, prompt: "p", unattended: false, authority: "owner",
              lease: { lease_id: "b".repeat(32), epoch: 1 },
              config: { generation: 1, egress: { mode: "open", destinations: [] },
                        env: { ...made.env, ...keyed }, inherit: ["PATH"] },
@@ -1561,6 +1563,27 @@ const ROUTE_STEPS = (JSON.parse(execFileSync(process.execPath, [probesBundle(), 
   .map((step) => step.argv);
 
 describe("the route probe", () => {
+  it("gives each step a model the gateway's catalog lists on the step's API, one a run may " +
+     "be given, none ranked above it", () => {
+    const sources = bundledSources();
+    const records = [...sources.ids()].map((id) => sources.get(id)!);
+    const catalog = builtinCatalog();
+    const ranking = shippedRanking();
+    expect(ROUTE_STEPS.length).toBeGreaterThan(0);
+    for (const [, engine, provider, api, model] of ROUTE_STEPS) {
+      const what = `${engine} ${provider} ${api} ${model}`;
+      const record = records.find((each) => each.upstream?.provider === provider
+        && each.connect.includes("api_key") && (each.engines ?? []).includes(engine!));
+      const onApi = catalog.provider(provider!)!.getModels().filter((listed) =>
+        listed.api === api && pickable(record, listed.id, null)).map((listed) => listed.id);
+      expect(onApi, what).toContain(model);
+      // `auto`'s order on one key: by the ranking's entry, newer first within it.
+      const entry = (id: string) => ranking.place(provider!, id)?.entry ?? Infinity;
+      expect(onApi.filter((id) => entry(id) < entry(model!)
+        || (entry(id) === entry(model!) && newerFirst(id, model!) < 0)), what).toEqual([]);
+    }
+  });
+
   it("passes a path under the door's prefix only", () => {
     expect(underPrefix("/r/x/c/y/v1/responses", "/r/x/c/y/v1")).toBe(true);
     expect(underPrefix("/r/x/c/y/v1?beta=true", "/r/x/c/y/v1/")).toBe(true);

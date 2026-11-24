@@ -357,8 +357,8 @@ export interface DoorMethods<H> {
   roomPost(binding: Binding, request: RequestIn<H, "roomPost">): Promise<AnswerIn<H, "roomPost">>;
   /**
    * List the agents registered for this connection, the owner's own agents, each with the room_id
-   * it is reached in (null until this connection is a registered agent: agent_register), and which
-   * of the owner's AI apps are connected to TinyAssets, each one not connected with its
+   * it is reached in (null until the owner approves this connection's agent registration), and
+   * which of the owner's AI apps are connected to TinyAssets, each one not connected with its
    * connect_url, the page with its connect step. One answer holds as many as fit; when it carries
    * next, read again with after set to it for the rest.
    */
