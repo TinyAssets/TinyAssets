@@ -22,7 +22,7 @@
 import { keyed, object, whole } from "./checks.ts";
 import { taken } from "./handed.ts";
 import type {
-  CreditRead, EgressScope, ListedModel, ListingRead, OneApiScope, ServiceSource, Source,
+  CreditRead, EgressScope, ListedModel, ListingRead, ServiceSource, Source,
 } from "./egress-scope.ts";
 import { METERED_COST_MAX } from "./limits.ts";
 import type { ModelRecord } from "./model-record.ts";
@@ -70,7 +70,7 @@ export interface Revoked {
  */
 export interface Verified {
   readonly models: readonly ModelRecord[];
-  readonly egress: EgressScope | OneApiScope;
+  readonly egress: EgressScope;
   readonly resealed?: Resealed;
 }
 

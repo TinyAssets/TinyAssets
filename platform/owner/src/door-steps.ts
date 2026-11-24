@@ -51,7 +51,7 @@ const EGRESS = Object.freeze(["egress"] as const);
  *   (`action`: what only the owner may do; `live`: in its live session, receipting nothing);
  * - `session`: the owner in its live session, a widening, whose refusals leave a receipt
  *   under `rule` of the request (or of `receipt`, in its place); `action`, null when an
- *   outside client may ask in it, and `registering`, an API key's registration;
+ *   outside client may ask in it;
  * - `reserved`: the platform's reserved caller, with no outside client and no session
  *   (`action`: its act, `admission` or `tier`);
  * - `erasure`: the platform's reserved caller, at an erasure under way;
@@ -85,8 +85,8 @@ export type TakenBy<K extends CallerKind> = (typeof CALLER_BINDINGS)[K][number];
 
 /**
  * A check of the caller after its account: a run reads no mailbox (`no_mailbox`); a visitor
- * changes no row it may not (`owner_rows`, `action`: what); only an MCP client files its own
- * card (`own_card`).
+ * changes no row it may not (`owner_rows`, `action`: what); only an outside client, an app or
+ * an API key, files its own agent's card (`own_card`).
  */
 const GUARDS = Object.freeze(["no_mailbox", "owner_rows", "own_card"] as const);
 type Guard = (typeof GUARDS)[number];
@@ -103,7 +103,6 @@ export interface DoorSteps {
   readonly action?: string | null;
   readonly rule?: string;
   readonly receipt?: unknown;
-  readonly registering?: true;
   readonly closed?: "egress_lease_closed";
   readonly live?: true;
   readonly guard?: Guard;
@@ -130,8 +129,8 @@ export interface DoorSteps {
  */
 export type OwnerRow = DoorRow & Omit<DoorSteps, "caller"> & { readonly caller: CallerKind };
 
-const STEP_KEYS = Object.freeze(["door", "caller", "action", "rule", "receipt", "registering",
-  "closed", "live", "guard", "scope", "agent", "fieldsFirst", "handler", "gate", "seeded"]);
+const STEP_KEYS = Object.freeze(["door", "caller", "action", "rule", "receipt", "closed",
+  "live", "guard", "scope", "agent", "fieldsFirst", "handler", "gate", "seeded"]);
 
 /**
  * Each way `steps` breaks the rules, of its own or against the contract's `rows`, as

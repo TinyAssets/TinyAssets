@@ -173,8 +173,8 @@ describe("the gateway Worker", () => {
     expect(await elsewhere.response.json()).toMatchObject({ error: { code: "endpoint_refused" } });
     // Another provider on the same API, sealing the same path: Anthropic's page is not its.
     const other = (await connect.seal("alice", C1, 1, "sk-count", {
-      upstream: { provider: "vercel-ai-gateway", api: "anthropic-messages",
-                  base_url: "https://ai-gateway.vercel.sh",
+      upstream: { provider: "vercel-ai-gateway",
+                  apis: [{ api: "anthropic-messages", base_url: "https://ai-gateway.vercel.sh" }],
                   auth: { header: "x-api-key", scheme: "" } },
       endpoints: [{ origin: "https://ai-gateway.vercel.sh",
                     paths: ["/v1/messages", "/v1/messages/count_tokens"], methods: ["POST"] }] })).blob;

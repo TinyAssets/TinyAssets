@@ -17,8 +17,9 @@
  *   and source, the space its scopes name (`centerOf`), the key's name as its display name,
  *   `pull` delivery and no recipe. The owner minting it in session is the owner's approval,
  *   as applying a client's card is. A refused registration refuses the mint. A full key's
- *   grant holds everywhere, so it registers none: a mailbox is its own ask (`outside-agents`),
- *   as for an MCP client's full grant. The agent goes with its key's revoke (`grants.ts`).
+ *   grant holds everywhere, so it registers none: a mailbox is its own ask, the card the key
+ *   files (`agent_register`), as for an MCP client's full grant. A key's agent goes with its
+ *   key's revoke (`grants.ts`).
  * - **Use**: every call an API key makes marks its row's `last_used_at`, at most once a
  *   `USE_INTERVAL_S`, so a key's use is a read most calls (as a grant's `last_seen`).
  * - **Revoke** follows the grant: a revoke, or a set to `revoked`, marks the row in the

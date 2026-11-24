@@ -66,9 +66,10 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
   registerPropose(binding: Binding, request: DoorRequest<"registerPropose">):
     Promise<DoorAnswer<"registerPropose">>;
   /**
-   * Propose a change to the owner's policy, for the owner to apply or decline. The answer's
-   * approve_url is the owner's page of it: give it to your user, who opens it signed in to
-   * TinyAssets.
+   * Propose a change to the owner's settings, for the owner to apply or decline: name only what
+   * changes (a rule or host to add or remove, a setting to set), as a "don't ask again" suggestion
+   * does; applying it changes nothing else, whatever the owner has set. The answer's approve_url is
+   * the owner's page of it: give it to your user, who opens it signed in to TinyAssets.
    */
   policyPropose(binding: Binding, request: DoorRequest<"policyPropose">):
     Promise<DoorAnswer<"policyPropose">>;
@@ -419,7 +420,7 @@ type Loose =
       | "admissionSet" | "wakeEvents" | "signinEvents" | "tierSet" | "egressOpen" | "egressReserve"
       | "egressBeat" | "egressSettle";
 /** The doors the doors call no more, which the object still takes, its types with it. */
-type Dropped = "policyProposal";
+type Dropped = never;
 /** What `DoorTypes` may say of a door, by its row. */
 type Parts<D> = (D extends keyof DoorAnswers ? "answer" : never)
   | (D extends keyof DoorRequests ? "values" | "handed"

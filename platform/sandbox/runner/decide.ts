@@ -16,7 +16,7 @@
  * asks which tools the hook matches instead and prints them: the runner's start check.
  */
 import { DECIDE_HEADER, decideCredential, egressDoor } from "../../contract/src/egress";
-import type { DecideAnswer } from "../../contract/src/owner";
+import type { RelayedAnswer } from "../../contract/src/owner";
 
 import { COMMAND, hookProgram } from "./protocol";
 
@@ -30,9 +30,8 @@ export const DECIDE_MS = 20_000;
 const ALLOW = 0;
 const REFUSE = 2;
 
-/** Each field the door answers (`runDecide`), as read: anything, until it is held. */
-type Fields<A> = A extends object ? keyof A : never;
-type Answer = Partial<Record<Fields<DecideAnswer>, unknown>>;
+/** The door's answer (`runDecide`), as the doors relay it; each field checked as it is read. */
+type Answer = RelayedAnswer<"runDecide">;
 
 /** Whether `url` is the decide door: http(s), its path the door's, nothing after it. */
 function isDoor(url: string): boolean {

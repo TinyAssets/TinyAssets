@@ -287,13 +287,12 @@ const KINDS = Object.freeze(/** @type {const} */ ([
   { list: "policy/proposals",
     title: () => "A change to your settings",
     asker: (card, names) => card.client === null ? "your own agent" : appOf(card.client, names),
-    lines: (card, names) => [["Proposed: ", h("pre", {}, JSON.stringify(card.change, null, 2))],
-                             ["Your settings now, which applying replaces whole: ",
-                              h("pre", {}, JSON.stringify(names.policy, null, 2))]],
-    note: () => "Applying replaces all your settings with the proposed ones, once, if they are " +
-      "a whole set made against your settings as they stand: whatever they leave out (a rule, " +
-      "an allowed host) goes. Any other change is yours to make, or to decline.",
-    yes: answering("policy/apply", "Apply", () => "Applied: your settings are the ones proposed."),
+    lines: (card) => [["Proposed: ", h("pre", {}, JSON.stringify(card.change, null, 2))]],
+    note: () => "Applying makes only these changes, once, to your settings as they stand: the " +
+      "settings it sets (null puts one back to its default, a limit off), the rules and hosts " +
+      "it adds or removes. Nothing else changes. One that no longer applies is refused, and " +
+      "waits for you to decline it.",
+    yes: answering("policy/apply", "Apply", () => "Applied: your settings have the changes."),
     no: answering("policy/decline", "Decline", () => "Declined: your settings are unchanged.") },
 ]));
 
@@ -306,15 +305,15 @@ async function waitingCards() {
 
 /**
  * What the cards are shown with: the connected apps and the apps TinyAssets knows, which name
- * their askers, and the owner's settings as they stand, which a proposal's apply replaces.
+ * their askers.
  */
 async function namesFor(cards) {
   if (cards.length === 0) {
-    return { clients: [], known: [], policy: null };
+    return { clients: [], known: [] };
   }
-  const [{ clients }, { apps: known }, { policy }] = await Promise.all([
-    call("grants"), call("tools/agents_list"), call("policy")]);
-  return { clients, known, policy };
+  const [{ clients }, { apps: known }] = await Promise.all([
+    call("grants"), call("tools/agents_list")]);
+  return { clients, known };
 }
 
 /**
