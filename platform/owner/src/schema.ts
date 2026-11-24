@@ -2838,6 +2838,25 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "AND length(CAST(models AS BLOB)) <= 655360)), due REAL) WITHOUT ROWID",
     "CREATE INDEX connection_models_due ON connection_models (due) WHERE due IS NOT NULL",
   ]),
+  // 35 (`connections.ts`; `untangle-2026-11/models-json-max.md`): each connection's models one
+  // row a model (`connection_records`): its id, its record as the gateway listed it (within
+  // `MODEL_RECORD_MAX`) and its score or null; the commit's records until the lane's first
+  // read, each read's after. When the lane reads them next is the connection's row in
+  // `connection_model_reads`. They replace migration 34's one JSON value a connection, whose
+  // bytes bounded a count times a record. A row is an active connection's alone: its revoke
+  // deletes it. Not the owner's, as 34's was not: not exported, and every active connection's
+  // read is due at once.
+  Object.freeze([
+    "DROP TABLE connection_models",
+    "CREATE TABLE connection_model_reads (connection TEXT PRIMARY KEY CHECK " +
+      "(length(connection) = 25), due REAL) WITHOUT ROWID",
+    "CREATE INDEX connection_model_reads_due ON connection_model_reads (due) " +
+      "WHERE due IS NOT NULL",
+    "CREATE TABLE connection_records (connection TEXT NOT NULL CHECK " +
+      "(length(connection) = 25), model TEXT NOT NULL CHECK (length(model) BETWEEN 1 AND 256), " +
+      "record TEXT NOT NULL CHECK (json_valid(record) AND length(CAST(record AS BLOB)) <= 2048), " +
+      "score REAL, PRIMARY KEY (connection, model)) WITHOUT ROWID",
+  ]),
 ]);
 
 /**
@@ -2933,6 +2952,7 @@ export const FORWARD: readonly (string | null)[] = Object.freeze([
   null,  // 32
   null,  // 33
   null,  // 34
+  null,  // 35
 ]);
 
 /**
