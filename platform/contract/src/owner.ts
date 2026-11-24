@@ -557,6 +557,7 @@ type AsJson<T> = T extends Uint8Array ? string
 /**
  * A door's answer as the doors relay it to the sandbox, which its runner reads
  * (`sandbox/runner/sync.ts`, `decide.ts`): what the owner answers (`OwnerAnswer`), whole, as
- * JSON (`doors/src/egress.ts`: the sync doors by `SYNC_DOORS`, and the decide door).
+ * JSON (`doors/src/egress.ts`: the sync doors by `SYNC_DOORS`, and the decide door, which
+ * hands an `http` hook's `hook` as the hook's own words, an arm the runner never asks for).
  */
 export type RelayedAnswer<D extends string> = AsJson<OwnerAnswer<D>>;
