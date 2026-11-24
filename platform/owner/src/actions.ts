@@ -71,8 +71,14 @@ import { clock } from "./clock";
 import { type Account, type Call, type LiveSession, proven } from "./door";
 import type { OwnerStorage } from "./gate";
 import type { Notices } from "./notices";
-import type { DecideAnswer } from "../../contract/src/owner";
 import type { DoorRequests } from "../../contract/src/requests";
+
+/**
+ * What the decide door answers (`runDecide`, its row's fields): the tools a run's hook matches
+ * and the policy's generation, a yes, or an `http` hook's own answer to hand its CLI.
+ */
+type DecideAnswer = { readonly tools: readonly string[]; readonly generation: number }
+  | { readonly allow: true } | { readonly hook: object };
 
 /**
  * How many calls wait: 200 rows in all, pending or approved, and 50 of them one outside

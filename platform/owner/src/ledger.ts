@@ -499,7 +499,7 @@ export type Agent = {
   readonly wake_tat: number | null;
 };
 
-/** An agent's registration, as the owner asks it (`registerAgent`) or a held card holds it. */
+/** An agent's registration, as a held card holds it (`registerAgent` applies one). */
 interface Registration {
   readonly command_center_id: unknown;
   readonly display_name: unknown;
@@ -3598,23 +3598,17 @@ export const ledgerDoors = Object.freeze({
     });
   },
   /**
-   * Registering an agent needs the owner's protected session, in one of two forms.
-   * The owner itself applies an MCP client's held registration (`CardApply`): the card
-   * the client filed on its own verified call, which captured its origin. Or the owner's
-   * browser registers an agent for an API key it holds, naming the key's identity
-   * (`origin`, re-derived from the key id): the one door an outside origin reaches
-   * together with the owner's session.
+   * The owner applies an outside client's held registration in its protected session: the
+   * card the client, an app or an API key, filed on its own verified call, which captured its
+   * origin (`registerPropose`). No outside origin reaches this door: its call never carries
+   * the owner's session (`OwnerDO.#account`).
    */
-  registerAgent(o: LedgerDoorNeeds, { account: { origin }, session, r, binding }:
+  registerAgent(o: LedgerDoorNeeds, { session, r }:
                   Call<DoorRequests["registerAgent"], "session">): Agent {
-    if (origin === null) {
-      return o.storage.transactionSync(() => {
-        const card = o.registrations.take(session, r["card_id"], r["digest"]);
-        return o.ledger.register(card.origin, card.source,
-                                     card.request as unknown as Registration);
-      });
-    }
-    return o.ledger.register(origin, binding.source, r as unknown as Registration);
+    return o.storage.transactionSync(() => {
+      const card = o.registrations.take(session, r["card_id"], r["digest"]);
+      return o.ledger.register(card.origin, card.source, card.request as unknown as Registration);
+    });
   },
   /** Only the owner itself, in its session, turns an agent off. */
   disableAgent(o: LedgerDoorNeeds, { r, request }: Call<DisableRequest>): Agent {

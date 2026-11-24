@@ -20,12 +20,13 @@ import type { OwnerDO } from "../src/owner-do";
 import { MIGRATIONS } from "../src/schema";
 import { canonical } from "../../contract/src/canonical";
 import {
-  DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON, EGRESS_IP_LITERAL, POLICY_LIMITS,
+  DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON, edited, EGRESS_IP_LITERAL, POLICY_LIMITS,
   policyDigest, validate,
 } from "../../contract/src/policy-document";
 import { waitingPage } from "../../contract/src/identity";
+import { codePoints } from "../../contract/src/text";
 import { modelSettings } from "../src/policy";
-import { MUSE, rig, type Rig } from "./ledger-support";
+import { asking, MUSE, rig, type Rig } from "./ledger-support";
 import { atClock, failure, inStores, ownerObject } from "./support";
 
 type Doc = {
@@ -269,8 +270,8 @@ describe("an owner write", () => {
 });
 
 describe("an agent's proposal", () => {
-  const change = (generation: number, document: Doc = defaults()) =>
-    ({ type: "policy_proposal", expected_generation: generation, policy: document });
+  /** A change adding `rules` to the action rules. */
+  const adding = (...rules: object[]) => ({ add: { actions: rules } });
 
   /** The pending cards, as the owner is shown them. */
   async function cards(r: Rig) {
@@ -285,15 +286,15 @@ describe("an agent's proposal", () => {
   it("is held under its card, its page named to the agent and the owner, and applied once " +
      "in the owner's session", async () => {
     const r = await rig();
-    const document = { ...defaults(), actions: [rule("share")] };
-    const filed = await r.stub.policyPropose(r.bind(MUSE), {
-      change: change(1, document), request_id: "card-1" });
-    expect(filed).toEqual({ card_id: "card-1", request_digest: policyDigest(change(1, document)),
-                            generation: 1, approve_url: waitingPage("card-1") });
-    expect(await r.stub.policyPropose(r.bind(MUSE), { change: change(1, document),
-                                                      request_id: "card-1" })).toEqual(filed);
+    const asked = adding(rule("share"));
+    const filed = await r.stub.policyPropose(r.bind(MUSE), { change: asked,
+                                                            request_id: "card-1" });
+    expect(filed).toEqual({ card_id: "card-1", request_digest: policyDigest(asked),
+                            approve_url: waitingPage("card-1") });
+    expect(await r.stub.policyPropose(r.bind(MUSE), { change: asked, request_id: "card-1" }))
+      .toEqual(filed);
     const refiled = await failure(() => r.stub.policyPropose(r.bind(MUSE), {
-      change: change(1), request_id: "card-1" }));
+      change: adding(rule("security.change")), request_id: "card-1" }));
     expect([refiled.code, refiled.message])
       .toEqual(["refused", "a proposal is already held for this card"]);
     expect((await r.table("owner_notices")).filter((row) => row["type"] === "policy_proposal")
@@ -303,7 +304,7 @@ describe("an agent's proposal", () => {
     const [shown, ...more] = await cards(r);
     expect([shown, more]).toEqual([{ card_id: "card-1", digest: filed.request_digest,
                                      filed_at: expect.any(Number), client: MUSE.client,
-                                     change: change(1, document) }, []]);
+                                     change: asked }, []]);
     for (const [call, message] of [
       [() => r.stub.policyApply(r.bind(null), { card_id: "card-1", digest: shown!.digest }),
         "interactive owner session required"],
@@ -314,6 +315,7 @@ describe("an agent's proposal", () => {
     ] as const) {
       expect((await failure(call)).message).toBe(message);
     }
+    const document = { ...defaults(), actions: [rule("share")] };
     const applied = await apply(r, "card-1", shown!.digest);
     expect([applied.generation, applied.policy]).toEqual([2, document]);
     expect((await failure(() => apply(r, "card-1", shown!.digest))).message)
@@ -327,33 +329,127 @@ describe("an agent's proposal", () => {
       .toEqual([policyDigest(document)]);
   });
 
-  it("applies only as a whole policy made at the generation it applies at, and waits to be " +
-     "declined otherwise", async () => {
+  it("makes only the changes it names, onto the policy as it stands when applied", async () => {
     const r = await rig();
-    for (const [asked, request_id] of [
-      [{ type: "api_key_request", scopes: [] }, "key-card"], [{ allow: "github.com" }, "words"],
-      [change(1), "stale"]] as const) {
-      await r.stub.policyPropose(r.bind(null), { change: asked, request_id });
+    const host = (name: string) => ({ host: name, port: 443 });
+    await write(r, { egress: { mode: "allowlist", destinations: [host("a.example")] },
+                     actions: [rule("share"), rule("security.change", true)],
+                     files: { retention_days: 30, keep_versions: 3 } });
+    const asked = {
+      set: { codemode: { on: true }, models: { daily_cost: 5_000_000 },
+             files: { retention_days: null } },
+      add: { actions: [rule("workspace.files", true), rule("security.change", true)],
+             egress: { destinations: [host("b.example"), host("b.example")] } },
+      remove: { actions: [rule("share"), rule("people.message")],
+                egress: { destinations: [host("gone.example")] } } };
+    const { card_id, request_digest } = await r.stub.policyPropose(r.bind(MUSE),
+                                                                   { change: asked });
+    // A change the owner makes after it was filed is kept: the proposal names only its own.
+    const { policy: since } = await write(r, { ...(await current(r)).policy,
+                                               actions: [rule("share"), rule("security.change", true),
+                                                         rule("people.message")] });
+    expect(since.actions).toHaveLength(3);
+    const applied = await apply(r, card_id, request_digest);
+    expect([applied.generation, applied.policy]).toEqual([4, {
+      egress: { mode: "allowlist", destinations: [host("a.example"), host("b.example")] },
+      actions: [rule("security.change", true), rule("workspace.files", true)],
+      files: { keep_versions: 3 }, codemode: { on: true }, models: { daily_cost: 5_000_000 } }]);
+    expect(applied.codemode).toEqual({ on: true });
+  });
+
+  it("refuses, when filed, a change that names nothing, sets a list or makes no policy, " +
+     "its words the same whatever the owner set", async () => {
+    const r = await rig();
+    const refusals = async () => Promise.all([
+      {}, { type: "policy_proposal", expected_generation: 1, policy: defaults() },
+      { set: {} }, { set: { models: {} } }, { add: { actions: [] } },
+      { set: { actions: null } }, { set: { egress: null } },
+      { set: { egress: { destinations: [] } } }, { set: { tools: null } },
+      { set: { tools: { custom: ["file_read"] } } }, { set: { models: { sources: [] } } },
+      { add: { tools: { custom: ["file_read"] } } }, { add: { actions: rule("share") } },
+      { remove: { egress: [] } }, { set: [] },
+      { add: { actions: [{ act: "nope", do: "ask" }] } },
+      { set: { egress: { mode: "ask" } } },
+      { add: { egress: { destinations: [{ host: "10.0.0.1", port: 443 }] } } },
+      { remove: { actions: [{ act: "share" }] } },
+      { remove: { egress: { destinations: [{ host: "a.example" }] } } },
+    ].map(async (change) => {
+      const refused = await failure(() => r.stub.policyPropose(r.bind(MUSE), { change }));
+      return [refused.code, refused.message];
+    }));
+    const delta = ["invalid", "invalid policy change: it sets settings, nested as the policy " +
+      "is (set, null for the default), and adds or removes action rules (actions) and egress " +
+      "destinations (egress.destinations), naming at least one, and sets no list"];
+    const expected = [
+      ...Array.from({ length: 15 }, () => delta),
+      ["invalid", "invalid action rule: no such act"], ["invalid", "invalid egress policy"],
+      ["egress_ip_literal", EGRESS_IP_LITERAL],
+      ["invalid", "invalid action rule: an act, ask or never, any agent and any tools"],
+      ["invalid", "invalid egress destination"]];
+    expect(await refusals()).toEqual(expected);
+    await write(r, { egress: { mode: "allowlist", destinations: [{ host: "a.example", port: 1 }] },
+                     actions: [rule("share")], tools: { custom: ["file_read"] } });
+    expect(await refusals()).toEqual(expected);
+    expect(await cards(r)).toEqual([]);
+    // Removing what is not there, or adding what is, is no fault: no answer tells the agent.
+    for (const change of [{ remove: { actions: [rule("security.change")] } }, adding(rule("share"))]) {
+      expect((await r.stub.policyPropose(r.bind(MUSE), { change })).card_id)
+        .toMatch(/^pol_[0-9a-f]{32}$/);
     }
-    await write(r, defaults());  // the policy moved on
+  });
+
+  it("is filed whatever room the owner's policy has, and refused when applied past it",
+     async () => {
+    const r = await rig();
+    const label = "a".repeat(60);
+    const host = (n: number) => ({ host: `${label}.${label}.${label}.h${n}.example`, port: 443 });
+    const destinations: { host: string; port: number }[] = [];
+    const room = () => codePoints(canonical({ egress: { destinations, mode: "open" } }));
+    while (room() < POLICY_LIMITS.maxDocument - 300) {
+      destinations.push(host(destinations.length));
+    }
+    await write(r, { egress: { mode: "open", destinations } });
+    const { card_id, request_digest } = await r.stub.policyPropose(r.bind(MUSE), { change: {
+      add: { egress: { destinations: [host(-1), host(-2)] } } } });
+    expect((await failure(() => apply(r, card_id, request_digest))).message)
+      .toBe("the policy document is too large");
+    expect((await cards(r)).map((card) => card.card_id)).toEqual([card_id]);
+  });
+
+  it("takes a key a change names as its data, never an object's prototype", () => {
+    const named = JSON.parse('{"set": {"__proto__": {"on": true}}}') as unknown;
+    expect(() => edited(validate(defaults()), named)).toThrow("invalid policy document");
+    expect(({} as { on?: unknown }).on).toBeUndefined();
+    const inner = JSON.parse('{"set": {"codemode": {"__proto__": true}}}') as unknown;
+    expect(() => edited(validate(defaults()), inner)).toThrow("invalid codemode policy");
+  });
+
+  it("refuses to apply a card that no longer makes a policy, which waits to be declined",
+     async () => {
+    const r = await rig();
+    // Cards filed before a change was a delta, or of a key request, as any agent could file.
+    for (const [request_id, change] of [
+      ["key-card", { type: "api_key_request", scopes: [] }],
+      ["whole", { type: "policy_proposal", expected_generation: 1, policy: defaults() }],
+    ] as const) {
+      await r.sql("INSERT INTO policy_proposals (request_id, digest, document, at, proposer) " +
+                  "VALUES (?, ?, ?, ?, ?)", request_id, policyDigest(change), canonical(change),
+                  1, "owner");
+    }
     const shown = await cards(r);
     expect(shown.map((card) => [card.card_id, card.client]))
-      .toEqual([["key-card", null], ["words", null], ["stale", null]]);
-    expect(await Promise.all(shown.map(async ({ card_id, digest }) =>
-      (await failure(() => apply(r, card_id, digest))).message))).toEqual([
-      "this proposal is not a whole set of rules to apply: make the change it asks yourself, " +
-        "or decline it",
-      "this proposal is not a whole set of rules to apply: make the change it asks yourself, " +
-        "or decline it",
-      "this proposal was made against your rules before a later change, so it no longer " +
-        "applies: decline it, or make the change yourself"]);
-    expect((await current(r)).generation).toBe(2);
+      .toEqual([["key-card", null], ["whole", null]]);
+    for (const { card_id, digest } of shown) {
+      expect((await failure(() => apply(r, card_id, digest))).message)
+        .toMatch(/^invalid policy change: /);
+    }
+    expect((await current(r)).generation).toBe(1);
     expect(await cards(r)).toEqual(shown);
   });
 
   it("is declined by the owner alone, with no session, only as the card shown", async () => {
     const r = await rig();
-    await r.stub.policyPropose(r.bind(MUSE), { change: change(1), request_id: "card-1" });
+    await r.stub.policyPropose(r.bind(MUSE), { change: asking(), request_id: "card-1" });
     const { digest } = (await cards(r))[0]!;
     const answer = { card_id: "card-1", digest };
     expect((await failure(() => r.stub.policyDecline(r.bind(MUSE), answer))).message)
@@ -368,7 +464,7 @@ describe("an agent's proposal", () => {
       .toBe("proposal is not the pending card shown");
     expect((await current(r)).generation).toBe(1);
     // Its proposer may ask again.
-    await r.stub.policyPropose(r.bind(MUSE), { change: change(1), request_id: "card-1" });
+    await r.stub.policyPropose(r.bind(MUSE), { change: asking(), request_id: "card-1" });
     expect((await cards(r)).map((card) => card.card_id)).toEqual(["card-1"]);
   });
 
@@ -378,15 +474,15 @@ describe("an agent's proposal", () => {
     for (const [request, reason] of [
       [{ change: [] }, "invalid policy request: change is an object"],
       [{ change: { big: "x".repeat(16_001) } }, "invalid policy proposal"],
-      [{ change: {}, request_id: "" }, "invalid policy proposal"],
-      [{ change: {}, request_id: "x".repeat(129) }, "invalid policy proposal"]] as const) {
+      [{ change: asking(), request_id: "" }, "invalid policy proposal"],
+      [{ change: asking(), request_id: "x".repeat(129) }, "invalid policy proposal"]] as const) {
       const refused = await failure(() => r.stub.policyPropose(r.bind(null), request as never));
       expect([refused.code, refused.message]).toEqual(["invalid", reason]);
     }
     expect((await failure(() => r.stub.policyPropose(r.bind(null), { request_id: "x" } as never)))
       .message).toBe("invalid policy request");
     // A proposal naming no card is held under one minted for it.
-    const minted = await r.stub.policyPropose(r.bind(null), { change: change(1) });
+    const minted = await r.stub.policyPropose(r.bind(null), { change: asking() });
     expect(minted.card_id).toMatch(/^pol_[0-9a-f]{32}$/);
     expect((await cards(r)).map((card) => card.card_id)).toEqual([minted.card_id]);
     await r.stub.policyDecline(r.bind(null), { card_id: minted.card_id,
@@ -397,18 +493,18 @@ describe("an agent's proposal", () => {
       const now = clock();
       const held = (card: string) => policy.list().some((each) => each.card_id === card);
       for (const id of ids(0).slice(1)) {
-        policy.propose(change(1), id, "owner", now);
+        policy.propose(asking(), id, "owner", now);
       }
       // A pending proposal has no life of its own: a filing years on prunes none.
       const later = now + 10 * 365 * 86_400;
-      policy.propose(change(1), "late", "owner", later);
+      policy.propose(asking(), "late", "owner", later);
       expect(held("p1")).toBe(true);
       // A full set refuses the owner nothing: a new card lets the oldest pending one go.
-      policy.propose(change(1), "over", "owner", later);
+      policy.propose(asking(), "over", "owner", later);
       expect([held("p1"), held("p2")]).toEqual([false, true]);
       // An outside client's card never pushes out the owner's: with none of its class's to
       // let go, it is refused.
-      expect(() => policy.propose(change(1), "outside", MUSE.client, later))
+      expect(() => policy.propose(asking(), "outside", MUSE.client, later))
         .toThrow("too many pending policy proposals");
     });
     expect((await r.table("policy_proposals")).map((row) => row["request_id"]).sort())
@@ -422,14 +518,12 @@ describe("an agent's proposal", () => {
     const r = await rig();
     const kept = POLICY_LIMITS.appliedProposals;
     const applied = Array.from({ length: kept + 2 }, (_, n) => `a${n}`);
-    for (const id of applied) {
-      const { generation } = await r.stub.policyRead(r.bind(null));
+    for (const [n, id] of applied.entries()) {
       const { request_digest: digest } = await r.stub.policyPropose(r.bind(null), {
-        change: change(generation), request_id: id });
+        change: asking(n), request_id: id });
       await apply(r, id, digest);
     }
-    const { generation } = await r.stub.policyRead(r.bind(null));
-    await r.stub.policyPropose(r.bind(null), { change: change(generation), request_id: "d" });
+    await r.stub.policyPropose(r.bind(null), { change: asking(), request_id: "d" });
     const rows = await r.table("policy_proposals");
     expect(rows.filter((row) => row["applied_at"] !== null).map((row) => row["request_id"])
       .sort()).toEqual(applied.slice(2).sort());
@@ -444,7 +538,7 @@ describe("the receipts", () => {
     const r = await rig();
     await write(r, defaults());
     for (let n = 0; n < POLICY_LIMITS.receiptsListed + 5; n++) {
-      await r.stub.policyPropose(r.bind(MUSE), { change: { n } });
+      await r.stub.policyPropose(r.bind(MUSE), { change: asking(n) });
       await failure(() => r.stub.policyWrite(r.bind(null), { expected_generation: 2,
                                                              policy: defaults() as never }));
     }

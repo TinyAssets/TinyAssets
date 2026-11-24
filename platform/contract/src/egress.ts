@@ -181,10 +181,16 @@ export const EGRESS_BEAT_S = 60;
 const SIGNIN_DOOR = "/signin";
 /** Every run's decide door, one path for all, the run named by its credential's header. */
 const DECIDE_DOOR = "/decide";
-/** The sync agent's doors, each `/sync/<door>`. */
-export const SYNC_DOORS = Object.freeze(["changes", "list", "read", "chunks", "commit",
-  "upload_begin", "upload_chunks", "upload_abort"] as const);
-export type SyncDoor = (typeof SYNC_DOORS)[number];
+/**
+ * The sync agent's doors, each `/sync/<door>`, and the owner door whose answer each relays
+ * (`doors/src/egress.ts` `serveSync`), which the sync agent reads (`RelayedAnswer`).
+ */
+export const SYNC_DOORS = Object.freeze({
+  changes: "fileChanges", list: "fileList", read: "fileRead", chunks: "fileReadChunks",
+  commit: "fileSyncCommit", upload_begin: "fileSyncUploadBegin",
+  upload_chunks: "fileSyncUploadChunks", upload_abort: "fileSyncUploadAbort",
+} as const);
+export type SyncDoor = keyof typeof SYNC_DOORS;
 
 /** The egress door's path segment before a connection id: `/c/<connection>/...`. */
 const CONNECTION_SEGMENT = "c";
@@ -230,7 +236,7 @@ export function egressDoor(path: string): EgressDoor | null {
       ? { door: "signin_events", signin } : null;
   }
   if (parts[1] === "sync") {
-    const sync = SYNC_DOORS.find((name) => name === parts[2]);
+    const sync = (Object.keys(SYNC_DOORS) as SyncDoor[]).find((name) => name === parts[2]);
     return parts.length === 3 && sync !== undefined ? { door: "sync", sync } : null;
   }
   const run = parts[2] ?? "";

@@ -152,7 +152,6 @@ export interface DoorRequests {
     readonly expected_generation: number;
     readonly policy: Readonly<Record<string, unknown>>;
   };
-  readonly policyProposal: { readonly request_id: string };
   readonly policyApply: { readonly card_id: string; readonly digest: string };
   readonly policyDecline: { readonly card_id: string; readonly digest: string };
   readonly policyWakeLimits: {
@@ -464,6 +463,7 @@ export interface DoorAnswers {
   readonly fileReadChunks: {
     readonly chunks: readonly (string | number | boolean | object | null)[];
   };
+  readonly fileChanges: Record<never, never> & object;
   readonly runDecide: { readonly hook?: object } & object;
   readonly signinStart: {
     readonly started?: boolean;
@@ -505,6 +505,8 @@ export interface DoorAnswers {
     readonly code?: string;
     readonly receipt?: string | null;
   };
+  readonly fileSyncCommit: Record<never, never> & object;
+  readonly fileSyncUploadBegin: Record<never, never> & object;
   readonly importFileBegin: {
     readonly skipped: boolean;
     readonly intent_id?: string;
@@ -519,8 +521,29 @@ export interface DoorAnswers {
 
 /** The answer fields the owner still answers, the doors reading them no more (`unread`). */
 export interface UnreadAnswers {
+  readonly fileList: { readonly next: string | null };
   readonly agentSubmit: { readonly result: string | null };
   readonly agentCancel: { readonly result?: string | null } & object;
+  readonly fileRead: {
+    readonly chunks?: readonly (string | number | boolean | object | null)[];
+  } & object;
+  readonly fileChanges: {
+    readonly changes: readonly (string | number | boolean | object | null)[];
+    readonly cursor: number;
+    readonly reset: boolean;
+  };
+  readonly runDecide: {
+    readonly tools?: readonly (string | number | boolean | object | null)[];
+    readonly generation?: number;
+    readonly allow?: boolean;
+  } & object;
+  readonly fileSyncCommit: {
+    readonly outcomes: readonly (string | number | boolean | object | null)[];
+  };
+  readonly fileSyncUploadBegin: {
+    readonly intent_id: string;
+    readonly missing: readonly (string | number | boolean | object | null)[];
+  };
 }
 
 /** Each tool's door, by the tool's name. */

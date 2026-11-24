@@ -14,7 +14,7 @@ import { MIGRATIONS } from "../src/schema";
 import { apiKeyOrigin } from "../../contract/src/binding";
 import { migrate } from "../../contract/src/migrate";
 import { policyDigest } from "../../contract/src/policy-document";
-import { DOT, MCP, MUSE, origin, rig, subscription, dm } from "./ledger-support";
+import { asking, DOT, MCP, MUSE, origin, rig, subscription, dm } from "./ledger-support";
 import { failure, ownerObject, starterSeed } from "./support";
 
 describe("the sender is the verified identity", () => {
@@ -304,9 +304,9 @@ describe("outside agents register from a verified identity", () => {
     for (const [binding, name, reason] of [
       [r.bind(MUSE, { source: MCP }), "refused", "interactive owner session required"],
       [r.bind(MUSE, { source: MCP, session: "x".repeat(43) }), "refused",
-        "an MCP client's agent registers through the card it files"],
+        "an outside client's call never carries the owner's session"],
       [r.bind(MUSE, { source: MCP, session: r.cookie }), "refused",
-        "an MCP client's agent registers through the card it files"],
+        "an outside client's call never carries the owner's session"],
       // The owner itself registers only by applying a held card.
       [r.bind(null, { source: MCP, session: r.cookie }), "invalid", "invalid ledger request"],
       [{ ...r.bind(MUSE, { session: r.cookie }), source: undefined } as never, "invalid",
@@ -326,31 +326,36 @@ describe("outside agents register from a verified identity", () => {
     expect(await r.table("outside_agents")).toEqual([]);
   });
 
-  it("takes an API-key agent's identity from its key, for every delivery", async () => {
+  it("takes an API-key agent's identity from its key's own card, for every delivery",
+     async () => {
     const r = await rig();
     const key = "0123456789abcdef";
-    const origin = apiKeyOrigin(key);
-    const source = { kind: "api_key", ref: key } as const;
+    const { origin, source } = await r.keyed(key);
     const request = { command_center_id: "alpha", display_name: "Night Agent",
                       delivery_method: "pull", recipe_id: null };
-    await r.keyed(key);
     for (const other of [MUSE, apiKeyOrigin("fedcba9876543210")]) {
-      const refused = await failure(() => r.stub.registerAgent(r.session(other, source), request));
+      const refused = await failure(() => r.stub.registerPropose(r.bind(other, { source }),
+                                                                 request));
       expect([refused.code, refused.message])
         .toEqual(["refused", "the origin is not this API key's"]);
     }
-    const badKey = await failure(() => r.stub.registerAgent(
-      r.session(origin, { kind: "api_key", ref: "not-a-key" }), request));
+    const badKey = await failure(() => r.stub.registerPropose(
+      r.bind(origin, { source: { kind: "api_key", ref: "not-a-key" } }), request));
     expect([badKey.code, badKey.message]).toEqual(["invalid", "invalid account binding"]);
-    const agent = await r.stub.registerAgent(r.session(origin, source), request);
+    const applied = async (delivery_method: string) => {
+      const { card_id, digest } = await r.stub.registerPropose(r.bind(origin, { source }),
+                                                               { ...request, delivery_method });
+      return r.stub.registerAgent(r.session(null), { card_id, digest });
+    };
+    const agent = await applied("pull");
     expect([agent.source, agent.source_ref, agent.delivery_method, agent.outside_client])
       .toEqual(["api_key", key, "pull", origin.client]);
-    // A kind whose doorbell the owner hands over (a Grok Bot), and one its client subscribes
-    // over `/mcp`, where a key serves as a token does.
-    for (const delivery_method of ["webhook", "mcp_event"]) {
-      const hooked = await r.stub.registerAgent(r.session(origin, source),
-                                                { ...request, delivery_method });
-      expect(hooked.delivery_method).toBe(delivery_method);
+    // Filing again is how it changes its delivery: a kind whose doorbell the owner hands over
+    // (a Grok Bot), and one its client subscribes over `/mcp`, where a key serves as a token
+    // does. The same agent each time, one revision on.
+    for (const [delivery_method, revision] of [["webhook", 2], ["mcp_event", 3]] as const) {
+      expect(await applied(delivery_method)).toMatchObject({ agent_id: agent.agent_id,
+                                                              delivery_method, revision });
     }
   });
 
@@ -407,8 +412,8 @@ describe("outside agents register from a verified identity", () => {
       .disabled_reason).toBe("owner");
   });
 
-  it("refuses an outside client's call carrying the owner's session at every door but "
-     + "an API key agent's registration", async () => {
+  it("refuses an outside client's call carrying the owner's session at every door",
+     async () => {
     const r = await rig();
     const muse = await r.register(MUSE);
     const outside = r.session(DOT);
@@ -443,14 +448,13 @@ describe("outside agents register from a verified identity", () => {
     expect((await r.stub.grantList(r.bind(null))).clients.map((c) => c.client))
       .toEqual([MUSE.client]);
     expect(await r.table("policy_receipts")).toEqual([]);
-    // An MCP client's pair is refused too, before any grant is recorded: it files a card.
-    expect((await failure(() => r.stub.registerAgent(outside, request))).message)
-      .toBe("an MCP client's agent registers through the card it files");
-    expect((await r.stub.grantList(r.bind(null))).clients.map((c) => c.client))
-      .toEqual([MUSE.client]);
+    // At the registration's door too, an app's or an API key's: each files its own card.
     const { origin, source } = await r.keyed("0123456789abcdef");
-    expect((await r.stub.registerAgent(r.session(origin, source), request)).outside_client)
-      .toBe(origin.client);
+    for (const pair of [outside, r.session(origin, source)]) {
+      expect((await failure(() => r.stub.registerAgent(pair, request))).message)
+        .toBe("an outside client's call never carries the owner's session");
+    }
+    expect(await r.table("outside_agents")).toHaveLength(1);
   });
 
   it("lets only the owner, in its session, set wake limits or delete an agent", async () => {
@@ -700,11 +704,10 @@ describe("the policy store's counters", () => {
     await r.stub.outsideAgents(r.bind(DOT));
     await r.stub.outsideAgents(r.bind(origin(7)));  // a free row
     await r.stub.grantRevoke(r.bind(null), { client: DOT.client });  // a row the owner set
-    const change = { type: "policy_proposal", expected_generation: 1, policy: {} };
-    await r.stub.policyPropose(r.bind(MUSE), { change, request_id: "a" });
-    await r.stub.policyPropose(r.bind(MUSE), { change: { ...change, n: 3 }, request_id: "c" });
-    await r.stub.policyPropose(r.bind(null), { change: { ...change, n: 2 }, request_id: "b" });
-    await r.stub.policyPropose(r.bind(null), { change });
+    await r.stub.policyPropose(r.bind(MUSE), { change: asking(), request_id: "a" });
+    await r.stub.policyPropose(r.bind(MUSE), { change: asking(3), request_id: "c" });
+    await r.stub.policyPropose(r.bind(null), { change: asking(2), request_id: "b" });
+    await r.stub.policyPropose(r.bind(null), { change: asking() });
     await failure(() => r.stub.policyWrite(r.bind(null), { expected_generation: 1,
                                                           policy: {} as never }));
     await r.sql("UPDATE policy_proposals SET applied_at = 5 WHERE request_id = 'a'");

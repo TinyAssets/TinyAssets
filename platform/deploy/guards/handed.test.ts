@@ -19,9 +19,9 @@ describe("what each Worker hands another, against the base branch", () => {
 });
 
 const NONE = { doors: new Set<string>(), shapes: new Set<string>() };
-/** A side of `shapes` and door `rows`, the same for every Worker. */
+/** A side of `shapes` and door `rows`, the same for every Worker, its sandbox speaking none. */
 const side = (shapes: Readonly<Record<string, Shape>>, rows: readonly DoorRow[] = []):
-  Before & Side => ({ shapes, doors: rows, cutover: NONE });
+  Before & Side => ({ shapes, doors: rows, runners: {}, cutover: NONE });
 /** Each way `now` refuses, held against `then` as every Worker's version before. */
 const held = (then: Before, now: Side) => handedHold(() => then, now).problems;
 
@@ -201,7 +201,7 @@ describe("the door table, the doors' requests to the owner", () => {
 
   it("holds by name alone, and says so, a field the doors' version before types not", () => {
     const untyped = table(door({ refused: "x", required: { path: {} }, optional: {} }));
-    const none = { problems: [], untyped: [], undeclared: [] };
+    const none = { problems: [], untyped: [], undeclared: [], unrecorded: [] };
     expect(handedHold(() => untyped, table(door(fields(["path"], []))))).toEqual(
       { ...none, untyped: ["fileStat path"] });
     expect(handedHold(() => untyped, untyped)).toEqual(none);
@@ -281,13 +281,72 @@ describe("the door table's answers, which the doors' version before reads of the
   it("names a door whose version before declares no answer, and holds none of a dropped door",
      () => {
     expect(handedHold(() => side({}, [tierRead()]), TIER)).toEqual(
-      { problems: [], untyped: [], undeclared: ["tierRead"] });
+      { problems: [], untyped: [], undeclared: ["tierRead"], unrecorded: [] });
     expect(handedHold(() => side({}, [tierRead()]), side({}, [tierRead()])).undeclared)
       .toEqual([]);
     // The doors' version before calls a dropped door no more, so reads none of its answer.
     expect(held(side({}, [{ ...tierRead({ required: { tier: { type: "string" } },
                                            optional: {} }), dropped: true }]),
                 side({}, [tierRead()]))).toEqual([]);
+  });
+});
+
+describe("the owner's answers each runner protocol a sandbox version speaks reads", () => {
+  /** `fileList`, its answer `answer`. */
+  const fileList = (answer: Answer): DoorRow =>
+    ({ door: "fileList", class: "read", capability: null, args: "none", answer });
+  const NEXT: Answer = { required: { entries: { type: "array" }, next: { type: "string" } },
+                         optional: {}, unread: ["next"] };
+  /** A side whose rows answer `answer` and whose sandbox speaks `runners`. */
+  const speaking = (runners: Side["runners"], answer: Answer = NEXT): Before & Side =>
+    ({ ...side({}, [fileList(answer)]), runners });
+  /** Protocol `n`'s record, its runner reading `fileList` `next` as a string, always. */
+  const reads = (n: string) => ({ [n]: { fileList: { required: { next: { type: "string" } },
+                                                      optional: {} } } });
+  const GONE: Answer = { required: { entries: { type: "array" } }, optional: {} };
+  const STEP = (n: string) => `keep answering it until no sandbox version the stage serves, ` +
+    `nor this tree's, speaks protocol ${n}`;
+
+  it("refuses an owner that no longer answers a field this tree's protocols read, as they " +
+     "read it", () => {
+    expect(handedHold(() => null, speaking(reads("5"), GONE)).problems).toEqual(
+      [`fileList no longer answers next, which protocol 5's runner reads: ${STEP("5")}`]);
+    // An unread field is the doors' alone: the runner's record still holds it.
+    expect(handedHold(() => null, speaking(reads("5"))).problems).toEqual([]);
+    expect(handedHold(() => null, speaking(reads("5"), {
+      required: { entries: { type: "array" } }, optional: { next: { type: ["string", "null"] } },
+    })).problems).toEqual([
+      `fileList answers next not always, which protocol 5's runner reads as always answered: ` +
+      `answer that under a new name, and ${STEP("5")}`,
+      `fileList answers next as null, which protocol 5's runner does not read: answer that ` +
+      `under a new name, and ${STEP("5")}`]);
+    expect(handedHold(() => null, speaking(reads("5"), { ...NEXT, nullable: true })).problems)
+      .toEqual([`fileList may answer null, which protocol 5's runner does not read: answer it ` +
+                "by a door of a new name, and keep this one answering as it did until no " +
+                "sandbox version the stage serves, nor this tree's, speaks protocol 5"]);
+    expect(handedHold(() => null, { ...speaking(reads("5")), doors: [] }).problems).toEqual(
+      [`the door fileList is gone, which protocol 5's runner reads: ${STEP("5")}`]);
+    // Spoken no more, by this tree or the stage's, its reads are no one's.
+    expect(handedHold(() => speaking({}), speaking({}, GONE)).problems).toEqual([]);
+  });
+
+  it("holds the protocols the serving sandbox speaks, newer ones on a rollback too", () => {
+    // The serving sandbox speaks 6, which this (older) tree records nowhere.
+    expect(handedHold(() => speaking(reads("6")), speaking(reads("5"), GONE)).problems).toEqual([
+      `fileList no longer answers next, which protocol 5's runner reads: ${STEP("5")}`,
+      `fileList no longer answers next, which protocol 6's runner reads: ${STEP("6")}`]);
+    // A protocol both speak is held once, by this tree's record where the serving one has none.
+    const held = handedHold(() => speaking({ 5: null }), speaking(reads("5"), GONE));
+    expect(held.problems).toHaveLength(1);
+    expect(held.unrecorded).toEqual([]);
+  });
+
+  it("names each runner whose reads no record holds", () => {
+    expect(handedHold(() => speaking({ 4: null }), speaking(reads("5"))).unrecorded)
+      .toEqual(["protocol 4"]);
+    expect(handedHold(() => speaking(null), speaking(reads("5"))).unrecorded)
+      .toEqual(["the sandbox's version before"]);
+    expect(handedHold(() => null, speaking(reads("5"))).unrecorded).toEqual([]);
   });
 });
 
@@ -308,5 +367,19 @@ describe("a release's side, read from git", () => {
                                    shapes: new Set(["account", "origin"]) });
     expect(() => sideAt("c", files({ "platform/contract/doors.json": DOORS })))
       .toThrow("c holds no platform/contract/handed.json: what it hands and takes is unknown");
+  });
+
+  it("reads the runner protocols its sandbox speaks, each its record's reads, or none", () => {
+    const at = { "platform/contract/doors.json": DOORS,
+                 "platform/contract/handed.json": "{\"shapes\": {}}" };
+    const relayed = { fileList: { required: { next: { type: "string" } }, optional: {} } };
+    expect(sideAt("c", files({ ...at, "platform/sandbox/runner/speaks.json": "[4, 5]",
+                               "platform/sandbox/runner/protocol.json": JSON.stringify(
+                                 { 4: { commands: [] }, 5: { relayed } }) })).runners)
+      .toEqual({ 4: null, 5: relayed });
+    expect(sideAt("c", files(at)).runners).toBeNull();
+    expect(() => sideAt("c", files({ ...at, "platform/sandbox/runner/speaks.json": "[5]" })))
+      .toThrow("c holds platform/sandbox/runner/speaks.json and no " +
+               "platform/sandbox/runner/protocol.json: what its runners read is unknown");
   });
 });

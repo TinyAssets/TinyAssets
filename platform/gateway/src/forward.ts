@@ -29,8 +29,6 @@
  */
 import type { Api, Model } from "@earendil-works/pi-ai";
 
-import type { ModelRecord } from "../../contract/src/model-record";
-
 import { type Catalog, modelInfos } from "./catalog";
 import { bearer, type Credential } from "./credential";
 import {
@@ -646,26 +644,8 @@ export async function verify(env: KeyringEnv, bound: Binding, blob: unknown,
   }
   const { scope } = await learnedScope(catalog, upstream, credential.endpoints,
                                       bearer(credential));
-  return Object.freeze({ ...handed(modelInfos(catalog, upstream), scope), ...kept });
-}
-
-/**
- * A setup check's models and scope as the owner's object takes them. A source of one API is
- * handed as the owner's version before took it (`OneApiScope`, its models naming no API: the
- * one), since the gateway deploys first; one of several, which only this release's records
- * make, as it is. The one-API spelling goes once the stage serves no owner before this one
- * (`openrouter-messages.md`).
- */
-function handed(models: readonly ModelRecord[], scope: ModelScope):
-    Pick<Verified, "models" | "egress"> {
-  if (scope.apis.length > 1) {
-    return { models: Object.freeze([...models]), egress: scope };
-  }
-  const [{ api, base_url, meter }] = scope.apis as [ScopeApi];
-  return {
-    models: Object.freeze(models.map(({ api: _api, ...model }) => Object.freeze(model))),
-    egress: Object.freeze({ api, base_url, endpoints: scope.endpoints, meter }),
-  };
+  return Object.freeze({ models: Object.freeze(modelInfos(catalog, upstream)), egress: scope,
+                         ...kept });
 }
 
 /**

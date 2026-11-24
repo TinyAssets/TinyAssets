@@ -2823,6 +2823,8 @@ describe("the rollout record and mode rollback", () => {
     // A type: b65adb647's doors hand boardDigest's cursor as an integer, which this owner
     // takes as a string alone.
     const DOOR_TABLE = "platform/contract/doors.json";
+    const SPEAKS_JSON = "platform/sandbox/runner/speaks.json";
+    const PROTOCOL_JSON = "platform/sandbox/runner/protocol.json";
     const table = JSON.parse(readFileSync(join(REPO, DOOR_TABLE), "utf8")) as {
       doors: { door: string; args: { optional: Record<string, object> } }[] };
     const typed = (type: object) => ({ [DOOR_TABLE]: JSON.stringify({ doors: table.doors.map(
@@ -2848,6 +2850,19 @@ describe("the rollout record and mode rollback", () => {
                           PUBLIC)).plan)
       .toContain(`${HELD_HOLD}; answers held by nothing, the doors' version before declaring ` +
                  "none: tierRead");
+    // A sandbox serving that records no runner it speaks holds nothing of theirs, said so too;
+    // one that speaks a protocol whose reads this owner answers not stops the run.
+    expect((await runMode(world({ held: true, before: { [SPEAKS_JSON]: null } }), "dark",
+                          ["--public"], PUBLIC)).plan)
+      .toContain(`${HELD_HOLD}; runners' reads held by nothing, recorded by none: the ` +
+                 "sandbox's version before");
+    const protocols = JSON.parse(readFileSync(join(REPO, PROTOCOL_JSON), "utf8")) as
+      Record<string, object>;
+    await stops(world({ held: true, before: {
+      [SPEAKS_JSON]: "[6]", [PROTOCOL_JSON]: JSON.stringify({ ...protocols, 6: { relayed: {
+        tierRead: { required: { plan: { type: "string" } }, optional: {} } } } }) } }),
+                "so nothing is changed: tierRead no longer answers plan, which protocol 6's " +
+                "runner reads");
     // A commit with no handed.json, a version no tag names a commit of, and a commit this
     // checkout lacks, are unknown.
     await stops(world({ held: true, before: { [HANDED]: null } }),
@@ -5854,8 +5869,9 @@ const writesControl = (event: string) => event.startsWith(CONTROL_WRITE)
 
 /** A deploy plan's hold of its Workers to the serving versions, each Worker's at `commits`. */
 const holdLine = (commits: string) => "hold the run's Workers to what the serving versions " +
-  `hand and take (contract/handed.json, contract/doors.json), read from git: ${commits}: none ` +
-  "refuses the other";
+  "hand and take, and the owner to the runners they speak (contract/handed.json, " +
+  "contract/doors.json, sandbox/runner/speaks.json, sandbox/runner/protocol.json), read from " +
+  `git: ${commits}: none refuses the other`;
 /** The hold over a held account, every Worker serving `BEFORE`. */
 const HELD_HOLD = holdLine(WORKERS.map((worker) => `${NAMES[worker]} at ${BEFORE}`).join(", "));
 

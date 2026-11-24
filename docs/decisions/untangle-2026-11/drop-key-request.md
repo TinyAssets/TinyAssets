@@ -80,7 +80,8 @@
   the mint keeps scopes is owed with a key's agent (below).
 - `policy_propose` still files a `{ type: "api_key_request" }` change, as any change object:
   a card the owner can only decline, as with any change that is no whole policy. What a
-  proposal should be is `untangle/policy-proposal-shape` (`policy-answers.md`).
+  proposal should be is `untangle/policy-proposal-shape` (`policy-answers.md`), which refuses
+  any change that is no delta when it is filed.
 - The Python stack's `api_key_request_counts` (its rate limiter) and the import's rules that
   drop it are another thing of the same name, and stay.
 
@@ -88,6 +89,8 @@
 
 - [ ] live: once the stage serves no doors version before this one, take out `keyMint`'s
   dropped `proposal` (`contract/doors.json`).
-- [ ] `untangle/key-agent-change`: with the key request gone, decide whether `keyMint` keeps
+- [x] `untangle/key-agent-change`: with the key request gone, decide whether `keyMint` keeps
   `scopes` at all (no screen sends any), and so whether `centerOf`'s "name one ... as
-  `command_center_id`" can reach a mint.
+  `command_center_id`" can reach a mint. Decided (`key-agent-change.md` 5): it does not keep
+  them; taking them out, and with them the mint's one `centerOf` call, is
+  `untangle/key-mint-full`'s, owed there.

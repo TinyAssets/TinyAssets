@@ -9,8 +9,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { apiKeyOrigin } from "../../contract/src/binding";
 import {
-  bindApiKey, bindKeyRegistration, bindMcp, bindOwner, bindSignIn, installationOf, mcpClient,
-  mcpOrigin, ownerOf,
+  bindApiKey, bindMcp, bindOwner, bindSignIn, installationOf, mcpClient, mcpOrigin, ownerOf,
 } from "../src/binder";
 import type { DoorsEnv } from "../src/env";
 import { APP_RESOURCE, MCP_RESOURCE, WEB_CLIENT } from "../../contract/src/identity";
@@ -175,16 +174,6 @@ describe("the other bindings", () => {
     ["an MCP grant's props", { props: { kind: "mcp", owner: "alice" } }],
   ])("the owner: never from a token of %s", (_what, change) => {
     expect(() => bindOwner(doorsEnv, { ...app, ...change }, undefined)).toThrow();
-  });
-
-  it("a key registration: the owner's own key only", () => {
-    const entry = { o: "alice", h: "f".repeat(64), c: 1 };
-    expect(bindKeyRegistration(doorsEnv, app, "0123456789abcdef", entry, "s".repeat(43)).binding)
-      .toEqual({ owner: "alice", caller: "alice", origin: apiKeyOrigin("0123456789abcdef"),
-                 source: { kind: "api_key", ref: "0123456789abcdef" }, authenticated_at: 1,
-                 session: "s".repeat(43) });
-    expect(() => bindKeyRegistration(doorsEnv, app, "0123456789abcdef",
-                                     { ...entry, o: "bob" }, undefined)).toThrow();
   });
 
   it("a sign-in: the owner its issuer and subject name, at its time", async () => {

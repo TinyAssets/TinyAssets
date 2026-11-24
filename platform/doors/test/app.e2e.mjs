@@ -930,7 +930,9 @@ test("every card waiting on the owner is on Home, and its page, where a refusal,
                  request: '{"expected_etag":null,"path":"/workspace/held"}', cut: false,
                  generation: 1, filed_at: 1_700_000_100 };
   const proposal = { card_id: "card-9", digest: "sha256:" + "f".repeat(64), client: null,
-                     filed_at: 1_700_000_200, change: { allow: "github.com" } };
+                     filed_at: 1_700_000_200,
+                     change: { add: { egress: { destinations: [{ host: "github.com",
+                                                                 port: 443 }] } } } };
   const pages = [card, held, proposal].map((each) => waitingPage(each.card_id));
   const fakes = [
     ["**/app/api/registrations", { cards: [card] }], ["**/app/api/actions", { cards: [held] }],
@@ -962,9 +964,9 @@ test("every card waiting on the owner is on Home, and its page, where a refusal,
       [held, ["asked by main, started by Muse", "Act: workspace.files", "At: fileMkdir",
               "In conversation: conv-1", '"path":"/workspace/held"', "resumes its run"],
        [["Allow once", "actions/approve"], ["Deny", "actions/refuse"]]],
-      [proposal, ["asked by your own agent", '"allow": "github.com"',
-                  "Your settings now, which applying replaces whole", '"mode": "open"',
-                  "whatever they leave out", "yours to make"],
+      [proposal, ["asked by your own agent", '"host": "github.com"',
+                  "Applying makes only these changes", "Nothing else changes",
+                  "waits for you to decline it"],
        [["Apply", "policy/apply"], ["Decline", "policy/decline"]]],
     ]) {
       // Each notice on Home links to its card's page.

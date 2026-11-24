@@ -15,14 +15,16 @@
  *   owner's fields step every call (`requestFields`); a type the doors' version before may
  *   still hand, which the schema names no more, is listed beside it (`droppedTypes`).
  *
- * - its answer as the doors read it (`answer`), where their code or the app they serve reads
- *   one field by field: the fields the owner answers always and those it answers when it has
- *   them, each its JSON type (`fieldTypes`), whether it may answer null instead, and the
- *   fields it still answers that the doors read no more (`unread`), for the doors' version
- *   before (`deploy/handed.ts`). `tsc` holds the doors' code and the owner's handlers to it
- *   (`contract/requests.ts` writes its types); a row with none is an answer the doors pass
- *   on whole, which only readers outside that pairing read (the runner, the kit, tests, and
- *   outside callers by the tool contract).
+ * - its answer (`answer`), where the doors' code or the app they serve reads one field by
+ *   field, or the sandbox's runner reads it as the doors relay it: the fields the owner
+ *   answers always and those it answers when it has them, each its JSON type (`fieldTypes`),
+ *   whether it may answer null instead, and the fields it answers that the doors read not
+ *   (`unread`): for the doors' version before, or for the runner protocols a sandbox Worker
+ *   speaks, each one's record of what it reads (`sandbox/runner/protocol.json` `relayed`;
+ *   `deploy/handed.ts` holds both). `tsc` holds the doors' code, the runner's and the owner's
+ *   handlers to it (`contract/requests.ts` writes its types); a row with none is an answer
+ *   the doors pass on whole, which only readers outside those pairings read (the kit, tests,
+ *   and outside callers by the tool contract).
  *
  * A door the doors call no more is marked `dropped`: the object still takes it, for the
  * doors' version before, and `OwnerDoors` lacks it (`deploy/handed.ts`).
@@ -120,10 +122,11 @@ export type FieldType = (typeof FIELD_TYPES)[number];
 const RPC_TYPES: readonly FieldType[] = Object.freeze(["bytes", "stream"]);
 
 /**
- * A door's answer as the doors read it: the fields the owner answers every time and those it
- * answers when it has them, each a schema of its type (`fieldTypes`); whether it may answer
- * null in place of them; and the fields it still answers, as listed, which the doors read no
- * more, until the doors the stage serves read them no more (`deploy/handed.ts`).
+ * A door's answer as its readers read it: the fields the owner answers every time and those
+ * it answers when it has them, each a schema of its type (`fieldTypes`); whether it may answer
+ * null in place of them; and the fields it answers, as listed, which the doors read not, for
+ * the doors the stage serves and the runner protocols a sandbox Worker speaks
+ * (`deploy/handed.ts`).
  */
 export interface Answer {
   readonly required: Readonly<Record<string, JsonSchema>>;
