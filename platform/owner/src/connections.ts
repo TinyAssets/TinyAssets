@@ -553,6 +553,16 @@ export class Connections {
       : (JSON.parse(row.models) as ModelRecord[]).map((model) => [model, null] as const);
   }
 
+  /**
+   * In a unit: what the reads of connection `id` keep (every connection's, for null), each
+   * read's row and its models' rows, deleted: a revoke's, or a restore's fence.
+   */
+  #dropReads(id: string | null): void {
+    for (const table of [...READ_TABLES, "connection_records"]) {
+      this.#sql.exec(`DELETE FROM ${table} WHERE ? IS NULL OR connection = ?`, id, id);
+    }
+  }
+
   #view(row: Row): ConnectionView {
     return view(row, this.#modelsOf(row));
   }
@@ -727,9 +737,7 @@ export class Connections {
   secretsLost(): void {
     this.#sql.exec("UPDATE connections SET status = 'error', pending_until = NULL WHERE " +
                      "status IN ('pending', 'active')");
-    for (const table of [...READ_TABLES, "connection_records"]) {
-      this.#sql.exec(`DELETE FROM ${table}`);
-    }
+    this.#dropReads(null);
   }
 
   /**
@@ -764,9 +772,7 @@ export class Connections {
       if (!owed) {
         this.#sql.exec("DELETE FROM connection_secrets WHERE connection_id = ?", id);
       }
-      for (const table of [...READ_TABLES, "connection_records"]) {
-        this.#sql.exec(`DELETE FROM ${table} WHERE connection = ?`, id);
-      }
+      this.#dropReads(id);
       this.#sql.exec("UPDATE connection_flows SET status = 'cancelled', verifier = NULL " +
                        "WHERE connection_id = ? AND status = 'open'", id);
       this.#pruneRevoked();
