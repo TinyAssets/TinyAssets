@@ -289,8 +289,9 @@ const KINDS = Object.freeze(/** @type {const} */ ([
     asker: (card, names) => card.client === null ? "your own agent" : appOf(card.client, names),
     lines: (card) => [["Proposed: ", h("pre", {}, JSON.stringify(card.change, null, 2))]],
     note: () => "Applying makes only these changes, once, to your settings as they stand: the " +
-      "settings it sets, the rules and hosts it adds or removes. Nothing else changes. One " +
-      "that no longer applies is refused, and waits for you to decline it.",
+      "settings it sets (null puts one back to its default, a limit off), the rules and hosts " +
+      "it adds or removes. Nothing else changes. One that no longer applies is refused, and " +
+      "waits for you to decline it.",
     yes: answering("policy/apply", "Apply", () => "Applied: your settings have the changes."),
     no: answering("policy/decline", "Decline", () => "Declined: your settings are unchanged.") },
 ]));

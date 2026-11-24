@@ -24,6 +24,7 @@ import {
   policyDigest, validate,
 } from "../../contract/src/policy-document";
 import { waitingPage } from "../../contract/src/identity";
+import { codePoints } from "../../contract/src/text";
 import { modelSettings } from "../src/policy";
 import { asking, MUSE, rig, type Rig } from "./ledger-support";
 import { atClock, failure, inStores, ownerObject } from "./support";
@@ -370,6 +371,8 @@ describe("an agent's proposal", () => {
       { add: { actions: [{ act: "nope", do: "ask" }] } },
       { set: { egress: { mode: "ask" } } },
       { add: { egress: { destinations: [{ host: "10.0.0.1", port: 443 }] } } },
+      { remove: { actions: [{ act: "share" }] } },
+      { remove: { egress: { destinations: [{ host: "a.example" }] } } },
     ].map(async (change) => {
       const refused = await failure(() => r.stub.policyPropose(r.bind(MUSE), { change }));
       return [refused.code, refused.message];
@@ -380,7 +383,9 @@ describe("an agent's proposal", () => {
     const expected = [
       ...Array.from({ length: 15 }, () => delta),
       ["invalid", "invalid action rule: no such act"], ["invalid", "invalid egress policy"],
-      ["egress_ip_literal", EGRESS_IP_LITERAL]];
+      ["egress_ip_literal", EGRESS_IP_LITERAL],
+      ["invalid", "invalid action rule: an act, ask or never, any agent and any tools"],
+      ["invalid", "invalid egress destination"]];
     expect(await refusals()).toEqual(expected);
     await write(r, { egress: { mode: "allowlist", destinations: [{ host: "a.example", port: 1 }] },
                      actions: [rule("share")], tools: { custom: ["file_read"] } });
@@ -391,6 +396,24 @@ describe("an agent's proposal", () => {
       expect((await r.stub.policyPropose(r.bind(MUSE), { change })).card_id)
         .toMatch(/^pol_[0-9a-f]{32}$/);
     }
+  });
+
+  it("is filed whatever room the owner's policy has, and refused when applied past it",
+     async () => {
+    const r = await rig();
+    const label = "a".repeat(60);
+    const host = (n: number) => ({ host: `${label}.${label}.${label}.h${n}.example`, port: 443 });
+    const destinations: { host: string; port: number }[] = [];
+    const room = () => codePoints(canonical({ egress: { destinations, mode: "open" } }));
+    while (room() < POLICY_LIMITS.maxDocument - 300) {
+      destinations.push(host(destinations.length));
+    }
+    await write(r, { egress: { mode: "open", destinations } });
+    const { card_id, request_digest } = await r.stub.policyPropose(r.bind(MUSE), { change: {
+      add: { egress: { destinations: [host(-1), host(-2)] } } } });
+    expect((await failure(() => apply(r, card_id, request_digest))).message)
+      .toBe("the policy document is too large");
+    expect((await cards(r)).map((card) => card.card_id)).toEqual([card_id]);
   });
 
   it("takes a key a change names as its data, never an object's prototype", () => {

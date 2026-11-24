@@ -55,7 +55,7 @@ dropped `proposal`) is taken out: its precondition holds.
 
 ## Decided
 
-1. **A proposal is a delta, shaped as the document is** (`PolicyChange`,
+1. **A proposal is a delta, shaped as the document is** (`edited`,
    `contract/src/policy-document.ts`): `set`, a JSON merge patch (RFC 7396) of the settings,
    nested as the document is, a value set and null putting a setting back to its default;
    `add` and `remove`, entries of the two lists at their places (`actions`,
@@ -68,13 +68,17 @@ dropped `proposal`) is taken out: its precondition holds.
    since keeps; and adding an entry that is there, or removing one that is not, changes nothing
    and says nothing, as Claude Code's `addRules` does, so no answer tells an agent the owner's
    rules.
-3. **The proposal is checked when filed**: `edited` onto the settings now, so a malformed one
-   is refused to the agent, in the validator's words, and never reaches the owner (Fact 8).
-   Apply checks it again; one that no longer applies (an old-shaped card, or an act since
-   gone) is refused in its words and waits to be declined.
+3. **The proposal is checked when filed**: `edited` onto the default settings, so a malformed
+   one is refused to the agent, in the validator's words, and never reaches the owner (Fact 8),
+   and the refusal depends on the proposal alone: onto the owner's settings, the document's
+   room (`maxDocument`) and the 64 sources would refuse by what the owner set (review). A
+   removed entry no document could hold is refused, never a no-op (review). Apply checks it
+   onto the settings as they stand; one that no longer applies (an old-shaped card, an act
+   since gone, a policy past its room) is refused in its words and waits to be declined.
 4. **The tool's words** say what the change is and that nothing it does not name changes; its
    answer no longer names `generation`.
-5. **The card** shows the change as its JSON and says that applying makes only those changes;
+5. **The card** shows the change as its JSON and says that applying makes only those changes,
+   and that null puts a setting back to its default, a limit off (review);
    it no longer shows the owner's settings, so `namesFor` reads them no more.
 6. **`policyProposal` and `policyWrite`'s dropped `proposal` go** (both tables' rows, its
    handler, its request type, `door-map.ts`); `Dropped` is `never` again.
@@ -101,6 +105,8 @@ dropped `proposal`) is taken out: its precondition holds.
   Refusing it is a case for a card the owner reads either way.
 - The card still shows the change as its JSON: plain words per change are a feature editor the
   platform does not build (Direction 3); the delta's JSON names only what changes.
+- `egress.mode` has no null default: `{ "set": { "egress": { "mode": null } } }` is refused
+  as an invalid egress policy (the mode is required), whatever the owner set.
 - `policy_propose` keeps `idempotentHint: false`: refiling one card with the same change is a
   no-op, but a filing naming no `request_id` is held under a new card each time.
 

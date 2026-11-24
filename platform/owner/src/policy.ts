@@ -18,8 +18,8 @@
  * - A fresh object starts from the default document at generation 1, put there by its
  *   migration: the Python's bootstrap, legacy upgrade and per-owner failure isolation
  *   have no counterpart, since the object is the account.
- * - An agent's proposal names only what it changes (`edited`), checked against the policy as
- *   it stands when filed, and is receipted and held for the owner as a card (its
+ * - An agent's proposal names only what it changes (`edited`), checked when filed onto the
+ *   default policy, so its refusal depends on it alone, and is receipted and held for the owner as a card (its
  *   `request_id`, or one minted when it names none), which the owner answers on its app's page
  *   (`waitingPage`): the proposal's answer names it, and so does the `policy_proposal`
  *   notice. The owner reads the pending cards (`list`), applies one at most once in its
@@ -85,8 +85,8 @@ import { FILE_DEFAULTS, type FileDefaults } from "../../contract/src/file-defaul
 import { object, whole } from "../../contract/src/checks";
 import { canonical } from "../../contract/src/canonical";
 import {
-  CODEMODE_DEFAULTS, DEFAULT_POLICY_DIGEST, edited, MODEL_DEFAULTS, policyDigest,
-  type PolicyDocument, POLICY_LIMITS, type SourceCeilings, validate,
+  CODEMODE_DEFAULTS, DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON, edited, MODEL_DEFAULTS,
+  policyDigest, type PolicyDocument, POLICY_LIMITS, type SourceCeilings, validate,
 } from "../../contract/src/policy-document";
 import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
@@ -475,7 +475,7 @@ export class Policy {
 
   /**
    * An agent's proposal, a change naming only what it changes, refused unless it makes a
-   * policy of the one as it stands (`edited`), receipted and held for the owner under its card:
+   * policy of the default one (`edited`), receipted and held for the owner under its card:
    * `requestId`, the proposer's own for its retries, or one minted. Refiling a held card with
    * another change
    * is refused (the same change again is a no-op); all but the newest applied ones are pruned
@@ -496,7 +496,8 @@ export class Policy {
     const digest = policyDigest(change);
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
-      edited(this.read().document, change);
+      // Checked onto the default, never the owner's: a refusal tells the agent nothing it set.
+      edited(validate(JSON.parse(DEFAULT_POLICY_JSON)), change);
       const over = this.#usage().applied_proposals - POLICY_LIMITS.appliedProposals;
       if (over > 0) {
         sql.exec("DELETE FROM policy_proposals WHERE request_id IN (SELECT request_id " +

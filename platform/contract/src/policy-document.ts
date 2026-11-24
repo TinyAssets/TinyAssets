@@ -481,8 +481,8 @@ function entries(part: unknown): unknown[][] {
  * it removes taken out, then those it adds put in unless there already. An agent reads no
  * policy, so a change replaces nothing it does not name, and an entry added that is there, or
  * removed that is not, changes nothing and is no fault: no answer tells an agent what the
- * owner's rules hold. Refused when it is no such change, names nothing, or leaves a document
- * `validate` refuses.
+ * owner's rules hold. Refused when it is no such change, names nothing, removes an entry no
+ * document could hold, or leaves a document `validate` refuses.
  */
 export function edited(document: PolicyDocument, change: unknown): PolicyDocument {
   if (!keyed(change, [], ["set", "add", "remove"])
@@ -492,6 +492,9 @@ export function edited(document: PolicyDocument, change: unknown): PolicyDocumen
   const next = structuredClone(document) as unknown as Record<string, unknown>;
   const set = object(change["set"]) ? merged(next, change["set"]) : 0;
   const [added, removed] = [entries(change["add"]), entries(change["remove"])];
+  // No document holds a malformed entry, so removing one is refused for what it is.
+  checkActions(removed[0]!);
+  removed[1]!.forEach(checkDestination);
   if (set + added.flat().length + removed.flat().length === 0) {
     throw new Refusal("invalid", CHANGE_REFUSED);
   }
