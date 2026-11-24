@@ -21,7 +21,9 @@ import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import { builtinCatalog } from "../../gateway/src/catalog";
 import { bundledSources } from "../../sources/src/catalog";
+import { pickable } from "../../sources/src/ranking";
 import { served } from "../../sources/src/served";
 import { runEnv } from "../../sources/src/run-env";
 import { sandboxEnv } from "../../contract/src/egress";
@@ -1559,6 +1561,22 @@ const ROUTE_STEPS = (JSON.parse(execFileSync(process.execPath, [probesBundle(), 
   .map((step) => step.argv);
 
 describe("the route probe", () => {
+  it("gives each step a model the gateway's catalog lists on the step's API, one a run may " +
+     "be given", () => {
+    const sources = bundledSources();
+    const records = [...sources.ids()].map((id) => sources.get(id)!);
+    const catalog = builtinCatalog();
+    expect(ROUTE_STEPS.length).toBeGreaterThan(0);
+    for (const [, engine, provider, api, model] of ROUTE_STEPS) {
+      const what = `${engine} ${provider} ${api} ${model}`;
+      expect(catalog.provider(provider!)!.getModels().some((listed) =>
+        listed.id === model && listed.api === api), what).toBe(true);
+      expect(records.some((record) => record.upstream?.provider === provider
+        && (record.engines ?? []).includes(engine!) && pickable(record, model!, null)), what)
+        .toBe(true);
+    }
+  });
+
   it("passes a path under the door's prefix only", () => {
     expect(underPrefix("/r/x/c/y/v1/responses", "/r/x/c/y/v1")).toBe(true);
     expect(underPrefix("/r/x/c/y/v1?beta=true", "/r/x/c/y/v1/")).toBe(true);
