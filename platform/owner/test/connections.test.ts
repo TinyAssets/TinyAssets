@@ -800,8 +800,11 @@ describe("a connected model's record", () => {
   it("keeps maxModels of the largest built-in record", async () => {
     const largest = (await servedRecords()).flatMap(({ models }) => models)
       .reduce((a, b) => (JSON.stringify(b).length > JSON.stringify(a).length ? b : a));
+    // Each its own id, at the largest record's own length, so each record is as large as it.
     const models = Array.from({ length: CONNECTION_LIMITS.maxModels }, (_, i) =>
-      ({ ...largest, id: `${largest.id.slice(0, 190)}.${String(i).padStart(4, "0")}` }));
+      ({ ...largest, id: `${largest.id.slice(0, -5)}.${String(i).padStart(4, "0")}` }));
+    expect(models.every((model) => JSON.stringify(model).length === JSON.stringify(largest).length))
+      .toBe(true);
     expect(JSON.stringify(models).length).toBeGreaterThan(600 * 1024);
     const r = await gated();
     expect(await committed(r, models)).toBeNull();

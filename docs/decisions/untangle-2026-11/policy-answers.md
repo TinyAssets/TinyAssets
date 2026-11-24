@@ -114,11 +114,13 @@ door, a yes in session and a no with none), with no view or case of its own.
   `proposal`, `dropped` first, then `Policy.applyKeyRequest` and its proofs), after
   `untangle/scoped-key-agent` lands, since both change the mint. Done (`untangle/drop-key-request`,
   `drop-key-request.md`); the dropped field's removal is a live line there.
-- [ ] `untangle/policy-proposal-shape`: research what an agent's proposal should be so the
+- [x] `untangle/policy-proposal-shape`: research what an agent's proposal should be so the
   owner's Apply can take it without replacing the document whole (an agent reads no policy,
   so a whole document it files replaces settings it never saw), as the major agents' rule
-  suggestions are (Claude Code's "don't ask again").
-- [ ] live: once the stage serves no doors version before this one, take out `policyProposal`
-  (both tables' rows and its handler) and `policyWrite`'s dropped `proposal`.
+  suggestions are (Claude Code's "don't ask again"). Done: a proposal is a delta Apply
+  merges onto the settings as they stand (`policy-proposal-shape.md`).
+- [x] live: once the stage serves no doors version before this one, take out `policyProposal`
+  (both tables' rows and its handler) and `policyWrite`'s dropped `proposal`. Done in
+  `untangle/policy-proposal-shape`: the stage serves 8c80b02c8 (deploy run 45281806227).
 - [ ] live: after the next deploy of the owner and the doors, on the stage: claude.ai's
   `policy_propose` answers an `approve_url`, the card is on Home, and Decline there removes it.

@@ -358,26 +358,6 @@ export function bindOwner(env: DoorsEnv, token: ValidatedAccessToken<unknown>,
 }
 
 /**
- * The owner's browser registering an agent for an API key it holds (research §5): the
- * one binding that pairs an outside origin with the owner's session. The key's entry
- * must be the owner's own; the object re-derives the origin from the key id.
- */
-export function bindKeyRegistration(env: DoorsEnv, token: ValidatedAccessToken<unknown>,
-                                    keyId: string, entry: KeyEntry,
-                                    session: string | undefined): Bound {
-  const owner = appOwner(token);
-  if (principal(entry.o) !== owner) {
-    throw new Error("a key registration needs the owner's own key");
-  }
-  const base = {
-    owner, caller: owner, origin: apiKeyOrigin(keyId),
-    source: { kind: "api_key", ref: keyId } as const, authenticated_at: entry.c,
-  };
-  return session === undefined ? bound(env, "account", base)
-    : bound(env, "session", { ...base, session });
-}
-
-/**
  * The platform's own binding for `owner`: the reserved caller (`PLATFORM_CALLER`, the
  * contract's), which the owner's object takes only at its admit at sign-up (`authorize.ts`,
  * `admissionSet`, for a verified sign-in whose owner the directory has no record of), at its

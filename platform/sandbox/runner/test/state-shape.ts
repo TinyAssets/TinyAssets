@@ -4,6 +4,8 @@
  * `runner.test.ts`, which reads what the real runner wrote and answered; and the sandbox
  * Worker's, which reads the documents it wrote). Tests only.
  */
+import type { Answer } from "../../../contract/src/doors";
+
 import formats from "../state-format.json" with { type: "json" };
 import protocols from "../protocol.json" with { type: "json" };
 
@@ -35,6 +37,12 @@ export interface Protocol {
   readonly documents: Readonly<Record<"start" | "signin" | "lease", Shape>>;
   /** The answers the Worker reads, by command. */
   readonly answers: Readonly<Record<string, Shape>>;
+  /**
+   * The owner's answers its runner reads, as the doors relay them, by door: each field as the
+   * door table typed it (`contract/src/doors.ts` `Answer`), required where read so. Recorded
+   * from protocol 5 (`docs/decisions/untangle-2026-11/runner-answers.md`).
+   */
+  readonly relayed?: Readonly<Record<string, Answer>>;
 }
 
 export const FORMATS: Readonly<Record<string, Format>> = formats;

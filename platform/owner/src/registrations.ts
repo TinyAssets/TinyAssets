@@ -1,9 +1,9 @@
 /**
- * An MCP client's held agent registration, mirroring a held policy
- * proposal (`policy.ts`).
+ * An outside client's held agent registration, an app's or an API key's, mirroring a held
+ * policy proposal (`policy.ts`).
  *
  * Registering an agent is the owner's act, in its protected session, but the identity an
- * MCP agent registers as is its client's verified origin, which only the client's own
+ * outside agent registers as is its client's verified origin, which only the client's own
  * verified call carries: the owner's browser has no source for it. So the client files a
  * card through its own call (`file`), and the object captures the origin the binder
  * verified, the call's source reference and the grant authority it was admitted under.
@@ -12,10 +12,9 @@
  * answer names the owner app's page of the card (`waitingPage`), which the client hands its
  * user, and the owner is told of it there too (`agent_registration`). The owner reads the
  * cards (`list`) and applies one in session by its id and the digest it was shown (`take`,
- * then `Ledger.register`, in one transaction), or declines it (`decline`). An API key files
- * no card: the owner makes its key, so a scoped key's agent registers at its mint
- * (`keys.ts`), and a full key's from the owner's browser with the key, whose origin the
- * object re-derives from the key id.
+ * then `Ledger.register`, in one transaction), or declines it (`decline`); the card's source
+ * is the one its client's grant was recorded from (`Grants.source`). Filing again, applied,
+ * re-registers the same agent: how an agent changes its delivery.
  *
  * - One pending card per outside identity: filing again replaces it. A card waits until
  *   the owner applies or declines it, its client's grant changes, or the room needs its
@@ -51,9 +50,10 @@ export interface Stamp {
   readonly authenticated_at: number | null;
 }
 
-/** What `standing` answers; the object's grants (`grants.ts`). */
+/** What `standing` and `source` answer; the object's grants (`grants.ts`). */
 interface StandingReader {
   standing(client: unknown, generation: unknown, authenticatedAt: number | null): unknown;
+  source(client: string): Source["kind"];
 }
 
 interface CardLimits {
@@ -88,7 +88,7 @@ export interface Card {
 /** What an applied card registers: the captured identity, source and request. */
 export interface Taken {
   readonly origin: { readonly client: string; readonly family: string };
-  readonly source: { readonly kind: "mcp"; readonly ref: string };
+  readonly source: Source;
   readonly request: Fields;
 }
 
@@ -179,8 +179,8 @@ export class Registrations {
                  "authenticated_at, request, digest, filed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                cardId, origin.client, origin.family, sourceRef, by.generation,
                by.authenticated_at, body, shown, now);
-      this.#notices.add("agent_registration", "An app you connected asks to register an " +
-                        "agent, for a mailbox and rooms: approve or decline it at " +
+      this.#notices.add("agent_registration", "An app or API key of yours asks to " +
+                        "register an agent, for a mailbox and rooms: approve or decline it at " +
                         waitingPage(cardId), now);
       return { card_id: cardId, digest: shown };
     });
@@ -203,7 +203,7 @@ export class Registrations {
     this.#grants.standing(row.client, row.generation, row.authenticated_at);
     this.#sql.exec("DELETE FROM agent_cards WHERE card_id = ?", row.card_id);
     return { origin: { client: row.client, family: row.family },
-             source: { kind: "mcp", ref: row.source_ref },
+             source: { kind: this.#grants.source(row.client), ref: row.source_ref },
              request: JSON.parse(row.request) as Fields };
   }
 
@@ -236,7 +236,7 @@ export interface RegistrationsDoorNeeds {
 
 export const registrationsDoors = Object.freeze({
   /**
-   * An MCP client files the registration of its agent on its own verified call, so the
+   * An outside client files the registration of its agent on its own verified call, so the
    * object captures the origin the binder verified, in the place its grant acts; the owner
    * applies it in session (`registerAgent`) at the page its answer names. Never applied
    * here. Filing again replaces the identity's card.

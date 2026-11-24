@@ -504,7 +504,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "INSERT INTO policy_usage (only, sessions, owner_clients, free_clients, " +
       "pending_proposals, applied_proposals, owner_receipts, agent_receipts, " +
       "refusal_receipts) VALUES (1, 0, 0, 0, 0, 0, 0, 0, 0)",
-    // An MCP client's held registration: filed through the client's
+    // An outside client's held registration: filed through the client's
     // own verified call, so the object captured its origin, and applied by the owner in
     // its session by card id. One pending card per outside identity; it holds its client's
     // grant row and carries the authority it was filed under.

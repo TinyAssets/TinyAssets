@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { source } from "../../contract/src/egress-scope";
+import { source, type UpstreamApi } from "../../contract/src/egress-scope";
 import { credential } from "../src/credential";
 import { failureResponse, upstreamCode } from "../src/failure";
 import { ANTHROPIC, apiKey, GOOGLE, OPENAI } from "./support";
@@ -19,22 +19,26 @@ describe("source", () => {
 
   const bad = (patch: (record: Record<string, unknown>) => unknown) =>
     patch(structuredClone(OPENAI) as unknown as Record<string, unknown>);
+  /** OpenAI's record with its one API's row changed by `row`. */
+  const onApi = (row: Partial<UpstreamApi>) => ({ ...OPENAI, upstream: { ...OPENAI.upstream,
+    apis: [{ ...OPENAI.upstream.apis[0]!, ...row }] } });
   it.each([
     // An API no sandbox call can be metered on: no rules, no source record.
     ...["pi-messages", "azure-openai-responses", "google-vertex"].map((api) =>
-      [`the API ${api}`, bad((r) => ({ ...r, upstream: { ...(r["upstream"] as object), api } }))] as
-        [string, unknown]),
-    ["a base URL off the sealed origins", bad((r) => ({ ...r, upstream: {
-      ...(r["upstream"] as object), base_url: "https://evil.test" } }))],
-    ["an http base URL", bad((r) => ({ ...r, upstream: {
-      ...(r["upstream"] as object), base_url: "http://api.openai.com" } }))],
-    ["an IP-literal base URL", bad(() => ({ upstream: { ...OPENAI.upstream,
-      base_url: "https://10.0.0.1" }, endpoints: [{ origin: "https://10.0.0.1", paths: ["/*"],
-                                                     methods: ["POST"] }] }))],
-    ["an IPv6 origin", bad(() => ({ upstream: { ...OPENAI.upstream, base_url: "https://[::1]" },
-      endpoints: [{ origin: "https://[::1]", paths: ["/*"], methods: ["POST"] }] }))],
-    ["a base URL with user info", bad((r) => ({ ...r, upstream: {
-      ...(r["upstream"] as object), base_url: "https://u:p@api.openai.com" } }))],
+      [`the API ${api}`, onApi({ api })] as [string, unknown]),
+    ["a base URL off the sealed origins", onApi({ base_url: "https://evil.test" })],
+    ["an http base URL", { ...onApi({ base_url: "http://api.openai.com" }),
+      endpoints: [{ origin: "http://api.openai.com", paths: ["/*"], methods: ["POST"] }] }],
+    ["an IP-literal base URL", { ...onApi({ base_url: "https://10.0.0.1" }),
+      endpoints: [{ origin: "https://10.0.0.1", paths: ["/*"], methods: ["POST"] }] }],
+    ["an IPv6 origin", { ...onApi({ base_url: "https://[::1]" }),
+      endpoints: [{ origin: "https://[::1]", paths: ["/*"], methods: ["POST"] }] }],
+    ["a base URL with user info", onApi({ base_url: "https://u:p@api.openai.com" })],
+    // A seal input of one API in the spelling before upstreams named their APIs.
+    ["an upstream of one api and base_url", (() => {
+      const { apis: [only], ...rest } = OPENAI.upstream;
+      return { ...OPENAI, upstream: { ...rest, ...only } };
+    })()],
     ["an origin with a path", bad((r) => ({ ...r, endpoints: [{
       origin: "https://api.openai.com/v1", paths: ["/*"], methods: ["POST"] }] }))],
     ["a wildcard mid-path", bad((r) => ({ ...r, endpoints: [{
@@ -54,16 +58,16 @@ describe("source", () => {
       ...(r["upstream"] as object), provider: "custom" } }))],
     ["an extra field", bad((r) => ({ ...r, note: "x" }))],
     ["an OAuth block on a key", bad((r) => ({ ...r, oauth: {} }))],
-    ...[["an empty query", "https://api.openai.com/v1?"], ["an empty fragment", "https://api.openai.com/v1#"],
+    ...([["an empty query", "https://api.openai.com/v1?"], ["an empty fragment", "https://api.openai.com/v1#"],
         ["a query", "https://api.openai.com/v1?x=1"], ["a fragment", "https://api.openai.com/v1#x"],
         ["an upper-case host", "https://API.openai.com/v1"], ["a trailing-dot host", "https://api.openai.com./v1"],
         ["a dot segment", "https://api.openai.com/x/../v1"], ["a default port", "https://api.openai.com:443/v1"],
-        ["an encoded slash", "https://api.openai.com/v1%2Fx"]]
-      .map(([what, base]) => [`a base URL with ${what}`, bad((r) => ({ ...r, upstream: {
-        ...(r["upstream"] as object), base_url: base } }))] as [string, unknown]),
-    ["a trailing-dot host on both the base URL and its origin", bad((r) => ({
-      upstream: { ...(r["upstream"] as object), base_url: "https://api.openai.com./v1" },
-      endpoints: [{ origin: "https://api.openai.com.", paths: ["/*"], methods: ["POST"] }] }))],
+        ["an encoded slash", "https://api.openai.com/v1%2Fx"]] as const)
+      .map(([what, base]) => [`a base URL with ${what}`, onApi({ base_url: base })] as
+        [string, unknown]),
+    ["a trailing-dot host on both the base URL and its origin", {
+      ...onApi({ base_url: "https://api.openai.com./v1" }),
+      endpoints: [{ origin: "https://api.openai.com.", paths: ["/*"], methods: ["POST"] }] }],
     ["an origin with a trailing slash", bad((r) => ({ ...r, endpoints: [{
       origin: "https://api.openai.com/", paths: ["/*"], methods: ["POST"] }] }))],
     ["a verify URL with an empty query", bad((r) => ({ ...r, upstream: {
@@ -74,7 +78,8 @@ describe("source", () => {
 
   it("accepts a declared custom endpoint with its models", () => {
     const custom = {
-      upstream: { provider: "custom", api: "openai-completions", base_url: "https://llm.example.com/v1",
+      upstream: { provider: "custom",
+                  apis: [{ api: "openai-completions", base_url: "https://llm.example.com/v1" }],
                   auth: { header: "authorization", scheme: "Bearer" },
                   models: [{ id: "local-1", name: "Local", reasoning: false, input: ["text"],
                              contextWindow: 32000, maxTokens: 4096,
@@ -196,9 +201,16 @@ describe("credential", () => {
   it("refuses at open a plaintext sealed on an API the gateway no longer runs", () => {
     const good = apiKey("sk", ANTHROPIC);
     for (const api of ["bedrock-converse-stream", "openai-codex-responses"]) {
-      expect(() => credential({ ...good, upstream: { ...good.upstream, api } }))
+      expect(() => credential({ ...good, upstream: { ...ANTHROPIC.upstream,
+                                                     apis: [{ ...ANTHROPIC.upstream.apis[0]!, api }] } }))
         .toThrow("credential_refused");
     }
+  });
+
+  it("opens a plaintext sealed before upstreams named their APIs as its one row", () => {
+    const good = apiKey("sk", ANTHROPIC);
+    const { apis: [only], ...rest } = ANTHROPIC.upstream;
+    expect(credential({ ...good, upstream: { ...rest, ...only } })).toEqual(good);
   });
 });
 

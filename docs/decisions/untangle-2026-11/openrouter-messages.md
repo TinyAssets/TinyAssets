@@ -192,11 +192,12 @@ design built instead.
 - [ ] live: reconnect OpenRouter on the stage (its blob lacks `/api/v1/messages`), then run one
   call on `anthropic/claude-opus-5.5`. Its receipt says the settle (the bill, the catalog price
   or `unknown`) and whether the dropped betas refuse it.
-- [ ] untangle/apis-contract: once the stage serves only this release's gateway and owner,
+- [x] untangle/apis-contract: once the stage serves only this release's gateway and owner,
   seal and hand every source in the `apis` spelling (`sealedForm`, `handed` go). Once a
   keyring sweep has resealed every blob and the owner has rewritten its stored scopes and
   tagged its stored models, drop the old spelling's readers (`modelUpstream`, `egressScope`)
-  and `ModelRecord.api`'s absence.
+  and `ModelRecord.api`'s absence. The writers went (`apis-contract.md`), and the seal
+  input's old spelling with them; the sweep and the readers are owed there.
 - [x] untangle/run-names-model: the owner names the model of every API-key run (as `auto`
   already does), so a run's base is always its model's API's and `sealedBase`'s first-API
   fallback goes. Today "a record lists first the API its engine's default model speaks" is

@@ -1,7 +1,8 @@
 /**
- * An MCP client's held agent registration: filed on the client's own verified call, so the object
- * captured its origin, in the place its grant acts, and applied or declined by the owner by card
- * id and the digest it was shown, as a held policy proposal is.
+ * An outside client's held agent registration: filed on the client's own verified call, so the
+ * object captured its origin, in the place its grant acts, and applied or declined by the owner by
+ * card id and the digest it was shown, as a held policy proposal is. An API key's card is the
+ * ledger's test (`ledger.test.ts`, "takes an API-key agent's identity from its key's own card").
  */
 import { describe, expect, it } from "vitest";
 
@@ -31,7 +32,7 @@ function inCards<R>(r: Rig, act: (cards: Registrations, grants: Grants) => R): P
   return inStores(r.stub, ({ registrations, grants }) => act(registrations, grants));
 }
 
-describe("an MCP client's agent registration", () => {
+describe("an outside client's agent registration", () => {
   it("is filed on the client's own call and applied by the owner in session, once",
      async () => {
     const r = await rig();
@@ -84,12 +85,9 @@ describe("an MCP client's agent registration", () => {
     })).toEqual([filed.digest, MUSE.client, false]);
   });
 
-  it("is filed only by an MCP client, shown only to the owner, and never changes",
+  it("is filed only by an outside client, shown only to the owner, and never changes",
      async () => {
     const r = await rig();
-    const { origin, source } = await r.keyed("0123456789abcdef");
-    expect((await failure(() => r.stub.registerPropose(r.bind(origin, { source }), REQUEST)))
-      .message).toBe("an API key's agent registers from the owner's browser with the key");
     expect((await failure(() => r.stub.registerPropose(r.bind(null), REQUEST))).message)
       .toBe("only an outside client files its own agent's registration");
     expect((await failure(() => r.stub.registerPropose(r.bind(MUSE), {
@@ -242,8 +240,8 @@ describe("an MCP client's agent registration", () => {
     expect(filed.approve_url).toBe(page);
     expect((await r.table("owner_notices")).filter((row) => row["type"] ===
       "agent_registration").map((row) => row["detail"])).toEqual([
-      `An app you connected asks to register an agent, for a mailbox and rooms: approve or ` +
-      `decline it at ${page}`]);
+      `An app or API key of yours asks to register an agent, for a mailbox and rooms: ` +
+      `approve or decline it at ${page}`]);
   });
 
   it("is declined by the owner only as shown, and then neither applies nor holds its row",

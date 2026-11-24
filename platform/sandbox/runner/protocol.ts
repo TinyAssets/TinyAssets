@@ -9,8 +9,11 @@
  * never changes what a live runner of an older deploy reads.
  *
  * `protocol.json` records each version whole (its commands, exit codes, paths, documents
- * and answers), frozen by digest (`state-format.test.ts`); this file, what the Worker writes
- * and what the runner answers are held to its record. The runner reports its own protocol in
+ * and answers, and the owner's answers its runner reads as the doors relay them, `relayed`,
+ * which the deploy kit holds every owner to while a sandbox Worker speaks it,
+ * `deploy/handed.ts`), frozen by digest (`state-format.test.ts`); this file, what the Worker
+ * writes, what the runner answers and what it reads of the owner's (`guards/answer-reads.test.ts`)
+ * are held to its record. The runner reports its own protocol in
  * `state`, which every protocol answers alike (`state-format.test.ts`), so the Worker reads any
  * runner's protocol and whether anything lives on it. The Worker speaks `SPEAKS`: it launches
  * nothing on a runner speaking another, refusing loudly, and adopts its own over one that
@@ -26,10 +29,15 @@
  */
 import { LEASE_TTL_S } from "../../contract/src/limits";
 
+import speaks from "./speaks.json" with { type: "json" };
+
 /** The protocol this runner speaks. */
 export const PROTOCOL = 5;
-/** The runner protocols the Worker speaks: its runner's, and at most the ones either side. */
-export const SPEAKS: readonly number[] = Object.freeze([5]);
+/**
+ * The runner protocols the Worker speaks: its runner's, and at most the ones either side; data
+ * (`speaks.json`), so the deploy kit reads a serving commit's.
+ */
+export const SPEAKS: readonly number[] = Object.freeze([...speaks]);
 
 /** Every command the runner takes, by its name on the command line. */
 export const COMMAND = Object.freeze({

@@ -221,10 +221,13 @@ async function callers(r: Gated, setup: string[]): Promise<Caller[]> {
       client: k.o.client, source: "api_key", mode, scopes: scopes as never, expected_revision: 0,
       name: "" })));
   }
-  setup.push(await outcome(() => r.stub.registerAgent(
-    r.bind({ origin: KS.o, source: KS.source, session: r.cookie }),
-    { command_center_id: "alpha", display_name: "Key", delivery_method: "pull",
-      recipe_id: null } as never)));
+  setup.push(await outcome(async () => {
+    const { card_id, digest } = await r.stub.registerPropose(
+      r.bind({ origin: KS.o, source: KS.source }),
+      { command_center_id: "alpha", display_name: "Key", delivery_method: "pull",
+        recipe_id: null });
+    return r.stub.registerAgent(r.session(), { card_id, digest });
+  }));
   setup.push(await outcome(async () => {
     const row = (await r.stub.grantList(r.bind())).clients.find((c) => c.client === KS.o.client)!;
     return r.stub.grantSet(r.session(), { client: KS.o.client, source: "api_key", mode: "scoped",
