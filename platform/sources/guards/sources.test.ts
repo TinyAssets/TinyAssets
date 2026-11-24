@@ -300,12 +300,13 @@ describe("the engine records", () => {
       }
     }
     expect(carried.length).toBeGreaterThan(0);
-    // The engine then resolves a run's model by its id alone, and takes that entry's API: so
-    // on each provider it keys, an id is on one API, the one the owner hands the run's base.
+    // The engine then resolves a run's model by its id alone, whatever its case (pi's
+    // `resolveCliModel`), and takes that entry's API: so on each provider it keys, an id is on
+    // one API, the one the owner hands the run's base.
     for (const record of engines.filter((each) => carried.includes(each.id))) {
       for (const provider of Object.keys(record.cli!.api_key_env ?? {})) {
         const ids = builtinProviders().find((each) => each.id === provider)!.getModels()
-          .filter((model) => isModelType(model, "chat")).map((model) => model.id);
+          .filter((model) => isModelType(model, "chat")).map((model) => model.id.toLowerCase());
         expect(ids.filter((id, at) => ids.indexOf(id) !== at), `${record.id} ${provider}`)
           .toEqual([]);
       }

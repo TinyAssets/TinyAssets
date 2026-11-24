@@ -138,7 +138,8 @@ Read against the record, every field the platform uses:
   API. The owner also finds a run's model by id (`launch.ts` `#runApi`) and hands the base of
   that model's API. The two agree only while each id is on one API in its provider. In pi-ai
   1.6.0 that holds on all eight providers pi keys (anthropic 18 chat models, openai 47, google
-  26, openrouter 417, xai 4, groq 7, cerebras 2, mistral 34). The same guard holds it.
+  26, openrouter 417, xai 4, groq 7, cerebras 2, mistral 34). The same guard holds it, ids
+  compared without case, as pi matches them.
 
 ### Against #5852's plan
 
@@ -175,7 +176,13 @@ all nine steps only once #5852 is on `main` too, so the build is dispatched afte
   engines for as long as it lives. No row names its template, and a paused, idle sandbox is
   never retired. So a new pin never reaches an owner's existing sandbox. It needs its own
   research: what E2B reports of a sandbox's template, what a replacement loses (the workspace
-  is synced), and when one is safe (no live run).
+  is synced), and when one is safe (no live run). Until it lands, the live bug stays live for
+  every owner whose sandbox already exists, the stage's among them: the pin and the deploy fix
+  it only for sandboxes made after them, and the template build's pass is on throwaway ones.
+- [ ] live: the stage's pi runs on pi 1.6.0 only once its owner's sandbox is made from the new
+  pin (untangle/template-move, or that sandbox killed at E2B with no run live, an
+  irreversible act the founder approves); then one `auto` pi run on an OpenRouter connection
+  sealed with the Messages API answers.
 - [ ] live: `sandbox-template.yml` (`mode: build`, on `main` once this and #5852 have merged)
   builds `tinyassets-sandbox:sb31f0bce0edffd2a` and passes every standing check, all nine of
   pi's route steps among them. Its `passed-json` and the pin in `sandbox/wrangler.jsonc` land
