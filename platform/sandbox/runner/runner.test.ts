@@ -28,6 +28,7 @@ import { sandboxEnv } from "../../contract/src/egress";
 import { LEASE_TTL_S } from "../../contract/src/limits";
 import { readEvent } from "../../contract/src/run-events";
 import { AUTOMATON_STATES, LIST_BYTES } from "../../contract/src/sync-ignore";
+import { sha256Hex } from "../../contract/src/digest";
 
 import { DECIDE_ENV } from "./decide";
 import { dispatcherCommand, fill, invocation, SYSTEM } from "./engine";
@@ -35,12 +36,13 @@ import { dispatch } from "./hooks";
 import { HEARTBEAT_MS, lineEvent } from "./frames";
 import { fromSchema, outsideConnects, reply, routeVerdict, underPrefix } from "./route";
 import { SCRATCH_ENV } from "./scratch";
-import { COMMAND, HOOK_COMMANDS, hookProgram, inboxCode, JOB_FILES, LOADER, PROTOCOL, RUNNERS,
-         type StartDoc } from "./protocol";
+import { CARRY_FILE, COMMAND, HOOK_COMMANDS, hookProgram, inboxCode, JOB_FILES, LOADER,
+         PROTOCOL, RUNNERS, type StartDoc } from "./protocol";
 import { READS, STATE_FORMAT } from "./state-format";
 import { Doors, POOL_GIDS, POOL_UIDS, probesBundle, runnerBundle, Sandbox, simulated, startDoc,
          SYNC_UID, TA_GID } from "./test/harness";
 import { NODE } from "./test/layout";
+import { openMirror } from "./sync";
 import { SYNC_HOME } from "./users";
 import { FORMATS, PROTOCOLS, sample, shapeProblems } from "./test/state-shape";
 
@@ -2864,5 +2866,131 @@ describe("the sign-in", () => {
     // Every status check ran as a pool user, and none is left running.
     expect(box.seen("claude-code").filter((seen) => seen.argv.includes("status"))
       .every((seen) => POOL_UIDS.includes(seen.uid))).toBe(true);
+  });
+});
+
+describe("a template move's carry", () => {
+  const STORE_FILE = "/var/lib/ta/store/claude-code/.claude/.credentials.json";
+  const SESSION = "/workspace/.sessions/owner/claude-code/projects/p/s1.jsonl";
+  const MIRROR = `${SYNC_HOME}/mirror.db`;
+  const hash = (text: string) => sha256Hex(text);
+  const row = (version: number, text: string) => ({ version, size: Buffer.byteLength(text),
+                                                     mtime_ms: 1, sha256: hash(text),
+                                                     unread: false });
+  let next: Sandbox | undefined;
+  afterEach(() => {
+    next?.remove();
+    next = undefined;
+  });
+
+  /**
+   * The sandbox's disk as runs and syncs leave it: a sign-in in the store and a generation, a
+   * session row, a file as synced, one changed since (its row its base), one never sent, one
+   * removed and not sent, a path the sync-ignore keeps out, and an agent's scratch.
+   */
+  function lived(): void {
+    box.write(STORE_FILE, "{\"token\":\"vendor-secret\"}");
+    chmodSync(box.path(STORE_FILE), 0o600);
+    box.write("/var/lib/ta/generations/claude-code", "2");
+    box.write("/workspace/synced.md", "as synced");
+    box.write("/workspace/notes/changed.md", "changed here");
+    box.write("/workspace/notes/new.md", "never sent");
+    chmodSync(box.path("/workspace/notes/new.md"), 0o755);
+    box.write("/workspace/node_modules/x/index.js", "a cache");
+    box.write("/scratch/main/build.o", "scratch");
+    const synced = statSync(box.path("/workspace/synced.md"));
+    const mirror = openMirror(box.path(MIRROR));
+    mirror.put("/workspace/synced.md", { ...row(1, "as synced"), mtime_ms: synced.mtimeMs });
+    mirror.put("/workspace/notes/changed.md", row(2, "the base"));
+    mirror.put("/workspace/removed.md", row(3, "gone here"));
+    mirror.put(SESSION, row(4, "a session"));
+    mirror.setCursor(9);
+    mirror.close();
+    for (const name of readdirSync(box.path(SYNC_HOME))) {
+      chownSync(box.path(`${SYNC_HOME}/${name}`), SYNC_UID, SYNC_UID);
+    }
+  }
+
+  /** `carry-out` in `from`, its archive copied to `to` as the Worker's copy does, `carry-in`. */
+  function moved(from: Sandbox, to: Sandbox): void {
+    const out = from.runner(COMMAND.carryOut, "owner");
+    expect(out.code, out.why).toBe(0);
+    const answer = JSON.parse(out.out) as { bytes: number; sha256: string };
+    const archive = readFileSync(from.path(CARRY_FILE));
+    expect(answer).toEqual({ bytes: archive.byteLength, sha256: sha256Hex(archive) });
+    writeFileSync(to.path(CARRY_FILE), archive);
+    const placed = to.runner(COMMAND.carryIn, answer.sha256);
+    expect(placed.code, placed.why).toBe(0);
+  }
+
+  it("carries the sign-ins, the session rows and the unsent changes into a new sandbox, and " +
+     "nothing else", () => {
+    expect(box.runner("prepare", "1.1.1.1").code).toBe(0);
+    lived();
+    next = new Sandbox();
+    expect(next.runner("prepare", "1.1.1.1").code).toBe(0);
+    moved(box, next);
+    // The sign-in, root's alone, and its generation.
+    expect(readFileSync(next.path(STORE_FILE), "utf8")).toBe("{\"token\":\"vendor-secret\"}");
+    expect(statSync(next.path(STORE_FILE))).toMatchObject({ uid: 0, mode: 0o100600 });
+    expect(readFileSync(next.path("/var/lib/ta/generations/claude-code"), "utf8")).toBe("2");
+    // The unsent changes, the sync agent's to send, its exec bit kept; nothing synced, kept
+    // out or scratch.
+    expect(readFileSync(next.path("/workspace/notes/changed.md"), "utf8")).toBe("changed here");
+    expect(readFileSync(next.path("/workspace/notes/new.md"), "utf8")).toBe("never sent");
+    expect(statSync(next.path("/workspace/notes/new.md")).mode & 0o777).toBe(0o775);
+    expect(statSync(next.path("/workspace/notes/changed.md")).uid).toBe(SYNC_UID);
+    for (const gone of ["/workspace/synced.md", "/workspace/node_modules", "/scratch/main"]) {
+      expect(existsSync(next.path(gone)), gone).toBe(false);
+    }
+    // The mirror: the changed file's base, the removal not sent, the session's row; its cursor
+    // 0, so the first sync-in reads the rest from the owner's files.
+    const mirror = openMirror(next.path(MIRROR));
+    try {
+      expect(mirror.cursor()).toBe(0);
+      expect(mirror.page("", 100)).toEqual([SESSION, "/workspace/notes/changed.md",
+                                            "/workspace/removed.md"]);
+      expect(mirror.get("/workspace/notes/changed.md")).toEqual(row(2, "the base"));
+    } finally {
+      mirror.close();
+    }
+    expect(statSync(next.path(MIRROR)).uid).toBe(SYNC_UID);
+    // The archive rests in neither: taken in the new one, and dropped at the old one's next
+    // `prepare`, which a move that went no further leaves as it was.
+    expect(existsSync(next.path(CARRY_FILE))).toBe(false);
+    expect(readFileSync(box.path(STORE_FILE), "utf8")).toBe("{\"token\":\"vendor-secret\"}");
+    expect(readFileSync(box.path("/workspace/synced.md"), "utf8")).toBe("as synced");
+    expect(existsSync(box.path(`${SYNC_HOME}/carry`))).toBe(false);
+    expect(box.runner("prepare", "1.1.1.1").code).toBe(0);
+    expect(existsSync(box.path(CARRY_FILE))).toBe(false);
+  });
+
+  it("is refused while a job lives, and into a sandbox that holds a store, or of other bytes",
+     async () => {
+    expect(box.runner("prepare", "1.1.1.1").code).toBe(0);
+    const release = "/tmp/release-carry";
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, holdUntil: release });
+    const start = startDoc(doors, "claude-code", { config: config("claude-code") });
+    box.start(start);
+    expect(box.runner("launch", start.run).code).toBe(0);
+    expect(box.runner(COMMAND.carryOut, "owner").code).toBe(3);
+    expect(existsSync(box.path(CARRY_FILE))).toBe(false);
+    box.write(release, "");
+    await doors.ended_(25_000, start.run);
+    const out = box.runner(COMMAND.carryOut, "owner");
+    expect(out.code, out.why).toBe(0);
+    const { sha256 } = JSON.parse(out.out) as { sha256: string };
+    next = new Sandbox();
+    expect(next.runner("prepare", "1.1.1.1").code).toBe(0);
+    // Other bytes than the archive named: refused, nothing placed.
+    writeFileSync(next.path(CARRY_FILE), "not the carry");
+    expect(next.runner(COMMAND.carryIn, sha256).code).toBe(1);
+    expect(existsSync(next.path("/var/lib/ta/store"))).toBe(false);
+    // A sandbox that holds a store already is no new one: refused, its store as it was.
+    next.write("/var/lib/ta/store/codex/auth.json", "its own");
+    writeFileSync(next.path(CARRY_FILE), readFileSync(box.path(CARRY_FILE)));
+    expect(next.runner(COMMAND.carryIn, sha256).code).toBe(1);
+    expect(readdirSync(next.path("/var/lib/ta/store"))).toEqual(["codex"]);
+    expect(readFileSync(next.path("/var/lib/ta/store/codex/auth.json"), "utf8")).toBe("its own");
   });
 });

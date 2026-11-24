@@ -132,6 +132,17 @@ export class E2b extends E2bTransport {
     return total !== null && /^[0-9]{1,9}$/.test(total) ? Number(total) : null;
   }
 
+  /**
+   * The file at `path` in `from` written at `path` in `to`, `bytes` long, through envd both
+   * ways as one stream: never whole in this isolate's memory, nor kept anywhere. One that is
+   * not that long fails the upload.
+   */
+  async copy(from: Handle, to: Handle, path: string, bytes: number): Promise<void> {
+    const { readable, writable } = new FixedLengthStream(bytes);
+    const read = await this.download(from, path);
+    await Promise.all([read.pipeTo(writable), this.upload(to, path, readable)]);
+  }
+
   /** Every sandbox of the team, running or paused, whose metadata holds `key`=`value`: the ids. */
   async list(key: string, value: string): Promise<string[]> {
     const listed = await this.sandboxes(`${encodeURIComponent(key)}=${encodeURIComponent(value)}`);

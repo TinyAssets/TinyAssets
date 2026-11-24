@@ -32,7 +32,7 @@ import { LEASE_TTL_S } from "../../contract/src/limits";
 import speaks from "./speaks.json" with { type: "json" };
 
 /** The protocol this runner speaks. */
-export const PROTOCOL = 5;
+export const PROTOCOL = 6;
 /**
  * The runner protocols the Worker speaks: its runner's, and at most the ones either side; data
  * (`speaks.json`), so the deploy kit reads a serving commit's.
@@ -60,17 +60,26 @@ export const COMMAND = Object.freeze({
   sync: "sync",
   decide: "decide",
   hooks: "hooks",
+  carryOut: "carry-out",
+  carryIn: "carry-in",
 } as const);
 
 export type Command = (typeof COMMAND)[keyof typeof COMMAND];
 
-/** What the Worker sends. */
+/** What the Worker sends to a runner of any protocol it speaks. */
 export const WORKER_COMMANDS = Object.freeze([
   COMMAND.prepare, COMMAND.adopt, COMMAND.signinCheck, COMMAND.launch, COMMAND.cancel,
   COMMAND.state, COMMAND.quietWait, COMMAND.renewWait, COMMAND.renewed, COMMAND.recover,
   COMMAND.loginLaunch, COMMAND.loginInput, COMMAND.loginDrop, COMMAND.loginCancel,
 ] as const);
-export type WorkerCommand = (typeof WORKER_COMMANDS)[number];
+/**
+ * What the Worker sends to its own runner alone, the one it ships (`control.ts` `#own`): a
+ * template move's carry (`carry-out` in the sandbox it leaves, `carry-in` in the one it makes),
+ * which only a sandbox nothing lives in takes, so never one whose runner it keeps.
+ */
+export const OWN_COMMANDS = Object.freeze([COMMAND.carryOut, COMMAND.carryIn] as const);
+export type OwnCommand = (typeof OWN_COMMANDS)[number];
+export type WorkerCommand = (typeof WORKER_COMMANDS)[number] | OwnCommand;
 
 /**
  * The commands a run's CLI runs on its events and calls, the hook helper and the agent's
@@ -133,6 +142,11 @@ export const INBOX = `${STATE_DIR}/inbox`;
 export const CODE_SUFFIX = ".code";
 /** The lease's secrets, as the start or sign-in that opened it hands them (`LeaseFile`). */
 export const LEASE_FILE = `${STATE_DIR}/lease.json`;
+/**
+ * A template move's carry (`carry-out`'s archive, `carry-in`'s upload): what lives in one
+ * sandbox alone, on its way to the next, in the root-only state directory.
+ */
+export const CARRY_FILE = `${STATE_DIR}/carry.tar`;
 
 /** A runner's upload, by its digest. */
 export function incoming(digest: string): string {
@@ -265,14 +279,22 @@ export interface QuietAnswer {
   readonly quiet: boolean;
 }
 
+/** `carry-out`'s answer: the archive at `CARRY_FILE`, its size and its SHA-256. */
+export interface CarryAnswer {
+  readonly bytes: number;
+  readonly sha256: string;
+}
+
 /** An answer's fields, each with its JSON type. */
-export type AnswerFields<T> = Readonly<Record<keyof T, "number" | "boolean">>;
+export type AnswerFields<T> = Readonly<Record<keyof T, "number" | "boolean" | "string">>;
 
 /** The answers the Worker reads, by command: each field's JSON type, which it holds them to. */
 export const ANSWERS: {
   readonly [COMMAND.state]: AnswerFields<StateAnswer>;
   readonly [COMMAND.quietWait]: AnswerFields<QuietAnswer>;
+  readonly [COMMAND.carryOut]: AnswerFields<CarryAnswer>;
 } = Object.freeze({
   [COMMAND.state]: Object.freeze({ live: "number", quiet: "boolean", protocol: "number" }),
   [COMMAND.quietWait]: Object.freeze({ live: "number", quiet: "boolean" }),
+  [COMMAND.carryOut]: Object.freeze({ bytes: "number", sha256: "string" }),
 });

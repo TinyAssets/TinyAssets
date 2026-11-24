@@ -102,10 +102,10 @@ import {
 
 import { install } from "../e2b/install";
 import type { Exec, Handle } from "../e2b/transport";
-import { type AnswerFields, ANSWERS, COMMAND, COMMAND_MS, EXIT, inboxCode, inboxDoc,
-         type JobKind, JOBS, LEASE_FILE, type LeaseFile, LOADER, type QuietAnswer, SPEAKS,
-         type SigninDoc, type StartDoc, type StateAnswer,
-         type WorkerCommand } from "../runner/protocol";
+import { type AnswerFields, ANSWERS, CARRY_FILE, type CarryAnswer, COMMAND, COMMAND_MS, EXIT,
+         inboxCode, inboxDoc, type JobKind, JOBS, LEASE_FILE, type LeaseFile, LOADER,
+         type OwnCommand, type QuietAnswer, SPEAKS, type SigninDoc, type StartDoc,
+         type StateAnswer, type WorkerCommand } from "../runner/protocol";
 
 import { type E2b, noRoom, runtimeE2b, type SandboxInfo } from "./e2b";
 import { runnerBytes, runnerDigest } from "./runner-bytes";
@@ -383,6 +383,13 @@ function ownerTag(owner: string): string {
   return sha256Hex(`ta_owner\n${owner}`).slice(0, 32);
 }
 
+/**
+ * The metadata naming the template a sandbox was made from (`E2B_TEMPLATE` then), read back
+ * from E2B's own record of it (`info`): a sandbox on another is moved (`#moved`). One made
+ * before any named it is on another.
+ */
+const TEMPLATE_METADATA = "ta_template";
+
 function handleOf(found: SandboxInfo, row: { runner: string }): Box | null {
   return found.state === "running" && found.envdAccessToken !== null
     ? { sandboxID: found.sandboxID, envdAccessToken: found.envdAccessToken, runner: row.runner }
@@ -620,6 +627,18 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     return answered(argv[0], await this.#exec(box, argv, timeoutMs));
   }
 
+  /**
+   * A command only this Worker's own runner takes (`OWN_COMMANDS`, a move's carry): never sent
+   * to a runner it keeps, whatever that one speaks.
+   */
+  async #own(box: Box, argv: readonly [OwnCommand, ...string[]]):
+      Promise<{ code: number; out: string }> {
+    if (box.runner !== this.#digest) {
+      throw new Error(`${argv[0]} goes to this Worker's own runner alone`);
+    }
+    return this.#run(box, argv);
+  }
+
   async #install(handle: Handle): Promise<void> {
     await install(this.#e2b(), handle, runnerBytes(), this.#digest, COMMAND_MS);
   }
@@ -800,7 +819,8 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         // `prepare`, the row naming it, which drops the other runners' bytes.
         await this.#prepare(box, network ?? liveNetwork(found!));
       }
-      return { handle: box };
+      return { handle: network === null ? box
+        : await this.#moved(authority, box, found!, network, ceilings, route) };
     }
     if (found === null && network === null) {
       return "lost";  // a joining run's sandbox is gone: nothing configures a new one
@@ -831,20 +851,14 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         const handle = await this.#resume(row!, found, network, ceilings);
         if (handle !== null) {
           await this.#took();
-          return { handle };
+          return { handle: network === null ? handle
+            : await this.#moved(authority, handle, found, network, ceilings, route) };
         }
         if (network === null) {
           return "lost";
         }
       }
-      const created = await e2b.create({
-        template: this.env.E2B_TEMPLATE, timeoutS: ceilings.runtime_ceiling_s,
-        network: network!,
-        // An opaque name, so E2B's own list shows whose it is to us and to no one else.
-        metadata: { ta_owner: ownerTag(this.#owner),
-                    // Sealed, so only the doors open it: the route of E2B's lifecycle events.
-                    [ROUTE_METADATA]: route },
-      });
+      const created = await this.#create(network!, ceilings, route);
       const info = await e2b.info(created.sandboxID);
       const digest = this.#digest;
       // One E2B no longer has is forgotten as the look forgets it: nothing of it, its window
@@ -866,6 +880,91 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       }
       throw error;
     }
+  }
+
+  /** A new sandbox of the authority's from the pinned template, with `network`. */
+  async #create(network: NetworkDocument, ceilings: SandboxCeilings, route: string):
+      Promise<Handle> {
+    return this.#e2b().create({
+      template: this.env.E2B_TEMPLATE, timeoutS: ceilings.runtime_ceiling_s, network,
+      // An opaque name, so E2B's own list shows whose it is to us and to no one else.
+      metadata: { ta_owner: ownerTag(this.#owner),
+                  // Sealed, so only the doors open it: the route of E2B's lifecycle events.
+                  [ROUTE_METADATA]: route,
+                  [TEMPLATE_METADATA]: this.env.E2B_TEMPLATE },
+    });
+  }
+
+  /**
+   * The authority's sandbox (`box`, running on this Worker's runner, as E2B told of it before:
+   * `found`) moved to the pinned template when it is on another and nothing lives in it
+   * (`untangle-2026-11/template-move.md`): its runner packs what lives in it alone
+   * (`carry-out`), a new sandbox is made from the pin with the opening start's `network`, its
+   * runner installed and prepared, the carry copied across (`copy`, one stream through envd)
+   * and put in place (`carry-in`), and the old sandbox killed; only then does the row name the
+   * new one. The new one, or `box` as it was: while anything lives in it (it moves at a later
+   * idle start), on a runner this Worker keeps rather than ships, past E2B's count, or when
+   * any step before the kill fails (logged `sandbox_move_failed`; the new sandbox killed, the
+   * start goes on in the old one, untouched). A move never makes a run wait that the old
+   * sandbox can serve, so it takes no turn in the line.
+   */
+  async #moved(authority: string, box: Box, found: SandboxInfo, network: NetworkDocument,
+               ceilings: SandboxCeilings, route: string): Promise<Box> {
+    const from = found.metadata[TEMPLATE_METADATA] ?? null;
+    if (from === this.env.E2B_TEMPLATE || box.runner !== this.#digest) {
+      return box;
+    }
+    const e2b = this.#e2b();
+    const out = await this.#own(box, [COMMAND.carryOut, authority]);
+    if (out.code === EXIT.no) {
+      return box;
+    }
+    const carry = answerOf<CarryAnswer>(out.out, ANSWERS[COMMAND.carryOut]);
+    const count = await e2b.running();
+    if (count !== null && count + 1 > ceilings.concurrency_ceiling) {
+      console.error(`sandbox_move_failed: sandbox ${box.sandboxID} stays on ${String(from)}: ` +
+                    `E2B runs ${count} sandboxes, and the move would make one more for a moment`);
+      return box;
+    }
+    let made: Box | null = null;
+    let endAt: number;
+    try {
+      made = { ...await this.#create(network, ceilings, route), runner: this.#digest };
+      await this.#install(made);
+      await this.#run(made, [COMMAND.prepare, ...network.dnsServers]);
+      await e2b.copy(box, made, CARRY_FILE, carry.bytes);
+      if ((await this.#own(made, [COMMAND.carryIn, carry.sha256])).code !== EXIT.ok) {
+        throw new Error("the new sandbox's runner did not take the carry");
+      }
+      const info = await e2b.info(made.sandboxID);
+      if (info === null) {
+        throw new Error(`the new sandbox ${made.sandboxID} is gone`);
+      }
+      endAt = Date.parse(info.endAt);
+      await e2b.kill(box.sandboxID);
+    } catch (error) {
+      if (made !== null) {
+        await e2b.kill(made.sandboxID).catch((killed: unknown) => {
+          console.error(`sandbox_move_failed: the new sandbox ${made!.sandboxID} could not be ` +
+                        "killed; its owner's erasure, or E2B's own timeout, ends it", killed);
+        });
+      }
+      if (refusalOf(error) !== null) {
+        throw error;
+      }
+      console.error(`sandbox_move_failed: sandbox ${box.sandboxID} stays on ${String(from)}, ` +
+                    "and is moved at its next idle start", error);
+      return box;
+    }
+    // One gone is forgotten as the look forgets it: its time logged, its runs, its held slot.
+    this.#forget(authority);
+    this.#sql.exec("INSERT INTO sandboxes (authority, sandbox_id, lease_id, end_at, runner, " +
+                     "prepared) VALUES (?, ?, NULL, ?, ?, 1)", authority, made.sandboxID, endAt,
+                   made.runner);
+    this.#log(authority, "start");
+    console.log(`sandbox_moved: sandbox ${box.sandboxID} on ${String(from)} is now ${
+      made.sandboxID} on ${this.env.E2B_TEMPLATE}`);
+    return made;
   }
 
   async start(start: SandboxStart): Promise<Started> {

@@ -22,9 +22,9 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { canonical } from "../../contract/src/canonical";
-import { ANSWERS, COMMAND, EXIT, inboxCode, inboxDoc, incoming, INSTALL, INTERNAL_COMMANDS,
-         JOBS, LEASE_FILE, LOADER, PROTOCOL, RUNNERS, SPEAKS, STATE_DIR,
-         WORKER_COMMANDS } from "./protocol";
+import { ANSWERS, CARRY_FILE, COMMAND, EXIT, inboxCode, inboxDoc, incoming, INSTALL,
+         INTERNAL_COMMANDS, JOBS, LEASE_FILE, LOADER, OWN_COMMANDS, PROTOCOL, RUNNERS, SPEAKS,
+         STATE_DIR, WORKER_COMMANDS } from "./protocol";
 import { checkFormat, dropRunners, type FormatRule, formatStep, READS,
          STATE_FORMAT } from "./state-format";
 import { openMirror } from "./sync";
@@ -43,7 +43,8 @@ const FROZEN = Object.freeze({
                "2": "c38091d43b77abc01243f22e52285771355d6680a9d0ae3cce9ac438c5440fc0",
                "3": "f46e144d6b9eaa1cd38a394722a8135501755a85a5e79020246a06957a79d5ff",
                "4": "1d3c4ee19355036e58b6ea8e2a9cc35adc6bfce46bd29eabe9e0e17769b5932b",
-               "5": "84ef8b5bc0a4bfbe04a6e4e01b3104e2d0ad3ea48bf14bc0912a1ec0a221d8fb" },
+               "5": "84ef8b5bc0a4bfbe04a6e4e01b3104e2d0ad3ea48bf14bc0912a1ec0a221d8fb",
+               "6": "579207d93a3d3ade438cecbc625c37f57f52ce65c4b8bd695d08238721a7fd0f" },
 });
 
 const digest = (value: unknown) => createHash("sha256").update(canonical(value)).digest("hex");
@@ -214,7 +215,8 @@ describe("the Worker's protocol with the runner", () => {
     const named = Object.values(COMMAND);
     expect(new Set(named).size).toBe(named.length);
     // Each the runner takes is the Worker's or the runner's own: one of them alone.
-    expect([...WORKER_COMMANDS, ...INTERNAL_COMMANDS].sort()).toEqual([...named].sort());
+    expect([...WORKER_COMMANDS, ...OWN_COMMANDS, ...INTERNAL_COMMANDS].sort())
+      .toEqual([...named].sort());
     expect([...named].sort()).toEqual([...PROTOCOLS[String(PROTOCOL)]!.commands].sort());
   });
 
@@ -233,11 +235,15 @@ describe("the Worker's protocol with the runner", () => {
     }
   });
 
-  it("has the Worker send only commands every protocol it speaks records", () => {
+  it("has the Worker send only commands every protocol it speaks records, but to its own runner",
+     () => {
     for (const protocol of SPEAKS) {
       expect(WORKER_COMMANDS.filter((command) =>
         !PROTOCOLS[String(protocol)]!.commands.includes(command))).toEqual([]);
     }
+    // What it sends its own runner alone, that runner's protocol records.
+    expect(OWN_COMMANDS.filter((command) =>
+      !PROTOCOLS[String(PROTOCOL)]!.commands.includes(command))).toEqual([]);
   });
 
   it("names the exit codes, the paths and the answers its protocol's record names", () => {
@@ -245,7 +251,8 @@ describe("the Worker's protocol with the runner", () => {
     expect(EXIT).toEqual(record.exit);
     expect({ loader: LOADER, install: INSTALL, runners: RUNNERS, state: STATE_DIR,
              incoming: incoming("<digest>"), inbox_doc: inboxDoc("<id>"),
-             inbox_code: inboxCode("<id>"), lease: LEASE_FILE }).toEqual(record.paths);
+             inbox_code: inboxCode("<id>"), lease: LEASE_FILE, carry: CARRY_FILE })
+      .toEqual(record.paths);
     expect(ANSWERS).toEqual(record.answers);
   });
 

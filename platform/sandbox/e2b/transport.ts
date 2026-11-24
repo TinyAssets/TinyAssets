@@ -13,7 +13,7 @@
  * - a sandbox's own daemon, envd, on the shared sandbox host `sandbox.e2b.app`, routed by
  *   `E2b-Sandbox-Id` and `E2b-Sandbox-Port`, by the sandbox's envd token
  *   (`X-Access-Token`), as root (HTTP Basic): a file upload (`POST /files`, the bytes as
- *   `application/octet-stream`) and a process (`/process.Process/Start`, a Connect server
+ *   `application/octet-stream`), its read (`GET /files`, the bytes as stored) and a process (`/process.Process/Start`, a Connect server
  *   stream of `application/connect+json` envelopes: the start event with the pid, stdout and
  *   stderr in base64, then the end event with the exit code). A process the stream is dropped
  *   from keeps running (probed); the runner's own launch daemonizes anyway, so nothing relies
@@ -231,8 +231,12 @@ export class E2bTransport {
     };
   }
 
-  /** Write `bytes` at `path` as root (parents made); the file is replaced whole. */
-  async upload(handle: Handle, path: string, bytes: Uint8Array): Promise<void> {
+  /**
+   * Write `bytes` at `path` as root (parents made); the file is replaced whole. A stream is
+   * sent as it comes, of the length it was made with (the Worker's `copy`).
+   */
+  async upload(handle: Handle, path: string, bytes: Uint8Array | ReadableStream<Uint8Array>):
+      Promise<void> {
     if (!path.startsWith("/") || path.includes("\0")) {
       throw new Error("an upload's path is absolute");
     }
@@ -246,6 +250,20 @@ export class E2bTransport {
     if (response.status !== 200) {
       throw new E2bError(response.status, null, `envd's upload answered ${response.status}`);
     }
+  }
+
+  /** The file at `path`, read as root: its bytes as envd streams them. */
+  async download(handle: Handle, path: string): Promise<ReadableStream<Uint8Array>> {
+    if (!path.startsWith("/") || path.includes("\0")) {
+      throw new Error("a download's path is absolute");
+    }
+    const response = await this.#fetch(`${E2B_ENVD}/files?path=${encodeURIComponent(path)
+      }&username=root`, { method: "GET", headers: this.#envd(handle) });
+    if (response.status !== 200 || response.body === null) {
+      await response.arrayBuffer();
+      throw new E2bError(response.status, null, `envd's download answered ${response.status}`);
+    }
+    return response.body;
   }
 
   /**

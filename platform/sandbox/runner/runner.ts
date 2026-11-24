@@ -68,11 +68,11 @@
  * It takes no probe: the template's standing checks are a bundle of their own (`probes.ts`),
  * which nothing here imports.
  */
-import { HEX64, RUN_ID, SIGNIN_ID } from "../../contract/src/ids";
+import { AUTHORITY, HEX64, RUN_ID, SIGNIN_ID } from "../../contract/src/ids";
 import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync,
-         renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { chmodSync, closeSync, existsSync, lchownSync, lstatSync, mkdirSync, mkdtempSync,
+         openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, relative } from "node:path";
 import { createConnection, createServer, type Server } from "node:net";
 import { createInterface } from "node:readline";
 
@@ -81,7 +81,7 @@ import type { Decide, Definition, DefinitionHooks } from "../../sources/src/sche
 import { type Served, served, signsIn } from "../../sources/src/served";
 import { SIGNIN_REFUSALS, type SigninRefusal, signinShape } from "../../sources/src/signin";
 import { DECIDE_HEADER, decideDoor, RUNNER_HEADER } from "../../contract/src/egress";
-import { SIGNIN_PASTE_MAX } from "../../contract/src/limits";
+import { CHUNK_BYTES, SIGNIN_PASTE_MAX } from "../../contract/src/limits";
 import { AGENTS_DIR, WORKSPACE } from "../../contract/src/paths";
 import { FRAME_UNITS_MAX, readEvent } from "../../contract/src/run-events";
 
@@ -89,7 +89,7 @@ import { binPath, dispatcherArgv, HOMES, type Invocation, invocation, isKept,
          keptPaths, resumePaths } from "./engine";
 import { DECIDE_ENV, DECIDE_MS, helperArgv, helperCommand, hookTools } from "./decide";
 import { FLUSH_MS, HEARTBEAT_MS, lineEvent, Outbox, Poster } from "./frames";
-import { remove, safeDirs, safeRead, safeWrite } from "./fsafe";
+import { remove, safeDirs, safePieces, safeRead, safeWrite } from "./fsafe";
 import { alive, withLock } from "./pid-lock";
 import { ancestorEnvFile, definitionRefusal, envScanReach, homeEnvFile, projectEnvFile,
          projectEnvRefusal, secretAtoms } from "./guards";
@@ -101,17 +101,18 @@ import { credentialShaped, loginArgv, onTerminal, plain, type Prompt, prompted,
          statesHold } from "./login";
 import { AUTOMATON_STATES, LIST_BYTES } from "../../contract/src/sync-ignore";
 import {
-  type Fetch, fetchSessions, type Held, keepSeen, openMirror, SESSIONS, SESSIONS_SEEN,
+  carryIn, carryOut, type Fetch, fetchSessions, type Held, keepSeen, openMirror, SESSIONS,
+  SESSIONS_SEEN,
   stageSessions, stillHashed, storeSessions, type StoreSession, SyncClient, SyncFenced, syncIn,
   syncOut, type SyncReport, tookSessions,
 } from "./sync";
-import { sha256Hex } from "../../contract/src/digest";
-import { CODE_SUFFIX, type Command, COMMAND, COMMAND_MS, EXIT, type HookCommand, hookProgram,
-         inboxCode, inboxDoc, JOB_FILES, type JobKind, JOBS, INBOX, LEASE_FILE,
-         type LeaseFile, PROTOCOL, type QuietAnswer, RUNNERS, type SigninDoc, type StartDoc,
-         type StateAnswer, STATE_DIR } from "./protocol";
-import { type Bounded, dropHome, engineEnv, homeOf, keepHome, KILLED_BY_TERM, loginFiles,
-         nextGeneration, readJson, record, shared, sortedWalk, spawnBounded, STORE,
+import { sha256Hex, sha256Stream } from "../../contract/src/digest";
+import { CARRY_FILE, type CarryAnswer, CODE_SUFFIX, type Command, COMMAND, COMMAND_MS, EXIT,
+         type HookCommand, hookProgram, inboxCode, inboxDoc, JOB_FILES, type JobKind, JOBS,
+         INBOX, LEASE_FILE, type LeaseFile, PROTOCOL, type QuietAnswer, RUNNERS,
+         type SigninDoc, type StartDoc, type StateAnswer, STATE_DIR } from "./protocol";
+import { type Bounded, dropHome, engineEnv, GENERATIONS, homeOf, keepHome, KILLED_BY_TERM,
+         loginFiles, nextGeneration, readJson, record, shared, sortedWalk, spawnBounded, STORE,
          systemOf, withRunUser, withStore } from "./session";
 import { checkFormat, dropRunners } from "./state-format";
 import { asUser, E2B_USER, killAll, POOL_PREFIX, SYNC_HOME, SYNC_USER, user } from "./users";
@@ -546,6 +547,9 @@ function prepare(servers: readonly string[]): number {
   checkFormat(STATE, CACHES);
   dropOtherRunners();
   keepReserve(RESERVE);
+  // A move's archive is never left at rest past its move: one a move that went no further
+  // left goes at the sandbox's next boot or resume.
+  remove(CARRY_FILE);
   // A pasted code is never left at rest: one a pause or a failed hand-over left
   // in the inbox goes at every boot and resume, before anything else reads it.
   const inbox = INBOX;
@@ -686,6 +690,129 @@ function adopt(): number {
   return OK;
 }
 
+// -- a template move's carry ------------------------------------------------------------
+
+/**
+ * What a template move carries of the state directory, each whole: the engines' stores (their
+ * sign-ins, which only this sandbox holds, and their session copies) and their generations.
+ * The workspace's part is the sync agent's (`sync.ts` `carryOut`). Nothing else of the disk
+ * lives in this sandbox alone: the jobs' states are read only while a job lives, the caches
+ * and the agents' scratch are caches, and every other file is the owner's or the image's.
+ */
+const CARRIED = Object.freeze([STORE, GENERATIONS]);
+
+/** A carry command's bound: the Worker's own deadline for it. */
+const carryDeadline = () => new Promise((resolve) => setTimeout(resolve, COMMAND_MS).unref());
+
+/** A file of the state directory's SHA-256, read a piece at a time. */
+async function fileSha(path: string): Promise<string> {
+  const hash = sha256Stream();
+  if (!await safePieces(STATE, path, CHUNK_BYTES, (piece) => { hash.update(piece); })) {
+    throw new Error(`${path} is no regular file`);
+  }
+  return hash.digest("hex");
+}
+
+/**
+ * A tree unpacked from a carry held to what a carry holds, directories and regular files
+ * alone (a link or a node refused, loudly), each given to `owner`.
+ */
+function ownTree(dir: string, owner: { uid: number; gid: number }): void {
+  const stat = lstatSync(dir);
+  if (!stat.isDirectory() && !stat.isFile()) {
+    throw new Error(`the carry holds ${dir}, neither a directory nor a regular file`);
+  }
+  lchownSync(dir, owner.uid, owner.gid);
+  if (stat.isDirectory()) {
+    for (const name of readdirSync(dir)) {
+      ownTree(join(dir, name), owner);
+    }
+  }
+}
+
+/**
+ * `carry-out <authority>` (a template move, `control.ts` `#move`, in the sandbox it leaves):
+ * what lives in this sandbox alone packed into `CARRY_FILE`, root's alone, while nothing
+ * lives (3 otherwise): `CARRIED`, and the workspace's carry (`carryOut`, by the sync agent as
+ * itself, for that authority's sandbox); answered by the archive's size and SHA-256. Nothing
+ * else changes, so a move that goes no further leaves the sandbox as it was, and its next
+ * `prepare` drops the archive.
+ */
+async function carryOutCommand(authority: string): Promise<number> {
+  if (!AUTHORITY.test(authority)) {
+    throw new Error("carry-out takes the sandbox's authority");
+  }
+  if (livingJobs() > 0) {
+    process.stderr.write("ta-runner: a run or a sign-in lives; nothing is carried\n");
+    return NO;
+  }
+  remove(SYNC_CARRY);
+  remove(CARRY_FILE);
+  for (const dir of CARRIED) {
+    safeDirs("/", dir, 0o700);
+  }
+  try {
+    await syncAgent({ direction: "carry-out", authority }, carryDeadline());
+    const packed = spawnSync("tar", ["-c", "-f", CARRY_FILE, "-C", STATE,
+                                     ...CARRIED.map((dir) => relative(STATE, dir)), "-C",
+                                     SYNC_HOME, relative(SYNC_HOME, SYNC_CARRY)],
+                             { encoding: "utf8" });
+    if (packed.status !== 0) {
+      remove(CARRY_FILE);
+      throw new Error(`the carry could not be packed (${String(packed.status)}): ${packed.stderr}`);
+    }
+  } finally {
+    remove(SYNC_CARRY);
+  }
+  chmodSync(CARRY_FILE, 0o600);
+  return answer({ bytes: lstatSync(CARRY_FILE).size, sha256: await fileSha(CARRY_FILE) });
+}
+
+/**
+ * `carry-in <sha256>` (a template move, in the sandbox it makes, once prepared): the archive
+ * the Worker put at `CARRY_FILE` checked to be those bytes, unpacked root's into a directory
+ * of root's own, held to what a carry holds (`ownTree`), then `CARRIED` put in place and the
+ * workspace's carry handed to the sync agent (`carryIn`). Refused, changing nothing, in a
+ * sandbox that already holds a store or a generation (or a mirror, `carryIn`): a carry goes
+ * into a new sandbox only. The archive and what was unpacked go whatever follows.
+ */
+async function carryInCommand(sha: string): Promise<number> {
+  if (!HEX64.test(sha)) {
+    throw new Error("carry-in takes the carry's sha256");
+  }
+  if (CARRIED.some((dir) => existsSync(dir))) {
+    throw new Error("this sandbox holds a store already: a carry goes into a new sandbox only");
+  }
+  const stage = mkdtempSync(`${STATE}/.carry-`);
+  try {
+    if (await fileSha(CARRY_FILE) !== sha) {
+      throw new Error(`the carry uploaded is not ${sha}`);
+    }
+    const unpacked = spawnSync("tar", ["-x", "-f", CARRY_FILE, "-C", stage, "--no-same-owner"],
+                               { encoding: "utf8" });
+    if (unpacked.status !== 0) {
+      throw new Error(`the carry could not be unpacked (${String(unpacked.status)}): ${
+        unpacked.stderr}`);
+    }
+    const workspace = join(stage, relative(SYNC_HOME, SYNC_CARRY));
+    for (const dir of CARRIED) {
+      ownTree(join(stage, relative(STATE, dir)), { uid: 0, gid: 0 });
+    }
+    ownTree(workspace, user(SYNC_USER));
+    for (const dir of CARRIED) {
+      renameSync(join(stage, relative(STATE, dir)), dir);
+    }
+    remove(SYNC_CARRY);
+    renameSync(workspace, SYNC_CARRY);
+    await syncAgent({ direction: "carry-in" }, carryDeadline());
+  } finally {
+    remove(stage);
+    remove(CARRY_FILE);
+    remove(SYNC_CARRY);
+  }
+  return OK;
+}
+
 // -- launch, cancel, state, renewal ---------------------------------------------------
 
 /**
@@ -699,7 +826,7 @@ function quiet(state: RunState): boolean {
     || state.last_kind === "result" || state.last_kind === "usage";
 }
 
-function answer(value: StateAnswer | QuietAnswer): number {
+function answer(value: StateAnswer | QuietAnswer | CarryAnswer): number {
   process.stdout.write(JSON.stringify(value));
   return OK;
 }
@@ -784,6 +911,18 @@ interface SyncJob {
   readonly took?: { readonly fetched: readonly Fetch[]; readonly cursor: number };
 }
 
+/**
+ * A template move's part of the workspace, by the sync agent under its lock, with no lease
+ * (nothing lives): `carry-out` writes it into its own `carry` directory (`sync.ts`
+ * `carryOut`), `carry-in` puts the one found there in place (`carryIn`).
+ */
+type CarryJob = { readonly direction: "carry-out"; readonly authority: string }
+  | { readonly direction: "carry-in" };
+
+/** The sync agent's mirror, and a move's carry in its own directory. */
+const SYNC_MIRROR = `${SYNC_HOME}/mirror.db`;
+const SYNC_CARRY = `${SYNC_HOME}/carry`;
+
 /** The sync agent's report (null when it printed none) and its exit. */
 interface SyncAnswer {
   readonly report: Record<string, unknown> | null;
@@ -793,11 +932,12 @@ interface SyncAnswer {
 /**
  * The sync agent run as `ta-sync`, its job on stdin; its report, or its refusal. It runs
  * as a child the runner waits on without blocking, so the run's heartbeat goes on posting
- * (each post renews the lease) however long a sync takes; stopped, and thrown, once the
- * job's (`work`) heartbeat has lapsed: its lease is over, so no sync of it lands, and one
- * that cannot reach the object would wait on it for ever.
+ * (each post renews the lease) however long a sync takes; stopped, and thrown, once `lapse`
+ * comes: a run's job's heartbeat lapsed (its lease is over, so no sync of it lands, and one
+ * that cannot reach the object would wait on it for ever), or a carry's command deadline.
  */
-async function syncAgent(job: SyncJob, work: Job): Promise<SyncAnswer> {
+async function syncAgent(job: SyncJob | CarryJob, lapse: Promise<unknown>):
+    Promise<SyncAnswer> {
   const as = user(SYNC_USER);
   const argv = asUser(as, [shared()], [process.execPath, ...process.execArgv,
                                        process.argv[1]!, COMMAND.sync]);
@@ -819,10 +959,11 @@ async function syncAgent(job: SyncJob, work: Job): Promise<SyncAnswer> {
   // write's EPIPE is let go here, and the child's exit status says what happened.
   child.stdin!.on("error", () => undefined);
   child.stdin!.end(JSON.stringify(job));
-  const status = await Promise.race([agent.exit, work.poster.lapse.then(() => null)]);
+  const status = await Promise.race([agent.exit, lapse.then(() => null)]);
   if (status === null) {
     agent.stop();
-    throw new Error("the job's heartbeat lapsed: its lease is over, so its sync is stopped");
+    throw new Error(`the sync agent's ${job.direction} is stopped: its job's heartbeat ` +
+                    "lapsed, or its command's deadline passed");
   }
   // Its report whole, however many paths.
   const done = { status, stdout: Buffer.concat(out).toString("utf8"),
@@ -841,12 +982,28 @@ async function syncAgent(job: SyncJob, work: Job): Promise<SyncAnswer> {
 
 /** The sync agent's own side (as `ta-sync`), one at a time in the sandbox by its lock. */
 async function syncCommand(): Promise<number> {
-  const job = JSON.parse(readFileSync(0, "utf8")) as SyncJob;
+  const job = JSON.parse(readFileSync(0, "utf8")) as SyncJob | CarryJob;
   return withLock(`${SYNC_HOME}/sync.lock`, Number.POSITIVE_INFINITY,
                   () => new Error("the sync agent's lock is held"), () => syncLocked(job));
 }
 
-async function syncLocked(job: SyncJob): Promise<number> {
+async function syncLocked(job: SyncJob | CarryJob): Promise<number> {
+  if (job.direction === "carry-out" || job.direction === "carry-in") {
+    if (job.direction === "carry-in") {
+      await carryIn({ local: WORKSPACE }, SYNC_CARRY, SYNC_MIRROR);
+    } else {
+      const place = { local: WORKSPACE, sessionsIn: "", sessionsOut: "", authority: job.authority,
+                      records: served() };
+      const mirror = openMirror(SYNC_MIRROR);
+      try {
+        await carryOut(place, mirror, SYNC_CARRY);
+      } finally {
+        mirror.close();
+      }
+    }
+    process.stdout.write(JSON.stringify({ ok: true }));
+    return OK;
+  }
   try {
     const client = new SyncClient(job.origin, job.token, FLUSH_MS, HEARTBEAT_MS);
     // Each run's own `in` and `out`: a run's import lets go only what its own fetch put there.
@@ -855,7 +1012,7 @@ async function syncLocked(job: SyncJob): Promise<number> {
                     records: served() };
     // The mirror is a database on disk, written as each change lands (`openMirror`): a sync
     // cut short keeps what it sent.
-    const mirror = openMirror(`${SYNC_HOME}/mirror.db`);
+    const mirror = openMirror(SYNC_MIRROR);
     try {
       if (job.direction === "known") {
         // What the owner's files hold of each path, as this sandbox last synced it.
@@ -1240,15 +1397,15 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     lease: lease.lease, authority: start.authority, agent: start.agent, engine: start.engine,
     run, atoms: secrets });
   const known = async (paths: readonly string[]) =>
-    ((await syncAgent({ ...job("known"), paths }, work)).report?.["known"] ?? {}) as
-      Record<string, Held>;
+    ((await syncAgent({ ...job("known"), paths }, work.poster.lapse)).report?.["known"]
+      ?? {}) as Record<string, Held>;
   let synced = false;
   try {
     if (recovering) {
       outbox.push({ type: "ta.recovered" });
     }
     await reportSignins(start, lease);
-    if ((await syncAgent(job("in"), work)).code === FENCED) {
+    if ((await syncAgent(job("in"), work.poster.lapse)).code === FENCED) {
       throw new SyncFenced("the sync door fenced the lease");
     }
     synced = true;
@@ -1266,7 +1423,8 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
       outbox.push(pressed);
     }
     await storeResume(rec, run, start.authority, start.session_id, (part) =>
-      syncAgent({ ...job(part.direction), session: start.session_id!, ...part }, work));
+      syncAgent({ ...job(part.direction), session: start.session_id!, ...part },
+                work.poster.lapse));
     const home = homeOf(run);
     const system = systemOf(run);
     // The tools the owner's rules name that the CLI's own hook matches, asked first: its
@@ -1396,7 +1554,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
         for (const path of refused) {
           outbox.push({ type: "ta.sync_refused", path, code: "secret_bytes" });
         }
-        const done = await syncAgent(job("out", secrets), work);
+        const done = await syncAgent(job("out", secrets), work.poster.lapse);
         remove(`${SYNC_HOME}/out/${run}`);
         if (done.code === FENCED) {
           outbox.push({ type: "ta.sync_fenced" });
@@ -1681,6 +1839,8 @@ const HANDLERS: { readonly [C in Exclude<Command, HookCommand>]: Handler } = {
   [COMMAND.run]: (args) => runCommand(args[0] ?? "", args[1] === RECOVERING),
   [COMMAND.loginRun]: (args) => loginRun(args[0] ?? ""),
   [COMMAND.sync]: () => syncCommand(),
+  [COMMAND.carryOut]: (args) => carryOutCommand(args[0] ?? ""),
+  [COMMAND.carryIn]: (args) => carryInCommand(args[0] ?? ""),
 };
 
 export async function main(argv: readonly string[]): Promise<number> {

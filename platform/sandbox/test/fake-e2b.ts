@@ -14,8 +14,10 @@
  * test config binds: a single-module fake imports nothing of the runner's. The commands
  * answer as scripted: a sign-in check by engine, the runner's state (for `state` and
  * `quiet-wait`; `state` with the runner's protocol), `adopt` refused ("no") while the state
- * is live, `prepare` dropping every other runner while nothing lives, and every other
- * command done, answering nothing. An upload can be refused (a full disk), a command's
+ * is live, `prepare` dropping every other runner while nothing lives, a move's `carry-out`
+ * refused ("no") while the state is live and otherwise packing an archive of its sandbox's at
+ * the record's carry path (answered by its size and digest), `carry-in` taking only an upload
+ * there of the digest it names, and every other command done, answering nothing. An upload can be refused (a full disk), a command's
  * reply lost after it ran (`lost`), and a command held before it runs until the test lets
  * it go (`hold`, `/release`).
  */
@@ -25,7 +27,8 @@ import { env } from "cloudflare:workers";
 interface Protocol {
   readonly exit: { readonly ok: number; readonly usage: number; readonly no: number;
                    readonly absent: number; readonly mismatch: number };
-  readonly paths: { readonly install: string; readonly incoming: string };
+  readonly paths: { readonly install: string; readonly incoming: string;
+                     readonly carry: string };
 }
 
 const protocol = (): Protocol => (env as unknown as { PROTOCOL: Protocol }).PROTOCOL;
@@ -146,7 +149,7 @@ function b64(text: string): string {
   return btoa(String.fromCharCode(...new TextEncoder().encode(text)));
 }
 
-async function sha256(bytes: ArrayBuffer): Promise<string> {
+async function sha256(bytes: BufferSource): Promise<string> {
   return [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
     .map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
@@ -178,7 +181,7 @@ function loader(box: FakeSandbox, raw: string[]):
   if (fake.script.tampered === digest) {
     return { code: exit.mismatch, out: "", argv, runner: digest };
   }
-  if (rest[0] === "adopt") {
+  if (rest[0] === "adopt" || rest[0] === "carry-out") {
     return { code: fake.script.state.live > 0 ? exit.no : exit.ok, out: "", argv,
              runner: digest };
   }
@@ -302,6 +305,11 @@ async function envd(request: Request, url: URL): Promise<Response> {
     return new Response("paused", { status: 502 });
   }
   const user = atob((request.headers.get("Authorization") ?? "Basic ").slice(6)).split(":")[0]!;
+  if (url.pathname === "/files" && request.method === "GET") {
+    const file = fake.files.get(`${id}:${url.searchParams.get("path") ?? ""}`);
+    return file === undefined ? new Response("no such file", { status: 404 })
+      : new Response(file);
+  }
   if (url.pathname === "/files") {
     const path = url.searchParams.get("path") ?? "";
     const bytes = await request.arrayBuffer();
@@ -345,7 +353,26 @@ async function envd(request: Request, url: URL): Promise<Response> {
         await scheduler.wait(2);
       }
     }
-    const done = loader(box, raw);
+    let done = loader(box, raw);
+    const carry = `${id}:${protocol().paths.carry}`;
+    if (done.argv[1] === "carry-out" && done.code === protocol().exit.ok) {
+      // What lives in this sandbox alone, named by it, so a test sees where it went.
+      const archive = `carry of ${id}`;
+      fake.files.set(carry, archive);
+      const bytes = new TextEncoder().encode(archive);
+      done = { ...done, out: JSON.stringify({ bytes: bytes.byteLength,
+                                              sha256: await sha256(bytes) }) };
+    }
+    if (done.argv[1] === "carry-in") {
+      const archive = fake.files.get(carry);
+      fake.files.delete(carry);
+      const took = archive !== undefined
+        && await sha256(new TextEncoder().encode(archive)) === done.argv[2];
+      done = { ...done, code: took ? protocol().exit.ok : 1 };
+      if (took) {
+        fake.files.set(`${id}:carried`, archive!);
+      }
+    }
     const argv = done.argv;
     log.push({ sandbox: id, argv, runner: done.runner, user });
     if (command !== undefined && command === fake.script.lost) {
@@ -410,6 +437,13 @@ export default {
                                  timeout: 60, pauseMode: "full", network: null, metadata,
                                  template: "t", secure: true, runners: new Set() });
         return Response.json({ id });
+      }
+      if (url.pathname === "/metadata") {
+        // A sandbox's metadata set whole: one made from an older pin, or before any was named.
+        const { id, metadata } = await request.json() as { id: string;
+                                                          metadata: Record<string, string> };
+        fake.sandboxes.get(id)!.metadata = metadata;
+        return Response.json({});
       }
       if (url.pathname === "/runners") {
         // A sandbox's installed runners set whole: one born under an older Worker's.
