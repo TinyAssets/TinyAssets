@@ -1324,7 +1324,8 @@ export class Connections {
    * read again after `modelsRecheckS`; a failure, a read that leaves no model (a vendor's
    * renamed ids would otherwise drop every one), or one past `maxModelsKept`, its models kept
    * as they were, read again after `modelsRetryS`. The owner is told when its vendor lists
-   * none of them, once while the notice is kept, since a key that lost every one reads the same.
+   * none of them, once while the notice is kept, since a key that lost every one reads the same,
+   * and when a read is past `maxModelsKept`, once, since only the owner can make room.
    */
   #modelsRead(id: string, outcome: ModelsRead | "failed", now: number): void {
     const row = this.#row(id)!;
@@ -1339,6 +1340,11 @@ export class Connections {
     if (typeof served !== "string" && !fits) {
       console.error(`a connection's models read kept ${served.length} models, past the ` +
                     "owner's limit with its other connections'; it is read again later");
+      this.#notices.once("connection_models_limit", `${row.display_name} (${id}): its vendor ` +
+                           "serves it more models than your connections have room for " +
+                           `(${CONNECTION_LIMITS.maxModelsKept} in all), so it keeps the ones ` +
+                           "it had and is read again hourly; disconnect a source you no " +
+                           "longer use to make room", now);
     }
     if (typeof served === "string" || !fits) {
       this.#sql.exec("UPDATE connection_model_reads SET due = ? WHERE connection = ?",

@@ -877,7 +877,7 @@ A connection SHALL keep up to 1,024 models, each its whole pi-ai record as the s
 
 #### Scenario: The owner's connections at their bound
 - **WHEN** the owner's connections keep 8,192 models and a read would give one of them more
-- **THEN** the read fails, the connection keeps the models it had, and it is read again an hour later
+- **THEN** the read fails, the connection keeps the models it had, the owner is told once how to make room, and it is read again an hour later
 
 ### Requirement: The connection doors are the owner's, in its live session
 Preparing (with an OAuth flow's beginning), committing, revoking and listing connections and finishing their OAuth flows SHALL be the owner's own doors, in its live session; a refused one leaves a refusal receipt.

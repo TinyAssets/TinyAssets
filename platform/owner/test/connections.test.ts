@@ -850,7 +850,7 @@ describe("a connected model's record", () => {
   });
 
   it("keeps maxModels at the record's bound on each connection, up to maxModelsKept across " +
-     "them, and refuses one more", async () => {
+     "them, and refuses one more", { tags: ["large"] }, async () => {
     const { maxModels, maxModelsKept } = CONNECTION_LIMITS;
     const full = (at: number) => Array.from({ length: maxModels }, (_, i) =>
       sized(MODEL_RECORD_MAX, `m/${at}.${String(i).padStart(4, "0")}`));
@@ -1338,7 +1338,7 @@ describe("the models it reaches now", () => {
   });
 
   it("follows a catalog of maxModels at the record's bound, and keeps what it has while one " +
-     "read would pass the owner's maxModelsKept", async () => {
+     "read would pass the owner's maxModelsKept", { tags: ["large"] }, async () => {
     const { maxModels, maxModelsKept } = CONNECTION_LIMITS;
     const full = (name: string, count = maxModels) => Array.from({ length: count }, (_, i) =>
       sized(MODEL_RECORD_MAX, `${name}/${String(i).padStart(4, "0")}`));
@@ -1373,6 +1373,12 @@ describe("the models it reaches now", () => {
     };
     await readAgain();
     expect(await listed()).toEqual(committed);
+    // The owner is told, once, and how to make room.
+    await readAgain();
+    expect((await r.stub.noticeList(r.bind())).notices
+      .filter((notice) => notice.type === "connection_models_limit")
+      .map((notice) => notice.detail)).toEqual([expect.stringContaining(
+        `(${maxModelsKept} in all), so it keeps the ones it had`)]);
     // With room again, the same read is kept: each of its records whole.
     await r.stub.connectionRevoke(r.session(), { connection: ids.pop()! });
     await readAgain();

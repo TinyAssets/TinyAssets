@@ -1,4 +1,4 @@
-# models-json-max: a connection's models are kept one row a model (2026-11-24)
+# models-json-max as built (2026-11-24): a connection's models are kept one row a model
 
 `fix/models-json-max`. Found by #5848's review: `MODELS_JSON_MAX`, the bytes a connection's
 models may take as one JSON value, is at 99.2% of its stated reason, 1,024 of the largest
@@ -134,6 +134,9 @@ makes it, naming its API):
   - A read that leaves no model is a failed read (`listing-records.md`), and so is one past
     `maxModels`, `maxModelsKept` or a record's bound: the records as read are kept, read again
     hourly, never an empty or half connection (Fact 8).
+- **Review: a read past `maxModelsKept` told only the log**, so a connection kept models its
+  vendor no longer serves with nothing the owner could see: it now tells the owner once
+  (`connection_models_limit`) what the limit is and how to make room, as a commit past it does.
 
 ## Left, with reasons
 
