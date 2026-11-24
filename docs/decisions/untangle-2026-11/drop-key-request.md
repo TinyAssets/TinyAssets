@@ -88,6 +88,8 @@
 
 - [ ] live: once the stage serves no doors version before this one, take out `keyMint`'s
   dropped `proposal` (`contract/doors.json`).
-- [ ] `untangle/key-agent-change`: with the key request gone, decide whether `keyMint` keeps
+- [x] `untangle/key-agent-change`: with the key request gone, decide whether `keyMint` keeps
   `scopes` at all (no screen sends any), and so whether `centerOf`'s "name one ... as
-  `command_center_id`" can reach a mint.
+  `command_center_id`" can reach a mint. Decided (`key-agent-change.md` 5): it does not keep
+  them; taking them out, and with them the mint's one `centerOf` call, is
+  `untangle/key-mint-full`'s, owed there.

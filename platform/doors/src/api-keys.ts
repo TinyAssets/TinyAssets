@@ -155,14 +155,3 @@ export async function deleteOwnKey(env: DoorsEnv, { binding, stub }: Bound, requ
   const { forgotten } = await stub.grantForget(binding, { client });
   return { key_id: id, deleted: forgotten || entry !== null };
 }
-
-/** The owner's own entry for a key it registers an agent for, or refused. */
-export async function registeringEntry(env: DoorsEnv, owner: string, value: unknown):
-    Promise<{ keyId: string; entry: KeyEntry }> {
-  const id = keyId(value);
-  const entry = await readKey(env, id);
-  if (entry === null || entry.o !== owner) {
-    throw new Refusal("refused", "the API key is not this owner's live key");
-  }
-  return { keyId: id, entry };
-}

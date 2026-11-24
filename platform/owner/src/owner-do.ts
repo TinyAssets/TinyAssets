@@ -19,12 +19,10 @@
  * and held to its scopes (`grants.ts`: `read_graph`, `write_graph`, `propose_policy`,
  * `read_files`, `write_files`), and every widening checks the owner's live session row
  * (`sessions.ts`), a refused one leaving a refusal receipt in the policy receipts
- * (`policy.ts`). An outside client's call never carries the owner's session, with one
- * pinned exception: the owner's browser registering an agent for an API key it holds
- * (`registerAgent`), whose origin the object re-derives from the key id. An MCP client's
- * agent registers through a card the client files on its own verified call
- * (`registerPropose`, `registrations.ts`), which the owner applies in session by its id.
- * Every other door refuses the pair.
+ * (`policy.ts`). An outside client's call never carries the owner's session: every door
+ * refuses the pair. An outside agent, an app's or an API key's, registers through a card its
+ * client files on its own verified call (`registerPropose`, `registrations.ts`), which the
+ * owner applies in session by its id.
  *
  * Its code cannot reach another owner's object: no service the Worker binds reaches an
  * object (`wrangler.jsonc`, held by the config guard; code mode's VMs run in `CODEMODE_VM`,
@@ -208,12 +206,10 @@ export const INBOUND_DOOR = "the inbound door takes an inbound event's route alo
 
 /**
  * Who else an account door serves. `visitors`: another owner may call, as itself (the
- * collection doors). `registering`: an outside origin may come with the owner's session
- * (the owner's browser registering an agent for that client).
+ * collection doors).
  */
 interface Serves {
   readonly visitors?: boolean;
-  readonly registering?: boolean;
 }
 
 /** A bound binding the bind step held: its kind, and the binding as that kind's parser read it. */
@@ -304,7 +300,7 @@ function unaccounted(owner: string, caller: string): Account {
 type RunNeed = "converse" | "run_graph" | null;
 
 const OUTSIDE_SESSION = "an outside client's call never carries the owner's session";
-const MCP_REGISTERS_BY_CARD = "an MCP client's agent registers through the card it files";
+export const OWN_CARD = "only an outside client files its own agent's registration";
 /** A sandbox token's binding at any door but its own, and any other binding at those. */
 export const SANDBOX_DOORS = "a sandbox's token reaches its own doors only";
 export const SANDBOX_ONLY = "a sandbox door takes its own sandbox token only";
@@ -821,15 +817,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     }
     // The owner's cookie rides only the owner's own browser requests; an
     // outside client's call carrying it is a binder bug or a replay, refused before any
-    // grant is recorded. Only an API key's registration carries both: the binder checked
-    // the owner holds the key, and the object re-derives its origin from the key id.
-    if (binding.session !== undefined && serves.registering !== true) {
+    // grant is recorded.
+    if (binding.session !== undefined) {
       throw new Refusal("refused", OUTSIDE_SESSION);
     }
     const source = registrant(binding.source, origin);
-    if (binding.session !== undefined && source.kind !== "api_key") {
-      throw new Refusal("refused", MCP_REGISTERS_BY_CARD);
-    }
     const vendor = binding.vendor ?? null;
     if (vendor !== null && source.kind !== "mcp") {
       throw new Refusal("invalid", "invalid outside client vendor");
@@ -1025,8 +1017,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
         within,
         bound: () => this.#bound(row, binding, asked).account,
         authorized: () => {
-          const { binding: given, account } = this.#bound(row, binding, asked);
-          this.#guard(row, given, account);
+          const { account } = this.#bound(row, binding, asked);
+          this.#guard(row, account);
           this.#scoped(row, account, null);
         },
       };
@@ -1069,7 +1061,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
                                provedBy(row.caller, lease)));
     }
     const held = this.#bind(binding, row.caller, row);
-    const account = this.#account(held, { registering: row.registering === true });
+    const account = this.#account(held);
     try {
       // An outside client holds no owner session, so what only the owner may do is
       // refused as that before the session is looked for.
@@ -1187,17 +1179,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
 
   /** The guard, scope and fields steps of a bound call, in the row's order; its proof kept. */
   #checked<R>(row: OwnerRow, request: R, held: Bound, proof: object): Call<R, CallerKind> {
-    const { binding, account } = held;
+    const { account } = held;
     let r: Record<string, unknown>;
     let place: { universe: string | null; agent: string };
     // A row that checks its fields first checks them before its guard too (a run's malformed
     // mailbox read is `invalid`, as on main); every other row, its guard, scope, then fields.
     if (row.fieldsFirst === true) {
       r = this.#fields(row, request, account);
-      this.#guard(row, binding, account);
+      this.#guard(row, account);
       place = this.#scoped(row, account, r);
     } else {
-      this.#guard(row, binding, account);
+      this.#guard(row, account);
       place = this.#scoped(row, account, null);
       r = this.#fields(row, request, account);
     }
@@ -1208,7 +1200,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   }
 
   /** A row's guard: a check of its caller after the account (`door-steps.ts`). */
-  #guard(row: OwnerRow, binding: Binding | undefined, account: Account): void {
+  #guard(row: OwnerRow, account: Account): void {
     switch (row.guard) {
       case undefined:
         return;
@@ -1225,12 +1217,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
         }
         return;
       case "own_card":
-        if (account.origin === null || account.grant === null) {
-          throw new Refusal("refused", "only an outside client files its own agent's registration");
-        }
-        if (registrant(binding?.source, account.origin).kind !== "mcp") {
-          throw new Refusal("refused",
-                            "an API key's agent registers from the owner's browser with the key");
+        // A client's run acts under its client's grant but is not the client's own call.
+        if (account.origin === null || account.grant === null || account.run !== null) {
+          throw new Refusal("refused", OWN_CARD);
         }
         return;
     }

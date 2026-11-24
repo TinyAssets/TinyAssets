@@ -3,7 +3,7 @@
  * in session as grant-then-entry, use bound to the key's origin and mint time, a wrong
  * key never reaching an object, and the revoke and delete orders.
  */
-import { Refusal, refusalOf } from "../../contract/src/refusal";
+import { NOT_AN_AGENT, Refusal, refusalOf } from "../../contract/src/refusal";
 import { BUSY, slotBusy } from "../../contract/src/slots";
 
 import { env } from "cloudflare:workers";
@@ -507,32 +507,42 @@ describe("a delete", () => {
   });
 });
 
-describe("the registering route", () => {
-  const AGENT = { command_center_id: "cc", display_name: "Laptop", delivery_method: "pull",
-                  recipe_id: null };
+describe("a key's own agent", () => {
+  const AGENT = { display_name: "Muse", delivery_method: "pull", recipe_id: null };
 
-  it("registers the key's agent with its origin, in session", async () => {
+  /** The key's card filed on its own call, then the owner's apply of it on Home's route. */
+  async function filedAndApplied(o: Owner, key: string, request: object) {
+    const filed = await api(key, "agent_register", request);
+    expect(filed.status).toBe(200);
+    const { card_id } = await filed.json<{ card_id: string }>();
+    const { cards } = await (await appPost("registrations", o.token, o.session, {}))
+      .json<{ cards: { card_id: string; digest: string }[] }>();
+    const card = cards.find((each) => each.card_id === card_id)!;
+    const applied = await appPost("registrations/apply", o.token, o.session,
+                                  { card_id, digest: card.digest });
+    expect(applied.status).toBe(200);
+    return applied.json<{ agent_id: string; delivery_method: string; revision: number;
+                          source: string; command_center_id: string }>();
+  }
+
+  it("is the card a full key files, which the owner applies on Home: its mailbox opens, " +
+     "filing again changes its delivery, and it goes with the key's revoke", async () => {
     const o = await signedIn();
-    const { key_id } = await mint(o);
-    const response = await appPost("outside-agents", o.token, o.session, { key_id, ...AGENT });
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ outside_client: apiKeyOrigin(key_id).client });
-  });
-
-  it("needs the session", async () => {
-    const o = await signedIn();
-    const { key_id } = await mint(o);
-    const response = await appPost("outside-agents", o.token, null, { key_id, ...AGENT });
-    expect(response.status).toBe(403);
-  });
-
-  it("refuses another owner's key", async () => {
-    const alice = await signedIn();
-    const bob = await signedIn();
-    const { key_id } = await mint(bob);
-    const response = await appPost("outside-agents", alice.token, alice.session,
-                                   { key_id, ...AGENT });
-    expect(response.status).toBe(403);
-    expect(await response.json()).toEqual({ error: "the API key is not this owner's live key" });
+    const { key, key_id } = await (await appPost("keys", o.token, o.session,
+                                                 { name: "muse", scopes: [] })).json<
+      { key: string; key_id: string }>();
+    const refused = await api(key, "mailbox_read", { limit: 5 });
+    expect([refused.status, await refused.json()]).toEqual([403, { error: NOT_AN_AGENT }]);
+    const agent = await filedAndApplied(o, key, AGENT);
+    expect(agent).toMatchObject({ source: "api_key", command_center_id: "main",
+                                  delivery_method: "pull", revision: 1 });
+    expect((await api(key, "mailbox_read", { limit: 5 })).status).toBe(200);
+    expect(await filedAndApplied(o, key, { ...AGENT, delivery_method: "mcp_event" }))
+      .toMatchObject({ agent_id: agent.agent_id, delivery_method: "mcp_event", revision: 2 });
+    expect((await appPost("grants/revoke", o.token, null,
+                          { client: apiKeyOrigin(key_id).client })).status).toBe(200);
+    const { agents } = await (await appPost("tools/agents_list", o.token, o.session, {}))
+      .json<{ agents: { agent_id: string }[] }>();
+    expect(agents.map((each) => each.agent_id)).not.toContain(agent.agent_id);
   });
 });
