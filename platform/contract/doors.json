@@ -304,7 +304,10 @@
         "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
         "description": "List a directory's entries by name. With head_chars, each small file also carries the start of its text, enough to read its title and description."
       },
-      "answer": { "required": { "entries": { "type": "array" } }, "optional": {} }
+      "answer": {
+        "required": { "entries": { "type": "array" }, "next": { "type": ["string", "null"] } },
+        "optional": {}, "unread": ["next"]
+      }
     },
     {
       "door": "fileText", "class": "read", "capability": "read_files",
@@ -1134,7 +1137,8 @@
       },
       "answer": {
         "required": { "entry": { "type": "object" } },
-        "optional": { "inline": { "type": "bytes" } }
+        "optional": { "inline": { "type": "bytes" }, "chunks": { "type": "array" } },
+        "unread": ["chunks"]
       }
     },
     {
@@ -1205,6 +1209,13 @@
         "refused": "invalid file request",
         "required": { "after": { "type": "integer" }, "limit": { "type": "integer" } },
         "optional": {}
+      },
+      "answer": {
+        "required": {
+          "changes": { "type": "array" }, "cursor": { "type": "integer" },
+          "reset": { "type": "boolean" }
+        },
+        "optional": {}, "unread": ["changes", "cursor", "reset"]
       }
     },
     {
@@ -1223,7 +1234,14 @@
           "tool_input": { "type": ["string", "number", "boolean", "object", "array", "null"] }
         }
       },
-      "answer": { "required": {}, "optional": { "hook": { "type": "object" } } }
+      "answer": {
+        "required": {},
+        "optional": {
+          "hook": { "type": "object" }, "tools": { "type": "array" },
+          "generation": { "type": "integer" }, "allow": { "type": "boolean" }
+        },
+        "unread": ["tools", "generation", "allow"]
+      }
     },
     {
       "door": "signinStart", "class": "work", "capability": null,
@@ -1407,7 +1425,9 @@
           "ops": { "type": "array" }
         },
         "optional": {}
-      }
+      },
+      "answer": { "required": { "outcomes": { "type": "array" } }, "optional": {},
+                  "unread": ["outcomes"] }
     },
     {
       "door": "fileSyncUploadBegin", "class": "work", "capability": "write_files",
@@ -1418,6 +1438,10 @@
           "size": { "type": "integer" }, "chunks": { "type": "array" }
         },
         "optional": {}
+      },
+      "answer": {
+        "required": { "intent_id": { "type": "string" }, "missing": { "type": "array" } },
+        "optional": {}, "unread": ["intent_id", "missing"]
       }
     },
     {
