@@ -204,6 +204,8 @@ export const SPELLED: Readonly<Record<string, readonly Place[]>> = Object.freeze
                              (n) => `length(CAST(models AS BLOB)) <= ${n})),`),
                     ...TABLE("connection_models",
                              (n) => `length(CAST(models AS BLOB)) <= ${n})),`)],
+  MODEL_RECORD_MAX: TABLE("connection_records",
+                          (n) => `length(CAST(record AS BLOB)) <= ${n}),`),
   EGRESS_JSON_MAX: TABLE("connections", (n) => `length(CAST(egress AS BLOB)) <= ${n})`),
   REDIRECT_URI_MAX: TABLE("connection_flows", (n) => `length(redirect_uri) <= ${n})`),
   EGRESS_PATH_MAX: TABLE("egress_reservations", (n) => `length(path) BETWEEN 1 AND ${n} AND`),
@@ -230,8 +232,9 @@ export const SPELLED: Readonly<Record<string, readonly Place[]>> = Object.freeze
  * The numbers the SQL spells for reasons of its own as well as at a bound's places, each with
  * how many times it is left once every place is set aside. A new one, or one more, fails:
  * - 4096 the manifest's page and 64 a hash's or a content id's length, in every charge;
- * - 256 the checks on a model's (two tables), a served model's, an origin's (three tables), a
- *   session id's and a schedule's last error, which code bounds with no constant (`runs.ts`);
+ * - 256 the checks on a model's (two tables), a served model's, a kept model's, an origin's
+ *   (three tables), a session id's and a schedule's last error, which code bounds with no
+ *   constant (`runs.ts`; a kept model's id, `MODEL_ID`);
  * - 1024 a stamp's (three tables), a binding's profile and the tier record, the same;
  * A number inside a name (`sha256`) is no number: only one standing alone is counted.
  * - 16 a generation's id (a generation's row, and a restore's twice over: its own and the
@@ -242,7 +245,7 @@ export const SPELLED: Readonly<Record<string, readonly Place[]>> = Object.freeze
  * - 1000 the open model calls' bound, twice in migration 1's `model_reservations_open`, whose
  *   table migration 26 drops: frozen text, as a dropped table's other statements are.
  */
-const SHARED: Values = Object.freeze({ 16: 9, 35: 1, 36: 13, 64: 287, 256: 8, 1000: 2, 1024: 5,
+const SHARED: Values = Object.freeze({ 16: 9, 35: 1, 36: 13, 64: 287, 256: 9, 1000: 2, 1024: 5,
                                        4096: 356 });
 
 /**
@@ -470,7 +473,7 @@ describe("the owner's frozen bounds", () => {
       }
     }
     // Every place of every bound, the products of two counted with each.
-    expect(places).toBe(674);
+    expect(places).toBe(675);
   });
 
   it("see a bound changed without its SQL, a place more or less, or a number left over", () => {

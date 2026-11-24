@@ -70,7 +70,8 @@
  * reads it (`usable`; `sources/src/ranking.ts` `pickable`), and so does the owner's view.
  *
  * **The models it reaches now.** The catalog is the gateway's, so each active model
- * connection's models are read through it (`connection_models`): the gateway's `models`, the
+ * connection's models are read through it, one row a model (`connection_records`, its record
+ * and its score; when it is read next, `connection_model_reads`): the gateway's `models`, the
  * records its blob reaches by the catalog now (only on the APIs the blob was sealed for: a new
  * API is a reconnect, the owner's consent), each kept with the score its vendor lists it at, or
  * none; where its source record says where its vendor lists the models it serves a key
@@ -78,11 +79,11 @@
  * that read. The lane reads them as it reads credit (`LaneRead`): once a connection is active,
  * the ones from before among them, so a catalog bump reaches every connection with no
  * reconnect; again every `modelsRecheckS`, and `modelsRetryS` after a failed read. Once read,
- * they are a connection's models (`modelsOf`), for every reader: what `auto` ranks and scores
+ * they are a connection's models (`#modelsOf`), for every reader: what `auto` ranks and scores
  * (`usable`; `auto.ts` `ranked`), what a run's named model must be, what the egress door
  * reserves by (`egressOf`) and what the owner sees (`list`); until then, the ones its setup
- * check listed. A model its vendor stops serving goes at the next read, and one it serves again
- * comes back.
+ * check listed, kept as the same rows. A model its vendor stops serving goes at the next read,
+ * and one it serves again comes back.
  *
  * Every write is a unit of the object's gate, and each unit reads what it acts on: a door's
  * body, or a step between the lane's or a call's outside calls. Bounds: `maxConnections`
@@ -115,7 +116,7 @@ import type {
 import { resealAnswer } from "../../contract/src/owner";
 import { isGatewayCode, orRefused, Refusal, refusalOf } from "../../contract/src/refusal";
 import {
-  CONNECTION_BLOB_MAX, EGRESS_JSON_MAX, MODELS_JSON_MAX, REDIRECT_URI_MAX,
+  CONNECTION_BLOB_MAX, EGRESS_JSON_MAX, MODEL_RECORD_MAX, REDIRECT_URI_MAX,
 } from "../../contract/src/limits";
 import type { OwnerStorage, Write } from "./gate";
 import type { Notices } from "./notices";
@@ -134,7 +135,19 @@ interface ConnectionLimits {
   readonly flowTtlS: number;
   readonly maxOpenFlows: number;
   readonly maxFlowRows: number;
+  /**
+   * The models one connection keeps: twice pi-ai's largest built-in catalog on every API of
+   * its provider at least (the connections test finds it by a scan, at every pin). A read
+   * past it is a failed read, a commit past it refused.
+   */
   readonly maxModels: number;
+  /**
+   * The models the owner keeps across its connections, its storage's bound (the owner-bound
+   * guard's `connection_records`): eight connections at `maxModels`, nineteen of the largest
+   * built-in catalog, far past the sources one owner connects. A read past it is a failed
+   * read, a commit past it refused.
+   */
+  readonly maxModelsKept: number;
   readonly refreshMarginMs: number;
   readonly leaseMs: number;
   readonly revokeTries: number;
@@ -165,9 +178,7 @@ interface ConnectionLimits {
 /**
  * Flows last 10 minutes and at most 10 are open; a refresh
  * starts 3 minutes before the access token expires (research §2.6); a lease outlasts the
- * gateway's 15 s token-endpoint bound. A connection keeps up to 1,024 models: twice pi-ai's
- * largest built-in catalog at least (the connections test finds it by a scan, and holds
- * `MODELS_JSON_MAX` to 1,024 of the largest built-in record).
+ * gateway's 15 s token-endpoint bound.
  */
 export const CONNECTION_LIMITS: ConnectionLimits = Object.freeze({
   maxConnections: 50,
@@ -177,6 +188,7 @@ export const CONNECTION_LIMITS: ConnectionLimits = Object.freeze({
   maxOpenFlows: 10,
   maxFlowRows: 50,
   maxModels: 1_024,
+  maxModelsKept: 8_192,
   refreshMarginMs: 3 * 60 * 1000,
   leaseMs: 60 * 1000,
   revokeTries: 5,
@@ -199,7 +211,7 @@ export interface ConnectionView {
   readonly provider: string;
   readonly status: "pending" | "active" | "revoked" | "error";
   readonly version: number;
-  /** Its models (`modelsOf`): the gateway's catalog now, as its vendor serves them, once read. */
+  /** Its models (`#modelsOf`): the gateway's catalog now, as its vendor serves them, once read. */
   readonly models: string[];
   readonly expires_at: number | null;
   readonly created_at: number;
@@ -237,21 +249,17 @@ type Row = {
   expires_at: number | null; lease_id: string | null; lease_until: number | null;
   created_at: number; pending_until: number | null; revoked_at: number | null;
   revoke_due: number | null; revoke_tries: number; revocable: number;
-  egress: string | null; pays: number | null; read: string | null;
+  egress: string | null; pays: number | null;
 };
 
-/**
- * Every connection's row, with what its key pays for (`connection_credit`) and its models as
- * last read (`connection_models`).
- */
-const ROWS = "SELECT c.*, k.pays AS pays, m.models AS read FROM connections c " +
-  "LEFT JOIN connection_credit k ON k.connection = c.id " +
-  "LEFT JOIN connection_models m ON m.connection = c.id";
+/** Every connection's row, with what its key pays for (`connection_credit`). */
+const ROWS = "SELECT c.*, k.pays AS pays FROM connections c " +
+  "LEFT JOIN connection_credit k ON k.connection = c.id";
 
 /** The tables of the lane's reads of a connection's source: a row each active connection. */
-type ReadTable = "connection_credit" | "connection_models";
+type ReadTable = "connection_credit" | "connection_model_reads";
 const READ_TABLES: readonly ReadTable[] = Object.freeze(["connection_credit",
-                                                         "connection_models"]);
+                                                         "connection_model_reads"]);
 
 /**
  * One read the `connections` lane makes of each active connection's source, where its record
@@ -308,7 +316,8 @@ function grammar(value: unknown, pattern: RegExp, what: string): string {
 
 /**
  * One model of the gateway's setup check, its whole record checked by the one rule the
- * gateway seals by (`contract/src/model-record.ts`), and kept as the gateway sent it.
+ * gateway seals by (`contract/src/model-record.ts`), within `MODEL_RECORD_MAX`, and kept as
+ * the gateway sent it.
  */
 function modelInfo(value: unknown): ModelRecord {
   try {
@@ -316,21 +325,22 @@ function modelInfo(value: unknown): ModelRecord {
   } catch {
     throw new Refusal("invalid", "invalid connection model");
   }
+  if (utf8Bytes(JSON.stringify(value)) > MODEL_RECORD_MAX) {
+    throw new Refusal("invalid", "invalid connection model");
+  }
   return value as ModelRecord;
 }
 
 /**
  * A connection's models as the gateway lists them, at its setup check or at a read of them
- * (`models`): at most `maxModels`, each whole (`modelInfo`), none twice, within
- * `MODELS_JSON_MAX`.
+ * (`models`): at most `maxModels`, each whole (`modelInfo`), none twice.
  */
 function checkedModels(models: unknown): ModelRecord[] {
   if (!Array.isArray(models) || models.length > CONNECTION_LIMITS.maxModels) {
     throw new Refusal("invalid", "invalid connection models");
   }
   const checked = models.map(modelInfo);
-  if (new Set(checked.map((model) => model.id)).size !== checked.length
-      || utf8Bytes(JSON.stringify(checked)) > MODELS_JSON_MAX) {
+  if (new Set(checked.map((model) => model.id)).size !== checked.length) {
     throw new Refusal("invalid", "invalid connection models");
   }
   return checked;
@@ -379,11 +389,11 @@ function redirectUri(value: unknown): string {
   return value;
 }
 
-function view(row: Row): ConnectionView {
+function view(row: Row, served: Served): ConnectionView {
   return {
     connection: row.id, source: row.source, kind: row.kind, display_name: row.display_name,
     provider: row.provider, status: row.status, version: row.version,
-    models: modelsOf(row).map((model) => model.id),
+    models: served.map(([model]) => model.id),
     expires_at: row.expires_at, created_at: row.created_at, revoked_at: row.revoked_at,
     provider_revocable: row.revocable === 1, provider_revoke_pending: row.revoke_due !== null,
     pays: paysOf(row),
@@ -394,24 +404,12 @@ function paysOf(row: Row): boolean | null {
   return row.pays === null ? null : row.pays === 1;
 }
 
-/** A connection's models as `connection_models` keeps them: each record, with its score. */
+/** A connection's models as `connection_records` keeps them: each record, with its score. */
 type Served = readonly (readonly [ModelRecord, number | null])[];
 
-/** A row's models as last read, each with its score or null; null when none were read. */
-function readOf(row: Row): Served | null {
-  return row.read === null ? null : JSON.parse(row.read) as Served;
-}
-
-/** A row's models: the ones last read (`connection_models`), its setup check's until then. */
-function modelsOf(row: Row): ModelRecord[] {
-  const read = readOf(row);
-  return read === null ? JSON.parse(row.models) as ModelRecord[]
-    : read.map(([model]) => model);
-}
-
-/** A row's models' scores, by model id; empty when none were read or scored. */
-function scoresOf(row: Row): ReadonlyMap<string, number> {
-  return new Map((readOf(row) ?? []).flatMap(([{ id }, score]) =>
+/** The models' scores, by model id; empty when none were read or scored. */
+function scoresOf(served: Served): ReadonlyMap<string, number> {
+  return new Map(served.flatMap(([{ id }, score]) =>
     score === null ? [] : [[id, score] as const]));
 }
 
@@ -424,10 +422,9 @@ interface ModelsRead {
 
 /**
  * The records of `read` its listing lists (every one where it has none), each with the score
- * it lists it at, in the records' order, as `connection_models` keeps them; `unmatched` for a
- * listing that lists none of them, `failed` for no record or more than `MODELS_JSON_MAX` kept.
+ * it lists it at; `unmatched` for a listing that lists none of them, `failed` for no record.
  */
-function servedJson({ sealed, listing }: ModelsRead): string | "unmatched" | "failed" {
+function servedBy({ sealed, listing }: ModelsRead): Served | "unmatched" | "failed" {
   const listed = new Map<string, number | null>();
   for (const { id, score } of listing?.models ?? []) {
     if (!listed.has(id)) {
@@ -437,15 +434,13 @@ function servedJson({ sealed, listing }: ModelsRead): string | "unmatched" | "fa
   const kept: Served = sealed.models.flatMap((model): Served =>
     listing === null ? [[model, null]]
       : listed.has(model.id) ? [[model, listed.get(model.id)!]] : []);
-  const json = JSON.stringify(kept);
-  if (kept.length > 0 && utf8Bytes(json) <= MODELS_JSON_MAX) {
-    return json;
+  if (kept.length > 0) {
+    return kept;
   }
-  const unmatched = kept.length === 0 && sealed.models.length > 0;
+  const unmatched = sealed.models.length > 0;
   console.error(unmatched ? "a connection's listing read listed none of its models; it is " +
                   "read again later"
-                : `a connection's models read kept ${kept.length} models in ` +
-                  `${utf8Bytes(json)} bytes; it is read again later`);
+                : "a connection's models read listed no model; it is read again later");
   return unmatched ? "unmatched" : "failed";
 }
 
@@ -499,7 +494,7 @@ export class Connections {
    * its vendor serves it, with their scores (`listing`), for a gateway source's connection.
    */
   readonly #models: LaneRead<{ readonly listing: ListingRead | null }, ModelsRead> = {
-    name: "models", table: "connection_models", retryS: CONNECTION_LIMITS.modelsRetryS,
+    name: "models", table: "connection_model_reads", retryS: CONNECTION_LIMITS.modelsRetryS,
     of: (record) => {
       if (record?.upstream === undefined) {
         return undefined;
@@ -525,7 +520,7 @@ export class Connections {
       return models === null || (listing !== null && listed === null) ? null
         : { sealed: models, listing: listed };
     },
-    kept: (id, outcome, now) => this.#served(id, outcome, now),
+    kept: (id, outcome, now) => this.#modelsRead(id, outcome, now),
   };
 
   constructor(storage: OwnerStorage, write: Write, gateway: GatewayService,
@@ -543,6 +538,43 @@ export class Connections {
 
   #row(id: string): Row | undefined {
     return this.#sql.exec<Row>(`${ROWS} WHERE c.id = ?`, id).toArray()[0];
+  }
+
+  /**
+   * A row's models (`connection_records`), each with its score: its setup check's until the
+   * lane's first read, each read's after. A connection committed before migration 35 has none
+   * until its first read, and is read by the records its row kept (`connections.models`).
+   */
+  #modelsOf(row: Row): Served {
+    const kept = this.#sql.exec<{ record: string; score: number | null }>(
+      "SELECT record, score FROM connection_records WHERE connection = ? ORDER BY model", row.id)
+      .toArray().map(({ record, score }) => [JSON.parse(record) as ModelRecord, score] as const);
+    return kept.length > 0 ? kept
+      : (JSON.parse(row.models) as ModelRecord[]).map((model) => [model, null] as const);
+  }
+
+  #view(row: Row): ConnectionView {
+    return view(row, this.#modelsOf(row));
+  }
+
+  /**
+   * Whether `count` models on connection `id`, in place of what it keeps, leave the owner's
+   * connections within `maxModelsKept`.
+   */
+  #fits(id: string, count: number): boolean {
+    return this.#sql.exec<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM connection_records WHERE connection != ?", id).one().n + count
+      <= CONNECTION_LIMITS.maxModelsKept;
+  }
+
+  /** In a unit: `served` the connection's models, in place of what it kept. */
+  #keep(id: string, served: Served): void {
+    this.#sql.exec("DELETE FROM connection_records WHERE connection = ?", id);
+    for (const [model, score] of served) {
+      this.#sql.exec("INSERT INTO connection_records (connection, model, record, score) " +
+                       "VALUES (?, ?, ?, ?)", id, model.id, JSON.stringify(model), score);
+    }
+    this.#changed();
   }
 
   #changed(): void {
@@ -623,6 +655,10 @@ export class Connections {
       throw new Refusal("invalid",
                         "an OAuth connection's expiry is epoch ms or null; a key has none");
     }
+    if (!this.#fits(id, checked.length)) {
+      throw new Refusal("refused", "the owner's connections keep their limit of models; " +
+                                    "revoke one to connect another");
+    }
     const failed = r["failed"];
     if (failed !== undefined) {
       // A setup check's failure: one of the gateway's fixed codes.
@@ -648,12 +684,12 @@ export class Connections {
       this.#sql.exec("INSERT INTO connection_secrets (connection_id, version, kid, blob) " +
                        "VALUES (?, ?, ?, ?)", id, row.version, kid, blob);
       this.#sql.exec("UPDATE connections SET status = 'active', pending_until = NULL, " +
-                       "models = ?, expires_at = ?, egress = ? WHERE id = ?",
-                     JSON.stringify(checked), expires, egress, id);
+                       "expires_at = ?, egress = ? WHERE id = ?", expires, egress, id);
+      this.#keep(id, checked.map((model) => [model, null] as const));
       this.#sql.exec("UPDATE connection_flows SET status = 'cancelled', verifier = NULL " +
                        "WHERE connection_id = ? AND status = 'open'", id);
       this.#changed();
-      return view(this.#row(id)!);
+      return this.#view(this.#row(id)!);
     });
   }
 
@@ -681,7 +717,7 @@ export class Connections {
     this.#sql.exec("UPDATE connection_flows SET status = 'cancelled', verifier = NULL " +
                      "WHERE connection_id = ? AND status = 'open'", row.id);
     this.#changed();
-    return view(this.#row(row.id)!);
+    return this.#view(this.#row(row.id)!);
   }
 
   /**
@@ -691,7 +727,7 @@ export class Connections {
   secretsLost(): void {
     this.#sql.exec("UPDATE connections SET status = 'error', pending_until = NULL WHERE " +
                      "status IN ('pending', 'active')");
-    for (const table of READ_TABLES) {
+    for (const table of [...READ_TABLES, "connection_records"]) {
       this.#sql.exec(`DELETE FROM ${table}`);
     }
   }
@@ -728,7 +764,7 @@ export class Connections {
       if (!owed) {
         this.#sql.exec("DELETE FROM connection_secrets WHERE connection_id = ?", id);
       }
-      for (const table of READ_TABLES) {
+      for (const table of [...READ_TABLES, "connection_records"]) {
         this.#sql.exec(`DELETE FROM ${table} WHERE connection = ?`, id);
       }
       this.#sql.exec("UPDATE connection_flows SET status = 'cancelled', verifier = NULL " +
@@ -749,7 +785,8 @@ export class Connections {
 
   /** Every connection, newest first, without its blob. */
   list(): ConnectionView[] {
-    return this.#sql.exec<Row>(`${ROWS} ORDER BY c.created_at DESC, c.id`).toArray().map(view);
+    return this.#sql.exec<Row>(`${ROWS} ORDER BY c.created_at DESC, c.id`).toArray()
+      .map((row) => this.#view(row));
   }
 
   /**
@@ -814,12 +851,15 @@ export class Connections {
     }
     const usable = Object.freeze(this.#sql.exec<Row>(
       `${ROWS} WHERE c.status = 'active' ORDER BY c.created_at, c.id`).toArray()
-      .map((row) => Object.freeze({
-        connection: row.id, source: row.source, provider: row.provider,
-        display_name: row.display_name, created_at: row.created_at,
-        models: Object.freeze(modelsOf(row)),
-        pays: paysOf(row), scores: scoresOf(row),
-      })));
+      .map((row) => {
+        const served = this.#modelsOf(row);
+        return Object.freeze({
+          connection: row.id, source: row.source, provider: row.provider,
+          display_name: row.display_name, created_at: row.created_at,
+          models: Object.freeze(served.map(([model]) => model)),
+          pays: paysOf(row), scores: scoresOf(served),
+        });
+      }));
     this.#usable = { revision: this.#revision, usable };
     return usable;
   }
@@ -867,7 +907,7 @@ export class Connections {
       return null;
     }
     return { scope: egressScope(JSON.parse(row.egress)), source: row.source,
-             provider: row.provider, models: modelsOf(row) };
+             provider: row.provider, models: this.#modelsOf(row).map(([model]) => model) };
   }
 
   /** The active connections the sandbox may reach, oldest first, each with its scope. */
@@ -1275,30 +1315,33 @@ export class Connections {
   /**
    * In a unit: a models read's outcome: its blob's records its listing lists (every one where
    * its record names none, or its blob reaches no such read), each with its score, kept and
-   * read again after `modelsRecheckS`; a failure, or a read that leaves no model (a vendor's
-   * renamed ids would otherwise drop every one), its models kept as they were, read again after
-   * `modelsRetryS`. The owner is told when its vendor lists none of them, once while the notice
-   * is kept, since a key that lost every one reads the same.
+   * read again after `modelsRecheckS`; a failure, a read that leaves no model (a vendor's
+   * renamed ids would otherwise drop every one), or one past `maxModelsKept`, its models kept
+   * as they were, read again after `modelsRetryS`. The owner is told when its vendor lists
+   * none of them, once while the notice is kept, since a key that lost every one reads the same.
    */
-  #served(id: string, outcome: ModelsRead | "failed", now: number): void {
+  #modelsRead(id: string, outcome: ModelsRead | "failed", now: number): void {
     const row = this.#row(id)!;
-    const served = outcome === "failed" ? outcome : servedJson(outcome);
+    const served = outcome === "failed" ? outcome : servedBy(outcome);
     if (served === "unmatched") {
       this.#notices.once("connection_listing_unmatched", `${row.display_name} (${id}): its ` +
                            "vendor lists it none of its models, so they are kept as they were " +
                            "and read again hourly; if its key lost access, check it at the " +
                            "provider", now);
     }
-    if (served === "failed" || served === "unmatched") {
-      this.#sql.exec("UPDATE connection_models SET due = ? WHERE connection = ?",
+    const fits = typeof served !== "string" && this.#fits(id, served.length);
+    if (typeof served !== "string" && !fits) {
+      console.error(`a connection's models read kept ${served.length} models, past the ` +
+                    "owner's limit with its other connections'; it is read again later");
+    }
+    if (typeof served === "string" || !fits) {
+      this.#sql.exec("UPDATE connection_model_reads SET due = ? WHERE connection = ?",
                      now + CONNECTION_LIMITS.modelsRetryS, id);
       return;
     }
-    if (served !== row.read) {
-      this.#changed();
-    }
-    this.#sql.exec("UPDATE connection_models SET models = ?, due = ? WHERE connection = ?",
-                   served, now + CONNECTION_LIMITS.modelsRecheckS, id);
+    this.#keep(id, served);
+    this.#sql.exec("UPDATE connection_model_reads SET due = ? WHERE connection = ?",
+                   now + CONNECTION_LIMITS.modelsRecheckS, id);
   }
 
   /**
