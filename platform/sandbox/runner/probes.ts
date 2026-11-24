@@ -36,7 +36,7 @@ import { FRAME_UNITS_MAX, readEvent } from "../../contract/src/run-events";
 import type { NetworkDocument } from "../../contract/src/sandbox";
 import { type Catalog, builtinCatalog, modelInfos } from "../../gateway/src/catalog";
 import { bundledSources } from "../../sources/src/catalog";
-import { pickable, shippedRanking } from "../../sources/src/ranking";
+import { newerFirst, pickable, shippedRanking } from "../../sources/src/ranking";
 import type { SourceRecord } from "../../sources/src/schema";
 import { runEnv } from "../../sources/src/run-env";
 import { engineHosts, type Served, served, signsIn } from "../../sources/src/served";
@@ -129,7 +129,8 @@ function sealing(provider: string, engine: string): Sealing {
  * The model a route step on `api` names: of the models the gateway's catalog lists a
  * connection of `record` on that API (`modelInfos`, as the gateway lists one), those a run may
  * be given on its own (`pickable`, the key's payment unknown), the one the platform's ranking
- * places first, the catalog's order breaking a tie: a model a run is likely to be given.
+ * places first, newer first within its entry (`newerFirst`): the model `auto` gives a run on
+ * a lone key of `record` on that API, when the ranking places one.
  */
 function probeModel(catalog: Catalog, record: Sealing, api: string): string {
   const ranking = shippedRanking();
@@ -137,7 +138,7 @@ function probeModel(catalog: Catalog, record: Sealing, api: string): string {
   const rank = (id: string) => ranking.place(provider, id)?.entry ?? Number.MAX_SAFE_INTEGER;
   const [first] = modelInfos(catalog, record.upstream)
     .filter((model) => model.api === api && pickable(record, model.id, null))
-    .sort((a, b) => rank(a.id) - rank(b.id));
+    .sort((a, b) => rank(a.id) - rank(b.id) || newerFirst(a.id, b.id));
   if (first === undefined) {
     throw new Error(`the gateway's catalog lists no model a run may be given on ${
       record.id}'s ${api}`);

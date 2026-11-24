@@ -23,7 +23,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { builtinCatalog } from "../../gateway/src/catalog";
 import { bundledSources } from "../../sources/src/catalog";
-import { pickable } from "../../sources/src/ranking";
+import { newerFirst, pickable, shippedRanking } from "../../sources/src/ranking";
 import { served } from "../../sources/src/served";
 import { runEnv } from "../../sources/src/run-env";
 import { sandboxEnv } from "../../contract/src/egress";
@@ -1562,18 +1562,23 @@ const ROUTE_STEPS = (JSON.parse(execFileSync(process.execPath, [probesBundle(), 
 
 describe("the route probe", () => {
   it("gives each step a model the gateway's catalog lists on the step's API, one a run may " +
-     "be given", () => {
+     "be given, none ranked above it", () => {
     const sources = bundledSources();
     const records = [...sources.ids()].map((id) => sources.get(id)!);
     const catalog = builtinCatalog();
+    const ranking = shippedRanking();
     expect(ROUTE_STEPS.length).toBeGreaterThan(0);
     for (const [, engine, provider, api, model] of ROUTE_STEPS) {
       const what = `${engine} ${provider} ${api} ${model}`;
-      expect(catalog.provider(provider!)!.getModels().some((listed) =>
-        listed.id === model && listed.api === api), what).toBe(true);
-      expect(records.some((record) => record.upstream?.provider === provider
-        && (record.engines ?? []).includes(engine!) && pickable(record, model!, null)), what)
-        .toBe(true);
+      const record = records.find((each) => each.upstream?.provider === provider
+        && each.connect.includes("api_key") && (each.engines ?? []).includes(engine!));
+      const onApi = catalog.provider(provider!)!.getModels().filter((listed) =>
+        listed.api === api && pickable(record, listed.id, null)).map((listed) => listed.id);
+      expect(onApi, what).toContain(model);
+      // `auto`'s order on one key: by the ranking's entry, newer first within it.
+      const entry = (id: string) => ranking.place(provider!, id)?.entry ?? Infinity;
+      expect(onApi.filter((id) => entry(id) < entry(model!)
+        || (entry(id) === entry(model!) && newerFirst(id, model!) < 0)), what).toEqual([]);
     }
   });
 

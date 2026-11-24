@@ -18,7 +18,7 @@
  *   call).
  */
 import type { ModelRecord } from "../../contract/src/model-record";
-import type { Place, Ranking } from "../../sources/src/ranking";
+import { newerFirst, type Place, type Ranking } from "../../sources/src/ranking";
 
 /**
  * A connection a model call may use, as `Connections.usable` lists it: its models, as
@@ -97,7 +97,7 @@ export function ranked(keys: readonly Usable[], plans: readonly Plan[], ranking:
     : b.score === null ? -1 : b.score - a.score;
   all.sort((a, b) => tier(a) - tier(b) || keyed(a) - keyed(b) || entry(a) - entry(b)
     || (a.candidate.place === null ? scored(a, b) || b.price - a.price
-      : b.candidate.model.localeCompare(a.candidate.model, "en", { numeric: true }))
+      : newerFirst(a.candidate.model, b.candidate.model))
     || a.since - b.since
     || text(a.candidate.connection, b.candidate.connection)
     || text(a.candidate.source, b.candidate.source)

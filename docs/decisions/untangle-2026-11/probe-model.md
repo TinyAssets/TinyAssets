@@ -54,24 +54,26 @@ and then makes the start require a model.
   The probe is to run "as a run runs it", so its model is one such a run is likely to be given:
   of the catalog's models on that API, those a run may be given on its own (`pickable`, the
   record's `not_interactive` out; the key's payment unknown), the one the platform's ranking
-  places first (`place`), the catalog's order breaking a tie.
-  - `auto`'s whole order (`owner/src/auto.ts` `ranked`: plans first, newer ids first within an
-    entry, scores, prices, the connection's age) is the owner's and orders connections the
-    probe has none of. The probe needs a model the API serves that a run may be given, not
-    `auto`'s exact one, so it takes the ranking's `place` alone.
+  places first (`place`), newer first within its entry (`newerFirst`, `sources/src/ranking.ts`).
+  - `auto`'s whole order (`owner/src/auto.ts` `ranked`: plans first, then by entry, newer ids
+    first within one, then scores, prices, the connection's age) orders connections the probe
+    has none of. On one key's models that the ranking places, it is entry, then newer first:
+    the probe's order, so the probe names the model `auto` gives such a run. The within-entry
+    rule is one function both call (`newerFirst`); the first cut broke ties by the catalog's
+    order and named an entry's oldest model on 8 of the 12 steps (review, #5852).
   - No model a run may be given on a sealed API fails the plan loudly.
 - **At pi-ai 1.6.0 with the shipped ranking** (computed from the catalog and the ranking on
   2026-11-24):
 
   | engine | provider | API | model |
   | --- | --- | --- | --- |
-  | claude-code, pi | anthropic | anthropic-messages | `claude-fable-5` |
+  | claude-code, pi | anthropic | anthropic-messages | `claude-fable-5-2` |
   | codex, pi | openai | openai-responses | `gpt-6.1-sol` |
-  | gemini, pi | google | google-generative-ai | `gemini-4-argon` |
-  | pi | openrouter | openai-completions | `openai/gpt-6.1-sol` |
-  | pi | openrouter | anthropic-messages | `~anthropic/claude-fable-latest` |
-  | pi | xai | openai-responses | `grok-4.3` |
-  | pi | groq, cerebras, mistral | their one API | `qwen/qwen3.8-27b`, `qwen-3.8-27b`, `mistral-large-4` |
+  | gemini, pi | google | google-generative-ai | `gemini-4-neon` |
+  | pi | openrouter | openai-completions | `openai/gpt-6.1-sol-pro` |
+  | pi | openrouter | anthropic-messages | `anthropic/claude-fable-5.2` |
+  | pi | xai | openai-responses | `grok-4.7` |
+  | pi | groq, cerebras, mistral | their one API | `qwen/qwen3.8-27b`, `qwen-3.8-27b`, `mistral-large-4-0-8` |
 
 ### pi and a model its own catalog lacks (found here, owed below)
 
@@ -97,18 +99,21 @@ and then makes the start require a model.
   `Admitted.model` is a `string` since #5842 (`choose`, `Chosen`). The sandbox Worker maps it
   into the runner's document unchanged (`control.ts` `startDocument`). The probe was the one
   other start with `model: null`, and now names one.
-- **The stage** serves main 8c80b02c8 on every Worker (deploy run 45281806227), which includes
-  #5842. The deploy order is gateway, sandbox, owner, doors, and a rollback takes the doors
-  back first:
+- **The stage** served main 8c80b02c8 on every Worker (deploy run 45281806227), and now
+  11477c11e (after #5848 to #5851); both include #5842. The deploy order is gateway, sandbox,
+  owner, doors, and a rollback takes the doors back first:
   - the sandbox of this release, deployed before the owner, takes a start from the owner
     before, which hands a string;
-  - a rollback to 8c80b02c8 takes back an owner that hands a string.
+  - a rollback to 11477c11e takes back an owner that hands a string;
+  - a start that names no model all the same (an owner before #5842) is refused by the
+    sandbox Worker's start check (`control.ts` `start`) before anything launches, never run
+    on an engine's default nor as `--model=null` (review, #5852).
 - **The deploy hold** (`deploy/guards/handed.test.ts`, `contract/handed.json`) lists no start:
   `SandboxStart` crosses Workers as a typed RPC value no strict parser reads, so the hold has
   nothing to say for it (left, below). `handed.json` lists no field this PR changes.
 - **The runner protocol:**
-  - The Worker speaks protocol 5 alone (`SPEAKS`, `protocol.ts`; #5851's `speaks.json` is not
-    on main yet). Protocol 5's record types the start's `model` `string|null`.
+  - The Worker speaks protocol 5 alone (`speaks.json`, `[5]`, on main since #5851). Protocol
+    5's record types the start's `model` `string|null`.
   - A record holds what the protocol's Workers may write, and is frozen. A string is in it,
     so no record moves and no protocol is bumped.
   - The protocol 5 Workers that wrote null were those before #5842. None serves. A live
@@ -131,8 +136,8 @@ and then makes the start require a model.
    API's (`sealedBase(egress, api)`), the capture server answers in its API, and an API the
    record does not seal fails loudly. Its result, and the pair's record (`passed.json`
    `routes`), name the API and the model.
-3. **The start requires a model:** `SandboxStart.model` and `StartDoc.model` are `string`;
-   `engine.ts` always passes the record's model arguments; `model_argv` is required of every
+3. **The start requires a model:** `SandboxStart.model` and `StartDoc.model` are `string`, and
+   the sandbox Worker refuses a start with none; `engine.ts` always passes the record's model arguments; `model_argv` is required of every
    CLI record (`schema.ts`, `check.ts`).
 4. **Docs follow:** the record schema's note on API order goes (a record's API order means
    nothing now); the probes' and the start's comments say what they do now.
@@ -149,6 +154,10 @@ and then makes the start require a model.
 
 ## Left, with reasons
 
+- **The probes' install is not measured.** `passed.json`'s `install` is the runner's; the
+  5.25 MiB probes bundle's upload and install (twice a pair check, under `install_s`, 120 s)
+  is first timed by the next pair check's log. The routes sandbox's lifetime (1800 s) holds
+  12 route steps now, each bounded at 300 s.
 - **The start is no handed shape.** `SandboxStart` crosses from the owner to the sandbox as an
   RPC value no strict parser reads, so the deploy hold cannot hold its fields to the versions
   the stage serves; this PR's step rests on those versions, read above. Making the start a
@@ -170,7 +179,10 @@ and then makes the start require a model.
   Messages API, given `claude-fable-*` by `auto`, is refused at the door, and this PR's
   `anthropic-messages` route step fails the pair check the same way. Move pi to 1.6.0 (its
   catalog lists the gateway's 1.6.0 models), or hand pi the run's model record in its
-  `models.json`, so the engine never decides a model's API.
+  `models.json`, so the engine never decides a model's API. For this PR's pair to pass, pi
+  must run every model the plan names on the step's API (all 9 of pi's steps, the table
+  above, not only OpenRouter's Messages API), and a later pi-ai bump of the gateway must not
+  name a model the image's pi lacks (one source for both, or a guard holding them equal).
 - [ ] untangle/start-handed: the owner's start to the sandbox (`SandboxStart`) is a handed shape,
   read by a strict parser in the sandbox Worker and held by `handed.json`, so a start field's
   change is held to the versions the stage serves, as every other cross-Worker shape is.
