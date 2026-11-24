@@ -116,6 +116,10 @@ export function sideAt(commit: string, read: FileAt): Before {
     ? (entry.names ?? []).map((name) => name.replace(/^"(.*)"$/, "$1")) : []));
   const speaking = read(commit, SPEAKS_JSON);
   const records = read(commit, PROTOCOL_JSON);
+  if (speaking !== null && records === null) {
+    throw new Error(`${commit} holds ${SPEAKS_JSON} and no ${PROTOCOL_JSON}: what its runners ` +
+                    "read is unknown");
+  }
   return { shapes: (JSON.parse(handed) as { shapes: Record<string, Shape> }).shapes,
            doors: (JSON.parse(doors) as { doors: DoorRow[] }).doors,
            runners: speaking === null || records === null ? null
@@ -232,10 +236,14 @@ function joined(holds: readonly Hold[]): Hold {
            unrecorded: holds.flatMap((each) => each.unrecorded) };
 }
 
-/** A reader of the owner's answers, as a refusal names it, and the step a field it reads takes. */
+/**
+ * A reader of the owner's answers, as a refusal names it, the step a field it reads takes, and
+ * the step its door takes when the owner would answer null.
+ */
 interface Reader {
   readonly name: string;
   readonly step: string;
+  readonly door: string;
 }
 
 /** The doors' version before, which reads a field it marks `unread` no more. */
@@ -243,13 +251,15 @@ const DOORS_BEFORE: Reader = Object.freeze({
   name: "the doors' version before",
   step: "mark it unread first (answered, read no more), and take it out once the stage serves " +
     "no doors version that reads it",
+  door: "drop this one first",
 });
 
 /** A runner of `protocol`, which reads its record's fields while a sandbox version speaks it. */
 function runner(protocol: string): Reader {
-  return { name: `protocol ${protocol}'s runner`,
-           step: "keep answering it until no sandbox version the stage serves, nor this " +
-             `tree's, speaks protocol ${protocol}` };
+  const until = `until no sandbox version the stage serves, nor this tree's, speaks protocol ${
+    protocol}`;
+  return { name: `protocol ${protocol}'s runner`, step: `keep answering it ${until}`,
+           door: `keep this one answering as it did ${until}` };
 }
 
 /**
@@ -290,7 +300,7 @@ function answerHold(door: string, was: Answer | undefined, now: Answer | undefin
   }
   if (now?.nullable === true && was.nullable !== true) {
     problems.push(`${door} may answer null, which ${reader.name} does not read: answer it by a ` +
-                  "door of a new name, and drop this one first");
+                  `door of a new name, and ${reader.door}`);
   }
   return { ...HELD, problems };
 }
@@ -394,17 +404,18 @@ function runnerProblems(then: Side | null, now: Side): Hold {
   return joined([
     ...then !== null && then.runners === null
       ? [{ ...HELD, unrecorded: ["the sandbox's version before"] }] : [],
-    ...[...protocols].sort().map((protocol): Hold => {
+    ...[...protocols].sort((a, b) => Number(a) - Number(b)).map((protocol): Hold => {
       const record = now.runners?.[protocol] ?? then?.runners?.[protocol] ?? null;
       if (record === null) {
         return { ...HELD, unrecorded: [`protocol ${protocol}`] };
       }
+      const reader = runner(protocol);
       return joined(Object.entries(record).map(([door, was]) => {
         const row = rows.get(door);
         return row === undefined
-          ? { ...HELD, problems: [`the door ${door} is gone, which ${runner(protocol).name} ` +
-                                  `reads: ${runner(protocol).step}`] }
-          : answerHold(door, was, row.answer, runner(protocol));
+          ? { ...HELD, problems: [`the door ${door} is gone, which ${reader.name} reads: ${
+            reader.step}`] }
+          : answerHold(door, was, row.answer, reader);
       }));
     }),
   ]);

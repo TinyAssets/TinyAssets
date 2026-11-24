@@ -168,3 +168,15 @@ answers every runner that can still be talking to it, the newer ones on a rollba
   serving protocol the tree records nowhere; one both speak held once; the unrecorded named;
   `sideAt`), `deploy/guards/deploy.test.ts` (the plan names an unrecorded sandbox, and stops on
   a serving protocol's read).
+
+## Review (step 5, three sweepers)
+
+- Fixed: `answerHold`'s null refusal named the doors' step ("drop this one first") for a
+  runner too; `Reader.door` now gives each reader its own. `sideAt` read a commit with
+  `speaks.json` and no `protocol.json` as recording nothing; it throws (Fact 8). Protocols
+  are held in numeric order. The guard also holds that no record marks a field `unread`,
+  which `answerHold` would skip.
+- Left, as nits: `serveSync`'s switch has no exhaustiveness check (as before); the doors'
+  stub types `DoorAnswer`, not `OwnerAnswer`, so the relay's arms cannot be held to
+  `RelayedAnswer` without typing the doors by the owner's unread fields; `runDecide` is named
+  in `serveDecide` and `decide.ts` alike, each checked by `tsc` against the table.

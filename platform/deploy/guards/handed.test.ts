@@ -320,6 +320,10 @@ describe("the owner's answers each runner protocol a sandbox version speaks read
       `answer that under a new name, and ${STEP("5")}`,
       `fileList answers next as null, which protocol 5's runner does not read: answer that ` +
       `under a new name, and ${STEP("5")}`]);
+    expect(handedHold(() => null, speaking(reads("5"), { ...NEXT, nullable: true })).problems)
+      .toEqual([`fileList may answer null, which protocol 5's runner does not read: answer it ` +
+                "by a door of a new name, and keep this one answering as it did until no " +
+                "sandbox version the stage serves, nor this tree's, speaks protocol 5"]);
     expect(handedHold(() => null, { ...speaking(reads("5")), doors: [] }).problems).toEqual(
       [`the door fileList is gone, which protocol 5's runner reads: ${STEP("5")}`]);
     // Spoken no more, by this tree or the stage's, its reads are no one's.
@@ -374,5 +378,8 @@ describe("a release's side, read from git", () => {
                                  { 4: { commands: [] }, 5: { relayed } }) })).runners)
       .toEqual({ 4: null, 5: relayed });
     expect(sideAt("c", files(at)).runners).toBeNull();
+    expect(() => sideAt("c", files({ ...at, "platform/sandbox/runner/speaks.json": "[5]" })))
+      .toThrow("c holds platform/sandbox/runner/speaks.json and no " +
+               "platform/sandbox/runner/protocol.json: what its runners read is unknown");
   });
 });

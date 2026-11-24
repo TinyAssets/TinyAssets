@@ -35,6 +35,10 @@ describe("the owner's answers the runner reads", () => {
     expect(undeclared.map(({ door, field, at }) => `${at}: ${door}.${field}`)).toEqual([]);
     expect(unheld).toEqual([]);
     const record = PROTOCOLS[String(PROTOCOL)]!.relayed ?? {};
+    // The hold skips a field a reader marks `unread` (`deploy/handed.ts`): a record marks none.
+    expect(Object.entries(PROTOCOLS).flatMap(([n, each]) => Object.entries(each.relayed ?? {})
+      .filter(([, answer]) => answer.unread !== undefined).map(([door]) => `${n}: ${door}`)))
+      .toEqual([]);
     const rows = new Map(doorTable().map((row) => [row.door, row.answer]));
     const read = [...new Set(reads.map(({ door, field }) => `${door}.${field}`))].sort();
     expect(read.filter((each) => {
