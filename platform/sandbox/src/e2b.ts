@@ -5,8 +5,9 @@
  * sandbox's own envd token, probed live), info (`GET /sandboxes/{id}`), pause
  * (`POST /sandboxes/{id}/pause`, `503` while a previous snapshot finishes: the sandbox keeps
  * running), connect, which resumes a paused sandbox and only extends its timeout
- * (`POST /v2/sandboxes/{id}/connect`), the team's running count, and the list of an
- * owner's sandboxes by their metadata (the transport's). The tools' calls (a template's build and tags, a throwaway sandbox,
+ * (`POST /v2/sandboxes/{id}/connect`), the team's running count, a file copied from one
+ * sandbox to another through envd (a template move's carry), and the list of an owner's
+ * sandboxes by their metadata (the transport's). The tools' calls (a template's build and tags, a throwaway sandbox,
  * the team's webhooks) are `../e2b/admin.ts`'s, which the Worker never imports.
  */
 import type { NetworkDocument } from "../../contract/src/sandbox";

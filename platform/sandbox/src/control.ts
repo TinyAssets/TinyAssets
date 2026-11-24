@@ -21,7 +21,11 @@
  *    unprepared (a fault after its create, resume or adoption) prepares it first. A
  *    start that opened the lease (`tokens`) applies its network whole and hands the runner
  *    its two secrets, the sync token and its own (`/var/lib/ta/lease.json`, in the root-only
- *    state directory), never the egress token, which the network's transform carries;
+ *    state directory), never the egress token, which the network's transform carries. A
+ *    sandbox made from another template than the pin (its `ta_template` metadata) is moved to
+ *    it first by such a start, when nothing lives in it (`#moved`): what lives in it alone
+ *    carried into a new one made from the pin, then the old one killed; a move that cannot
+ *    finish leaves the start in the old one, untouched;
  * 3. the network is widened to the vendor hosts the start hands (`hosts`: its record's login
  *    and provider hosts, on the vendor's own sign-in), and a run on that sign-in runs the
  *    record's `status_argv` there first
@@ -114,7 +118,8 @@ import type { SandboxEnv } from "./env";
 import { SLOTS, type SandboxSlots } from "./slots";
 
 /** A runner command answered 0 or 3, and its output: any other exit is a fault, thrown. */
-function answered(command: WorkerCommand, done: Exec): { code: number; out: string } {
+function answered(command: WorkerCommand | OwnCommand, done: Exec):
+    { code: number; out: string } {
   if (done.exitCode !== EXIT.ok && done.exitCode !== EXIT.no) {
     throw new Error(`ta-runner ${command} failed (${done.exitCode}): ${done.stderr}`);
   }
@@ -606,8 +611,8 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    * digest absent is its exit (`EXIT.absent`), for the caller that knows that runner may be
    * gone; every other caller asks `#run`.
    */
-  async #exec(box: Box, argv: readonly [WorkerCommand, ...string[]], timeoutMs = COMMAND_MS):
-      Promise<Exec> {
+  async #exec(box: Box, argv: readonly [WorkerCommand | OwnCommand, ...string[]],
+              timeoutMs = COMMAND_MS): Promise<Exec> {
     let done = await this.#e2b().exec(box, [LOADER, box.runner, ...argv], { timeoutMs });
     if (done.exitCode === EXIT.absent && box.runner === this.#digest) {
       await this.#install(box);
@@ -636,7 +641,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     if (box.runner !== this.#digest) {
       throw new Error(`${argv[0]} goes to this Worker's own runner alone`);
     }
-    return this.#run(box, argv);
+    return answered(argv[0], await this.#exec(box, argv));
   }
 
   async #install(handle: Handle): Promise<void> {

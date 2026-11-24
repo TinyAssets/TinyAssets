@@ -10,7 +10,10 @@
  * `liveJobs` and so `adopt` read), and the sync mirror, which is each path's
  * base version (a sync with no mirror row writes with no base, and a path the owner has is a
  * conflict). Only true caches are discarded when the format changes: `sessions-seen.json`,
- * the engines' sessions as last hashed, rebuilt by the next run.
+ * the engines' sessions as last hashed, rebuilt by the next run. What of it lives in the
+ * sandbox alone (the stores, their generations, the workspace's unsent changes and session
+ * rows) is what a template move carries to the next sandbox (`runner.ts` `carry-out`), by
+ * the same runner on both sides, so in its own format.
  *
  * The rule (expand, then contract), for the format and the protocol alike: a format change
  * ships in two deploys. The first (expand) reads the old format F and the new F+1 and still

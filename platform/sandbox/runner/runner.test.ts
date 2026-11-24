@@ -2977,19 +2977,26 @@ describe("a template move's carry", () => {
     expect(existsSync(box.path(CARRY_FILE))).toBe(false);
     box.write(release, "");
     await doors.ended_(25_000, start.run);
-    const out = box.runner(COMMAND.carryOut, "owner");
-    expect(out.code, out.why).toBe(0);
-    const { sha256 } = JSON.parse(out.out) as { sha256: string };
+    const carried = () => {
+      const out = box.runner(COMMAND.carryOut, "owner");
+      expect(out.code, out.why).toBe(0);
+      return { ...JSON.parse(out.out) as { sha256: string },
+               archive: readFileSync(box.path(CARRY_FILE)) };
+    };
+    const named = carried();
+    box.write(STORE_FILE, "{}");
+    const other = carried();
     next = new Sandbox();
     expect(next.runner("prepare", "1.1.1.1").code).toBe(0);
-    // Other bytes than the archive named: refused, nothing placed.
-    writeFileSync(next.path(CARRY_FILE), "not the carry");
-    expect(next.runner(COMMAND.carryIn, sha256).code).toBe(1);
+    // A carry, but not the one named: refused, nothing placed.
+    writeFileSync(next.path(CARRY_FILE), other.archive);
+    expect(next.runner(COMMAND.carryIn, named.sha256).code).toBe(1);
     expect(existsSync(next.path("/var/lib/ta/store"))).toBe(false);
+    expect(existsSync(next.path(CARRY_FILE))).toBe(false);
     // A sandbox that holds a store already is no new one: refused, its store as it was.
     next.write("/var/lib/ta/store/codex/auth.json", "its own");
-    writeFileSync(next.path(CARRY_FILE), readFileSync(box.path(CARRY_FILE)));
-    expect(next.runner(COMMAND.carryIn, sha256).code).toBe(1);
+    writeFileSync(next.path(CARRY_FILE), other.archive);
+    expect(next.runner(COMMAND.carryIn, other.sha256).code).toBe(1);
     expect(readdirSync(next.path("/var/lib/ta/store"))).toEqual(["codex"]);
     expect(readFileSync(next.path("/var/lib/ta/store/codex/auth.json"), "utf8")).toBe("its own");
   });

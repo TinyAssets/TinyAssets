@@ -971,7 +971,7 @@ interface Selection {
   readonly matchMs: () => number;
 }
 
-function selection(place: Place, mirror: Mirror): Selection {
+function selection(place: Pick<Place, "local" | "authority">, mirror: Mirror): Selection {
   const list = syncIgnore(place.local);
   const matcher = ignoredBy(list.lines);
   let matchMs = 0;
@@ -1383,7 +1383,8 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
  * sandbox does, and its sync-out sends what this one would have, against the same bases.
  * What the sync-ignore keeps out is the working copy's own, never carried.
  */
-export async function carryOut(place: Place, mirror: Mirror, dir: string): Promise<void> {
+export async function carryOut(place: Pick<Place, "local" | "authority">, mirror: Mirror,
+                               dir: string): Promise<void> {
   const files = join(dir, "files");
   mkdirSync(files, { recursive: true, mode: 0o700 });
   const out = openMirror(join(dir, "mirror.db"));
@@ -1477,7 +1478,7 @@ function opBytes(op: Op, fields: Record<string, unknown>): number {
  * the identity the owner's files hold of it (none: any bytes are others): read again only
  * when its size and change time do not settle it.
  */
-async function differs(place: Place, path: string, stat: Stats,
+async function differs(place: Pick<Place, "local">, path: string, stat: Stats,
                        sent: Identity | undefined): Promise<boolean> {
   if (sent === undefined || Number(stat.size) !== sent.size) {
     return true;

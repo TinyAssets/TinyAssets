@@ -47,6 +47,9 @@
  *   waited for until the deadline; `renewed`: each posts `ta.renewed` and goes on.
  * - `recover`: after a resume that rebooted the sandbox, each run that was live is started
  *   again from its session (`resume_argv`).
+ * - `carry-out <authority>` and `carry-in <sha256>`: a template move's carry, sent to this
+ *   runner alone by the Worker that ships it (`control.ts` `#moved`): what lives in the
+ *   sandbox alone packed while nothing lives, then put in place in a new one.
  * - `sync` (internal, as `ta-sync`, its job on stdin): the sync agent and the projection.
  * - `decide` and `hooks` (internal, as a run's user, by its CLI's hook file): the hook helper
  *   (`decide.ts`) and the agent's own hooks' dispatcher (`hooks.ts`), taken by the hook
@@ -731,7 +734,7 @@ function ownTree(dir: string, owner: { uid: number; gid: number }): void {
 }
 
 /**
- * `carry-out <authority>` (a template move, `control.ts` `#move`, in the sandbox it leaves):
+ * `carry-out <authority>` (a template move, `control.ts` `#moved`, in the sandbox it leaves):
  * what lives in this sandbox alone packed into `CARRY_FILE`, root's alone, while nothing
  * lives (3 otherwise): `CARRIED`, and the workspace's carry (`carryOut`, by the sync agent as
  * itself, for that authority's sandbox); answered by the archive's size and SHA-256. Nothing
@@ -988,18 +991,17 @@ async function syncCommand(): Promise<number> {
 }
 
 async function syncLocked(job: SyncJob | CarryJob): Promise<number> {
-  if (job.direction === "carry-out" || job.direction === "carry-in") {
-    if (job.direction === "carry-in") {
-      await carryIn({ local: WORKSPACE }, SYNC_CARRY, SYNC_MIRROR);
-    } else {
-      const place = { local: WORKSPACE, sessionsIn: "", sessionsOut: "", authority: job.authority,
-                      records: served() };
-      const mirror = openMirror(SYNC_MIRROR);
-      try {
-        await carryOut(place, mirror, SYNC_CARRY);
-      } finally {
-        mirror.close();
-      }
+  if (job.direction === "carry-in") {
+    await carryIn({ local: WORKSPACE }, SYNC_CARRY, SYNC_MIRROR);
+    process.stdout.write(JSON.stringify({ ok: true }));
+    return OK;
+  }
+  if (job.direction === "carry-out") {
+    const mirror = openMirror(SYNC_MIRROR);
+    try {
+      await carryOut({ local: WORKSPACE, authority: job.authority }, mirror, SYNC_CARRY);
+    } finally {
+      mirror.close();
     }
     process.stdout.write(JSON.stringify({ ok: true }));
     return OK;

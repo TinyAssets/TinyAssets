@@ -78,8 +78,8 @@ export const WORKER_COMMANDS = Object.freeze([
  * which only a sandbox nothing lives in takes, so never one whose runner it keeps.
  */
 export const OWN_COMMANDS = Object.freeze([COMMAND.carryOut, COMMAND.carryIn] as const);
+export type WorkerCommand = (typeof WORKER_COMMANDS)[number];
 export type OwnCommand = (typeof OWN_COMMANDS)[number];
-export type WorkerCommand = (typeof WORKER_COMMANDS)[number] | OwnCommand;
 
 /**
  * The commands a run's CLI runs on its events and calls, the hook helper and the agent's

@@ -188,4 +188,28 @@ Zero hosts: the Worker alone moves it.
 
 ## As built
 
-(written with the build)
+- `sandbox/src/control.ts`: `#create` (the one create, its metadata naming the pin,
+  `TEMPLATE_METADATA`); `#moved`, called by `#ensure` for a start that opens the lease on a
+  running or resumed sandbox; `#own`, which sends `OWN_COMMANDS` to this Worker's runner alone.
+  The header's start step 2 says it.
+- `sandbox/src/e2b.ts` `copy` and `sandbox/e2b/transport.ts` `download` and a streamed `upload`:
+  the carry through envd, its length fixed (`FixedLengthStream`), never whole in the isolate.
+- `sandbox/runner/protocol.ts`, `protocol.json` 6 (5 and the two commands, the `carry` path,
+  the `carry-out` answer, and the start's `model` as `string`, as the Worker writes it since
+  #5852), `speaks.json` `[5, 6]`, `state-format.test.ts` its pin and the own-runner commands.
+- `sandbox/runner/runner.ts`: `carry-out` and `carry-in` (`CARRIED`, `ownTree`, `fileSha`),
+  `prepare` dropping a carry left behind, `syncAgent` taking the lapse it stops on (a run's
+  heartbeat, or a carry's deadline); `session.ts` `GENERATIONS`; `sync.ts` `carryOut`,
+  `carryIn`.
+- Tests: `test/sandbox.test.ts` "a template move" (moved at the next idle start that opens a
+  lease, its carry in the new one and the row naming it; one that named no template moved once;
+  one a job lives in left until it is idle; a failed move leaving the run in the old sandbox,
+  the new one killed; no move past E2B's count), and the create's metadata; `runner.test.ts`
+  "a template move's carry" (the real runner, as root: the sign-in, generation, session row,
+  unsent change, unsent new file and unsent removal carried, and nothing synced, kept out or
+  scratch; refused while a job lives, of another carry's bytes, and into a sandbox with a
+  store).
+
+- [ ] live: the stage owner's sandbox moves to the pin at its next idle start after this
+  deploys (envd takes the streamed copy), and one `auto` pi run on an OpenRouter connection
+  sealed with the Messages API then answers on pi 1.6.0.
