@@ -126,6 +126,8 @@ makes it, naming its API):
 - **The scan counted a catalog by one API**, though a connection is sealed for every API of its
   source (#5837): OpenRouter's 417 were counted as 397. It now counts a provider's records on
   every API it is read on.
+- **A revoke and a restore's fence each listed the tables a connection's reads keep**: both
+  call `#dropReads` now, which deletes the models' rows with them.
 - **Comments copied numbers a test holds** (`limits.ts`, `connections.ts`: "1,024 of the
   largest built-in record"): each now names the test.
 - Kept, the system needs them:
