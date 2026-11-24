@@ -15,7 +15,8 @@
  * - `plan`: what to check, as JSON (`Plan`), run on the host that runs the checks: the
  *   sandboxes and their lifetimes and networks, and every step's command and bound;
  * - `login-probe <engine>`: a record's sign-in up to its prompt, its shape judged;
- * - `route-probe <engine> <provider> <resolver>...`: a keyed engine's two turns on the door;
+ * - `route-probe <engine> <provider> <api> <model> <resolver>...`: a keyed engine's two turns
+ *   on the door, on one sealed API of its provider's gateway record, given that API's model;
  * Each prints its result as one JSON line and exits 0 when it passed, 3 when it did not.
  */
 import { sha256Hex } from "../../contract/src/digest";
@@ -26,14 +27,17 @@ import { createServer as createHttpServer, type IncomingMessage } from "node:htt
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 
-import type { ModelScope } from "../../contract/src/egress-scope";
+import type { ModelScope, Upstream } from "../../contract/src/egress-scope";
 import { ALL_TRAFFIC, closedNetwork, DNS_SERVERS, EGRESS_ORIGIN, egressBaseUrl,
          sandboxEnv, sealedBase } from "../../contract/src/egress";
 import { EGRESS_BODY_MAX } from "../../contract/src/limits";
 import { AGENTS_DIR, WORKSPACE } from "../../contract/src/paths";
 import { FRAME_UNITS_MAX, readEvent } from "../../contract/src/run-events";
 import type { NetworkDocument } from "../../contract/src/sandbox";
+import { type Catalog, builtinCatalog, modelInfos } from "../../gateway/src/catalog";
 import { bundledSources } from "../../sources/src/catalog";
+import { newerFirst, pickable, shippedRanking } from "../../sources/src/ranking";
+import type { SourceRecord } from "../../sources/src/schema";
 import { runEnv } from "../../sources/src/run-env";
 import { engineHosts, type Served, served, signsIn } from "../../sources/src/served";
 import { SIGNIN_REFUSALS, signinShape } from "../../sources/src/signin";
@@ -106,12 +110,50 @@ export interface Plan {
 const STRACE = "(command -v strace || (apt-get -qq update && apt-get -qq install -y strace)) " +
   ">/dev/null 2>&1; command -v strace >/dev/null";
 
+/** A gateway record, its upstream named. */
+type Sealing = SourceRecord & { readonly upstream: Upstream };
+
+/** The gateway record that seals `provider`'s key for `engine`. */
+function sealing(provider: string, engine: string): Sealing {
+  const sources = bundledSources();
+  const found = [...sources.ids()].sort().map((id) => sources.get(id)!).find((record) =>
+    record.upstream?.provider === provider && record.connect.includes("api_key")
+    && (record.engines ?? []).includes(engine));
+  if (found === undefined) {
+    throw new Error(`no gateway record seals ${provider}'s key for ${engine}`);
+  }
+  return found as Sealing;
+}
+
+/**
+ * The model a route step on `api` names: of the models the gateway's catalog lists a
+ * connection of `record` on that API (`modelInfos`, as the gateway lists one), those a run may
+ * be given on its own (`pickable`, the key's payment unknown), the one the platform's ranking
+ * places first, newer first within its entry (`newerFirst`): the model `auto` gives a run on
+ * a lone key of `record` on that API, when the ranking places one.
+ */
+function probeModel(catalog: Catalog, record: Sealing, api: string): string {
+  const ranking = shippedRanking();
+  const provider = record.upstream.provider;
+  const rank = (id: string) => ranking.place(provider, id)?.entry ?? Number.MAX_SAFE_INTEGER;
+  const [first] = modelInfos(catalog, record.upstream)
+    .filter((model) => model.api === api && pickable(record, model.id, null))
+    .sort((a, b) => rank(a.id) - rank(b.id) || newerFirst(a.id, b.id));
+  if (first === undefined) {
+    throw new Error(`the gateway's catalog lists no model a run may be given on ${
+      record.id}'s ${api}`);
+  }
+  return first.id;
+}
+
 /**
  * The checks: each record's sign-in under the production egress allowlist widened by that
  * engine's own hosts, as the sandbox Worker widens a sign-in's network; every keyed engine
- * on every provider it keys, on a sandbox whose network denies everything once prepared.
+ * on every API of every provider it keys, given that API's model (`probeModel`), on a sandbox
+ * whose network denies everything once prepared.
  */
 export function plan(runner: string): Plan {
+  const catalog = builtinCatalog();
   const logins: PlanStep[] = [];
   const routes: PlanStep[] = [];
   for (const rec of served().values()) {
@@ -121,8 +163,12 @@ export function plan(runner: string): Plan {
                     network: closedNetwork(engineHosts(rec.id)) });
     }
     for (const provider of Object.keys(cli.api_key_env ?? {}).sort()) {
-      routes.push({ check: "route", timeout_s: 300, network: null,
-                    argv: [PROBE.route, rec.id, provider, ...DNS_SERVERS] });
+      const record = sealing(provider, rec.id);
+      for (const { api } of record.upstream.apis) {
+        routes.push({ check: "route", timeout_s: 300, network: null,
+                      argv: [PROBE.route, rec.id, provider, api,
+                             probeModel(catalog, record, api), ...DNS_SERVERS] });
+      }
     }
   }
   return {
@@ -196,20 +242,10 @@ const ROUTE_PROBE_MS = COMMAND_MS;
 
 const hex = (bytes: number) => randomBytes(bytes).toString("hex");
 
-/**
- * The sealed APIs a provider's key goes to, as the gateway's record for it says. A probe run
- * names no model, so its engine runs its own default, and it is given and answered in the
- * first API, which its record lists first for that reason.
- */
+/** The sealed APIs a provider's key goes to, as the gateway's record for it says. */
 function sealedScope(provider: string, engine: string): ModelScope {
-  const sources = bundledSources();
-  const found = [...sources.ids()].sort().map((id) => sources.get(id)!).find((record) =>
-    record.upstream?.provider === provider && record.connect.includes("api_key")
-    && (record.engines ?? []).includes(engine));
-  if (found === undefined) {
-    throw new Error(`no gateway record seals ${provider}'s key for ${engine}`);
-  }
-  return { apis: found.upstream!.apis.map((row) => ({ ...row, meter: null })), endpoints: [] };
+  return { apis: sealing(provider, engine).upstream.apis.map((row) => ({ ...row, meter: null })),
+           endpoints: [] };
 }
 
 /** One probe turn's outcome: its exit, the session it named, whether it gave its final text. */
@@ -224,10 +260,11 @@ interface ProbeTurn {
 }
 
 /**
- * One keyed engine on one provider, run as a run runs it (the real `invocation`, `runEnv`
- * and `sandboxEnv`, and the run session, `withRunUser`, for an API-key run), its egress door a
- * loopback capture server at the door's real path answering each model request with a
- * minimal valid reply in its sealed API's wire format, under `strace` for its connects, with
+ * One keyed engine on one provider's sealed `api`, given `model`, run as a run runs it (the
+ * real `invocation`, `runEnv` and `sandboxEnv`, and the run session, `withRunUser`, for an
+ * API-key run): its base is that API's, and its egress door a loopback capture server at the
+ * door's real path answering each model request with a minimal valid reply in that API's
+ * wire format, under `strace` for its connects, with
  * a fake sign-in seeded in every one of its store's `secret_paths`. Two turns: a new
  * conversation, then its resume (its home made again from the store with the files the
  * record's `resume_paths` name alone, as the next run's is),
@@ -236,11 +273,10 @@ interface ProbeTurn {
  * second resume it, a compaction be seen; and every request of both is judged
  * (`routeVerdict`).
  */
-async function probeRoute(rec: Served, provider: string,
+async function probeRoute(rec: Served, provider: string, api: string, model: string,
                           resolvers: readonly string[]): Promise<Record<string, unknown>> {
   const cli = rec.cli;
   const egress = sealedScope(provider, rec.id);
-  const api = egress.apis[0]!.api;
   const requests: Captured[] = [];
   const server = createHttpServer((request: IncomingMessage, response) => {
     const chunks: Buffer[] = [];
@@ -290,7 +326,7 @@ async function probeRoute(rec: Served, provider: string,
     ([name, value]) => [name, local(value)]));
   const first: StartDoc = {
     run, agent: "route-probe", conversation: `cv_${hex(16)}`, engine: rec.id,
-    credential: "api_key", model: null, session_id: null,
+    credential: "api_key", model, session_id: null,
     prompt: `Remember the word ${nonce}. Reply with the word OK.`, unattended: false,
     authority: "owner",
     lease: { lease_id: hex(16), epoch: 1 },
@@ -442,7 +478,7 @@ async function probeRoute(rec: Served, provider: string,
     prefix, placeholder, secret, marker, resolvers,
     mcp: [`/r/${run}/${secret}/mcp`, `/r/${run}/mcp`],
     secretInHeader: engine.secret_header !== undefined }) ?? failed;
-  return { engine: rec.id, provider, ok: reason === null, reason,
+  return { engine: rec.id, provider, api, model, ok: reason === null, reason,
            turns: turns.map((each) => ({ exit: each.exit, answered: each.answered,
                                          resumed: each.resumed })),
            compacted, history,
@@ -452,17 +488,17 @@ async function probeRoute(rec: Served, provider: string,
 
 
 /**
- * The route probe of one keyed engine on one provider (`route-probe <engine> <provider>
- * <resolver>...`, on a sandbox whose network denies all), run as a run runs it
- * (`probeRoute`): its one JSON line.
+ * The route probe of one keyed engine on one provider's sealed API, given its model
+ * (`route-probe <engine> <provider> <api> <model> <resolver>...`, on a sandbox whose network
+ * denies all), run as a run runs it (`probeRoute`): its one JSON line.
  */
-async function routeProbe(engine: string, provider: string,
+async function routeProbe(engine: string, provider: string, api: string, model: string,
                           resolvers: readonly string[]): Promise<number> {
   const rec = record(engine);
   if (rec.cli.api_key_env?.[provider] === undefined) {
     throw new Error(`engine ${engine} runs on no API key of provider ${provider}`);
   }
-  const result = await probeRoute(rec, provider, resolvers);
+  const result = await probeRoute(rec, provider, api, model, resolvers);
   process.stdout.write(`${JSON.stringify(result)}\n`);
   return result["ok"] === true ? OK : NO;
 }
@@ -497,7 +533,12 @@ export async function main(argv: readonly string[]): Promise<number> {
   if (command === PROBE.login) {
     return loginProbe(args[0] ?? "");
   }
-  return routeProbe(args[0] ?? "", args[1] ?? "", args.slice(2));
+  const [engine, provider, api, model, ...resolvers] = args;
+  if (model === undefined) {
+    process.stderr.write("probes: route-probe <engine> <provider> <api> <model> <resolver>...\n");
+    return EXIT.usage;
+  }
+  return routeProbe(engine!, provider!, api!, model, resolvers);
 }
 
 main(process.argv.slice(2)).then((code) => process.exit(code), (error: unknown) => {

@@ -871,12 +871,13 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   async start(start: SandboxStart): Promise<Started> {
     return this.#launch(async () => {
       if (!RUN_ID.test(start.run) || !AUTHORITY.test(start.authority)
+          || typeof start.model !== "string" || start.model === ""
           || !LEASE.test(start.lease.lease_id)
           || (start.tokens === null) !== (start.network === null)
           || !routeShaped(start.route)
           || !httpsDoors(start.urls) || !hostList(start.hosts)) {
-        throw new Error("a sandbox start names its run, its authority, its lease, its vendor " +
-                        "hosts and its https doors on the egress host");
+        throw new Error("a sandbox start names its run, its model, its authority, its lease, " +
+                        "its vendor hosts and its https doors on the egress host");
       }
       const ceilings = await this.#control();
       if (ceilings === null) {

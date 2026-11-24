@@ -136,9 +136,12 @@ export const LAYERS: readonly Layer[] = Object.freeze([
           ...CONTRACT, ...SOURCES, ...NOT_TESTS],
   },
   {
+    // The plan names each sealed API's model from the gateway's own catalog, the one the
+    // same tree's gateway lists connections by.
     name: "the probes",
     files: ["platform/sandbox/runner/{probes,route}.ts"],
-    may: ["platform/sandbox/runner/**", ...CONTRACT, ...SOURCES, ...NOT_TESTS],
+    may: ["platform/sandbox/runner/**", "platform/gateway/src/catalog.ts", ...CONTRACT,
+          ...SOURCES, ...NOT_TESTS],
   },
   {
     // E2B's client outside a Worker's runtime: the transport, the tools' calls and a

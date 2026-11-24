@@ -57,6 +57,15 @@ export function pickable(record: SourceRecord | undefined, id: string, pays: boo
   return !matches(record?.not_interactive) && (pays !== false || matches(record?.credit?.free));
 }
 
+/**
+ * Two model ids an entry matches both, in the ranking's order within it: newer first, the
+ * greater id by numeric collation (`auto`'s order, `owner/src/auto.ts`, and the route
+ * probe's, `sandbox/runner/probes.ts`).
+ */
+export function newerFirst(a: string, b: string): number {
+  return b.localeCompare(a, "en", { numeric: true });
+}
+
 /** `value`, checked whole as a ranking; `name` is the file it was read from, for the refusal. */
 export function rankingOf(value: unknown, name: string): Ranking {
   const invalid = (why: string) => new Refusal("invalid", `${name}: ${why}`);

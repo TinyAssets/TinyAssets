@@ -34,9 +34,9 @@
  * the secret is sent (`auth`), the setup check (`verify_url`), the only endpoints the secret
  * may reach, and its `engines`: the CLI records that can run on it through the egress door.
  * One connection serves every API of its source: a run is given the base of its model's API
- * (`contract/src/egress.ts` `sealedBase`), the owner naming every run's model. The route
- * probe alone names none, so a record lists first the API its engines' default models speak
- * (`sandbox/runner/probes.ts`). pi-ai's catalog supplies a known
+ * (`contract/src/egress.ts` `sealedBase`), the owner naming every run's model and the route
+ * probe each API's (`sandbox/runner/probes.ts`), so the APIs' order means nothing. pi-ai's
+ * catalog supplies a known
  * provider's base URLs and models, and a record of one restates them (the sources guard holds
  * each API's base equal to its models'); only a `custom` record declares its own models.
  * Those values are what the gateway seals with the secret. They are checked by the
@@ -105,7 +105,8 @@ export interface Engine {
   readonly argv: readonly string[];
   readonly resume_argv: readonly string[];
   readonly stdin?: "{prompt}";
-  readonly model_argv?: readonly string[];
+  /** The run's model, `{model}` (every run names one). */
+  readonly model_argv: readonly string[];
   readonly events: EngineEvents;
 }
 

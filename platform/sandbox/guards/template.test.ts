@@ -18,7 +18,9 @@
  */
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { chmodSync, cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync, cpSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -140,17 +142,19 @@ let tree: string | null = null;
 
 /**
  * A copy of what the image, the runner and the probes are made from, to change (each change
- * put back after its test): the contract, the records and their locks, the runner and the
- * template. One for the file.
+ * put back after its test): the contract, the records and their locks, the runner, the
+ * template, and the gateway's catalog the probes' plan names models by, with the installed
+ * packages it imports. One for the file.
  */
 function copied(): string {
   if (tree === null) {
     tree = temp("ta-tree-");
     for (const part of ["contract/src", "contract/identity.json", "contract/acts.json",
                         "contract/egress.json", "sources", "sandbox/runner", "sandbox/template",
-                        "sandbox/build"]) {
+                        "sandbox/build", "gateway/src/catalog.ts"]) {
       cpSync(join(PLATFORM, part), join(tree, part), { recursive: true });
     }
+    symlinkSync(join(PLATFORM, "node_modules"), join(tree, "node_modules"));
   }
   return tree;
 }

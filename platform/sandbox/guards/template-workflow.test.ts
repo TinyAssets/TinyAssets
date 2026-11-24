@@ -67,7 +67,8 @@ const answered = (argv) => {
       code_shown: false })];
   }
   if (command === "route-probe") {
-    return [failed ? 3 : 0, JSON.stringify({ engine: rest[0], provider: rest[1], ok: !failed,
+    return [failed ? 3 : 0, JSON.stringify({ engine: rest[0], provider: rest[1], api: rest[2],
+      model: rest[3], ok: !failed,
       reason: failed ? "no model request" : null,
       turns: [{ exit: 0, answered: true, resumed: false },
               { exit: 0, answered: true, resumed: true }], compacted: null }) + "\\n"];
@@ -225,6 +226,11 @@ describe("the template's checks", () => {
     expect(entry).toMatchObject({ tag: PINNED.slice(PINNED.indexOf(":") + 1), runner: runner.sha,
                                   probes: probes.sha });
     expect(entry!["install"]).toMatchObject({ bytes: runner.bytes.length });
+    // Each route is recorded with the sealed API it ran on and the model it was given.
+    const routes = entry!["routes"] as { provider: string; api: string; model: string }[];
+    expect(routes.every((route) => route.model.length > 0)).toBe(true);
+    expect(routes.filter((route) => route.provider === "openrouter").map((route) => route.api))
+      .toEqual(["openai-completions", "anthropic-messages"]);
   });
 
   it.each([["a sign-in", "login-probe"], ["a route", "route-probe"],
