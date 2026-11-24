@@ -339,7 +339,7 @@
         "conversation": "string",
         "engine": "string",
         "credential": "string",
-        "model": "string|null",
+        "model": "string",
         "session_id": "string|null",
         "prompt": "string",
         "unattended": "boolean",

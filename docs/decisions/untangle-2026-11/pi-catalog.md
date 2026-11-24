@@ -172,7 +172,7 @@ all nine steps only once #5852 is on `main` too, so the build is dispatched afte
 - [ ] untangle/pi-ai-watch: the watch's draft PR bumps the platform's pi-ai and pi's record and
   lock together (the new guard requires it), and says that its merge waits for a
   `sandbox-template.yml` build and the pin PR.
-- [ ] untangle/template-move: a sandbox made from a template other than the pin keeps its
+- [x] untangle/template-move: a sandbox made from a template other than the pin keeps its
   engines for as long as it lives. No row names its template, and a paused, idle sandbox is
   never retired. So a new pin never reaches an owner's existing sandbox. It needs its own
   research: what E2B reports of a sandbox's template, what a replacement loses (the workspace

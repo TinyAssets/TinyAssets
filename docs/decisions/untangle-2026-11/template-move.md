@@ -126,7 +126,7 @@ that cannot finish leaves the old sandbox serving the run, untouched.**
    those bytes, refuses a sandbox that already holds a store or a mirror, and puts each part
    in place by its owner's rules). They are protocol 6: protocol 5 plus the two commands, no
    document, answer of 5 or read of the owner's changed. The Worker speaks 5 and 6.
-5. **The Worker's steps** (`#move`, on the serial chain, inside the start): `carry-out`; make
+5. **The Worker's steps** (`#moved`, on the serial chain, inside the start): `carry-out`; make
    the new sandbox from the pin with the start's network and route, its runner installed and
    prepared; copy the archive from the old sandbox to the new one through envd, streamed, its
    length known (no copy in the Worker's memory or storage); `carry-in`; kill the old sandbox;
