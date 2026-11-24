@@ -300,6 +300,7 @@ function unaccounted(owner: string, caller: string): Account {
 type RunNeed = "converse" | "run_graph" | null;
 
 const OUTSIDE_SESSION = "an outside client's call never carries the owner's session";
+export const OWN_CARD = "only an outside client files its own agent's registration";
 /** A sandbox token's binding at any door but its own, and any other binding at those. */
 export const SANDBOX_DOORS = "a sandbox's token reaches its own doors only";
 export const SANDBOX_ONLY = "a sandbox door takes its own sandbox token only";
@@ -1216,8 +1217,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
         }
         return;
       case "own_card":
-        if (account.origin === null || account.grant === null) {
-          throw new Refusal("refused", "only an outside client files its own agent's registration");
+        // A client's run acts under its client's grant but is not the client's own call.
+        if (account.origin === null || account.grant === null || account.run !== null) {
+          throw new Refusal("refused", OWN_CARD);
         }
         return;
     }

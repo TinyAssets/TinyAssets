@@ -19,6 +19,7 @@ import { INLINE_BYTES } from "../../contract/src/limits";
 import { SIGNIN_REQUIRED } from "../../contract/src/sandbox";
 import { NO_CONVERSATION, RUN_ENDED, RUNS_KEPT, TIER_RUNS } from "../src/runs";
 import { AGENTS_OWNER_ONLY } from "../src/paths";
+import { OWN_CARD } from "../src/owner-do";
 import {
   EVENT_FRAMES_MAX, EVENTS_BUSY, EVENTS_IN_FLIGHT, FRAME_UNITS_MAX, PostGate,
 } from "../../contract/src/run-events";
@@ -231,6 +232,10 @@ describe("one sandbox an authority", () => {
       content: "planted" }))).message).toBe(AGENTS_OWNER_ONLY);
     expect(await r.stub.fileWrite(tools, { path: "/workspace/run-notes.txt", expected_etag: "",
                                            content: "mine" })).toHaveProperty("entry");
+    // A client's run files no card: only the client's own verified call does.
+    expect(await failure(() => r.stub.registerPropose(tools, {
+      command_center_id: "alpha", display_name: "Muse", delivery_method: "pull",
+      recipe_id: null }))).toMatchObject({ code: "refused", message: OWN_CARD });
   });
 
   it("let the owner's own run edit an agent's agent.json and skills by default", async () => {

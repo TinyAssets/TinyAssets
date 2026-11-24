@@ -117,6 +117,10 @@ gone, whether `keyMint` keeps `scopes`, and so whether `centerOf`'s "name one ..
     session (`registering: true`, `Serves.registering`, `MCP_REGISTERS_BY_CARD`): a special
     case of the session rule, in the doors, the binder and the object.
   - `registerAgent` had two forms, its handler a branch per form.
+- A client's run files no card (review). The removed source check was also what refused a
+  client's run at `registerPropose` (a run's binding carries no source); without it the run
+  reached the handler and threw a `TypeError` reading its source. `own_card` now refuses a
+  run by its account (`account.run`), with the guard's own words.
 - The refusal names the one remedy.
   - `NOT_AN_AGENT` sent a key to the owner to mint another key, because a key could file
     no card.
