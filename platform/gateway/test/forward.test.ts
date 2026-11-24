@@ -479,17 +479,17 @@ describe("verify", () => {
     expect(verified.models.map((model) => model.id)).toEqual(catalog.map((model) => model.id));
     expect(verified.models.length).toBeGreaterThan(0);
     // Where sandbox egress may forward it: the sealed base URL and endpoints, no secret.
-    // A source of one API is handed as the owner's version before took it (`handed`).
-    expect(verified.egress).toEqual({ api: "anthropic-messages",
-                                      base_url: "https://api.anthropic.com",
-                                      endpoints: ANTHROPIC.endpoints, meter: {
-                                        method: "POST", path: "/v1/messages",
-                                        model_field: ["model"], output_field: ["max_tokens"] } });
+    expect(verified.egress).toEqual({ apis: [{ api: "anthropic-messages",
+                                               base_url: "https://api.anthropic.com", meter: {
+                                                 method: "POST", path: "/v1/messages",
+                                                 model_field: ["model"],
+                                                 output_field: ["max_tokens"] } }],
+                                      endpoints: ANTHROPIC.endpoints });
     expect(JSON.stringify(verified)).not.toContain("sk-good");
-    // Each model's whole pi-ai record, but for what is the gateway's: where and how it
-    // speaks to the upstream.
+    // Each model's whole pi-ai record, its API named, but for what is the gateway's: where and
+    // how it speaks to the upstream.
     verified.models.forEach((record, index) => {
-      const { api: _a, provider: _p, baseUrl: _b, headers: _h, compat: _c, type: _t,
+      const { provider: _p, baseUrl: _b, headers: _h, compat: _c, type: _t,
               samplingParams: _s, samplingParamsByThinkingLevel: _l, ...kept } = catalog[index]!;
       expect(record).toEqual(kept);
     });
