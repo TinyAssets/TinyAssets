@@ -5,7 +5,7 @@
 import {
   call, follow, randomText, Refused, RESOURCE, signIn, signOut, signedIn, whenSignedOut,
 } from "/app/static/api.js";
-import { action, bytes, eventShown, field, fill, h, when } from "/app/static/view.js";
+import { action, bytes, confirmed, eventShown, field, fill, h, when } from "/app/static/view.js";
 
 /**
  * What the doors answer at an owner-surface path, as they type it (`call`).
@@ -685,13 +685,17 @@ async function versions(box, path) {
        h("ul", {}, changes.map((c) => h("li", {}, `${when(c.at)}: ${c.op} by ${c.writer} `,
          c === current ? h("span", { class: "muted" }, "(current)")
            : c.content_id === null ? h("span", { class: "muted" }, "(no content kept)")
-             : action("Remove its content", async () => {
+             : confirmed("Remove its content", "Remove this version's content? It cannot be " +
+                 "read or restored from this version again; another version with the same " +
+                 "content keeps its own. This cannot be undone.", "Remove it", async () => {
                await call("files/redact", { path, version: c.version });
                say(`Removed that version's content from ${path}.`);
                await again();
-             }, report, { class: "quiet" })))),
+             }, report, { class: "danger" })))),
        next === null ? null : h("p", { class: "muted" }, "Older versions are not listed here."),
-       older.length === 0 ? null : action("Remove older versions", async () => {
+       older.length === 0 ? null : confirmed("Remove older versions", `Remove every version ` +
+         `of ${path} but the current one, listed or not? This cannot be undone.`, "Remove them",
+       async () => {
          await call("files/purge", { path });
          say(`Removed every older version of ${path}.`);
          await again();
@@ -735,15 +739,6 @@ function doorbell(agent, kinds) {
 function mainAgent(agent, kinds) {
   const name = agent.display_name;
   const on = agent.disabled_reason === null;
-  const remove = h("div", { class: "row" });
-  const ask = () => fill(remove,
-    h("span", {}, `Delete ${name} and all its mail with you and your agents? This cannot be undone.`),
-    action(`Delete ${name}`, async () => {
-      await call("agent/delete", { agent_id: agent.agent_id });
-      say(`Deleted ${name} and all its mail.`);
-      await apps();
-    }, report, { class: "danger" }));
-  fill(remove, action("Delete", async () => ask(), report, { class: "quiet" }));
   return h("div", { class: "card" },
     h("b", {}, name),
     on ? doorbell(agent, kinds)
@@ -754,7 +749,13 @@ function mainAgent(agent, kinds) {
       say(`Turned off ${name}. Its mail stays with you.`);
       await apps();
     }, report, { class: "quiet" }) : null,
-    remove);
+    confirmed("Delete", `Delete ${name} and all its mail with you and your agents? Its app ` +
+      "stays connected until you disconnect it. This cannot be undone.", `Delete ${name}`,
+    async () => {
+      await call("agent/delete", { agent_id: agent.agent_id });
+      say(`Deleted ${name} and all its mail.`);
+      await apps();
+    }, report, { class: "danger" }));
 }
 
 // -- Rooms and board ------------------------------------------------------------------

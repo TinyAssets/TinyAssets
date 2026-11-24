@@ -900,10 +900,15 @@ test("a run that mail started shows its mail, and a file's older versions are re
   await kept.nth(1).waitFor();
   assert.equal(await kept.count(), 2);
   await kept.first().getByText("(current)").waitFor();
+  // Each asks first, saying what goes.
   await kept.nth(1).getByRole("button", { name: "Remove its content" }).click();
+  await kept.nth(1).getByText(/^Remove this version's content\? .* cannot be undone\.$/).waitFor();
+  await kept.nth(1).getByRole("button", { name: "Remove it", exact: true }).click();
   await page.locator(".message.good", { hasText: "Removed that version's content" }).waitFor();
   await kept.nth(1).getByText("(no content kept)").waitFor();
   await page.getByRole("button", { name: "Remove older versions" }).click();
+  await page.getByText(/^Remove every version of .* but the current one/).waitFor();
+  await page.getByRole("button", { name: "Remove them", exact: true }).click();
   await page.locator(".message.good", { hasText: "Removed every older version" }).waitFor();
   await page.getByRole("button", { name: "Remove older versions" }).waitFor({ state: "detached" });
   assert.equal(await kept.count(), 1);

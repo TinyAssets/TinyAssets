@@ -66,6 +66,11 @@ to its profile's tools).
   off and Delete), the disconnected apps, `chain` at Past runs, `versions` in the file editor.
   The app's Turn off names one reason, "turned off by the owner", which the agent reads back in
   `agents_list` (`disabled_reason`).
+- Review: "Remove its content" and "Remove older versions" ask first too, as Delete does,
+  through one `confirmed` button (`doors/app/view.js`). Each question says what goes and what
+  stays: a redacted version's content is gone from it, another version with the same content
+  keeps its own; a purge takes every older version, listed or not; a deleted agent's app stays
+  connected until the owner disconnects it.
 - Tests: `doors/test/app-routes.test.ts` (an app's agent turned off, back, its mail chain read,
   deleted; a disconnected app's revoke lifted with its fence standing; a file's older content
   and versions removed), `doors/test/app.e2e.mjs` (the card's buttons, the disconnected app,
