@@ -496,7 +496,9 @@ export function edited(document: PolicyDocument, change: unknown): PolicyDocumen
     throw new Refusal("invalid", CHANGE_REFUSED);
   }
   LISTS.forEach((place, list) => {
-    const table = place.slice(0, -1).reduce<unknown>((at, key) => own(at, key), next);
+    // A list's table is there: the document itself, or `egress`, which no `set` replaces.
+    const table = place.slice(0, -1).reduce((at, key) => own(at, key) as Record<string, unknown>,
+                                            next);
     const key = place.at(-1)!;
     const before = own(table, key);
     const gone = new Set(removed[list]!.map((entry) => canonical(entry)));
@@ -509,7 +511,7 @@ export function edited(document: PolicyDocument, change: unknown): PolicyDocumen
         after.push(entry);
       }
     }
-    if (object(table) && (before !== undefined || after.length > 0)) {
+    if (before !== undefined || after.length > 0) {
       put(table, key, after);
     }
   });
