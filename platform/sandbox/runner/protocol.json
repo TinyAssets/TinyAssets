@@ -283,6 +283,36 @@
     "answers": {
       "state": { "live": "number", "quiet": "boolean", "protocol": "number" },
       "quiet-wait": { "live": "number", "quiet": "boolean" }
+    },
+    "relayed": {
+      "fileChanges": {
+        "required": {
+          "changes": { "type": "array" }, "cursor": { "type": "integer" },
+          "reset": { "type": "boolean" }
+        },
+        "optional": {}
+      },
+      "fileList": {
+        "required": { "entries": { "type": "array" }, "next": { "type": ["string", "null"] } },
+        "optional": {}
+      },
+      "fileRead": {
+        "required": { "entry": { "type": "object" } },
+        "optional": { "inline": { "type": "bytes" }, "chunks": { "type": "array" } }
+      },
+      "fileReadChunks": { "required": { "chunks": { "type": "array" } }, "optional": {} },
+      "fileSyncCommit": { "required": { "outcomes": { "type": "array" } }, "optional": {} },
+      "fileSyncUploadBegin": {
+        "required": { "intent_id": { "type": "string" }, "missing": { "type": "array" } },
+        "optional": {}
+      },
+      "runDecide": {
+        "required": {},
+        "optional": {
+          "tools": { "type": "array" }, "generation": { "type": "integer" },
+          "allow": { "type": "boolean" }
+        }
+      }
     }
   }
 }

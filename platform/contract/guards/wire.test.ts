@@ -52,8 +52,8 @@ describe("the egress host's doors", () => {
     expect(egressDoor(`/r/${RUN}/c/${CONNECTION}/v1/chat/completions`)).toEqual(
       { door: "model", run: RUN, secret: undefined, connection: CONNECTION,
         path: "/v1/chat/completions" });
-    expect(SYNC_DOORS.map((sync) => egressDoor(`/sync/${sync}`)))
-      .toEqual(SYNC_DOORS.map((sync) => ({ door: "sync", sync })));
+    expect(Object.keys(SYNC_DOORS).map((sync) => egressDoor(`/sync/${sync}`)))
+      .toEqual(Object.keys(SYNC_DOORS).map((sync) => ({ door: "sync", sync })));
     // The decide door on the MCP door's origin, one path for every run, the run named by its
     // credential: only from a URL with the secret.
     const door = decideDoor(urls.mcp);

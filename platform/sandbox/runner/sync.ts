@@ -65,7 +65,8 @@ import { heldSecret } from "./guards";
 import { STATE_DIR } from "./protocol";
 import { readJson, STORE, withStore } from "./session";
 import { SYNC_HOME } from "./users";
-import { SYNC_HEADER, type SyncDoor } from "../../contract/src/egress";
+import { type SYNC_DOORS, SYNC_HEADER, type SyncDoor } from "../../contract/src/egress";
+import type { RelayedAnswer } from "../../contract/src/owner";
 import { CLIENT_READ_ONLY, WORKSPACE } from "../../contract/src/paths";
 import {
   CHUNK_BYTES, INLINE_BYTES, INTENT_ID_BYTES, MAX_LIST, MAX_SYNC_OPS, SYNC_BODY_MAX,
@@ -239,19 +240,23 @@ export class SyncRefused extends Error {
   }
 }
 
+/** A sync door's answer: its owner door's, as the doors relay it (`SYNC_DOORS`). */
+type SyncAnswer<D extends SyncDoor> = RelayedAnswer<(typeof SYNC_DOORS)[D]>;
+
 /**
  * The sync doors' client: a call refused for the moment (the network, `429`, `503`) is
  * asked again with no count, its wait doubling from `firstMs` (the runner's flush cadence:
  * no sooner than its next batch of frames would go) to `ceilingMs` (a heartbeat: the run's
  * report is never held longer than one). A lost lease (`401`, or the code `sync_fenced`) is
  * `SyncFenced`; any other refusal is `SyncRefused`, with the object's whole message, for the
- * caller to report as that call's own (a full storage's used and total among it).
+ * caller to report as that call's own (a full storage's used and total among it, a path
+ * gone's `404`).
  */
 export class SyncClient {
   constructor(readonly origin: string, readonly token: string, readonly firstMs: number,
               readonly ceilingMs: number) {}
 
-  async post(door: SyncDoor, body: unknown): Promise<Record<string, unknown>> {
+  async post<D extends SyncDoor>(door: D, body: unknown): Promise<SyncAnswer<D>> {
     for (let wait = this.firstMs; ; wait = Math.min(wait * 2, this.ceilingMs)) {
       let response: Response;
       try {
@@ -264,10 +269,7 @@ export class SyncClient {
       }
       const text = await response.text();
       if (response.status === 200) {
-        return JSON.parse(text) as Record<string, unknown>;
-      }
-      if (response.status === 404 && door === "read") {
-        return { missing: true };
+        return JSON.parse(text) as SyncAnswer<D>;
       }
       if (response.status === 503 || response.status === 429) {
         await new Promise((resolve) => setTimeout(resolve, wait));
@@ -459,11 +461,16 @@ interface Fetched {
 async function fetchInto(client: SyncClient, path: string, base: string, local: string,
                          modeOf: (mode: number) => number, dirMode: number):
     Promise<Fetched | null> {
-  const read = await client.post("read", { path });
-  if (read["missing"] === true) {
-    return null;
+  let read: SyncAnswer<"read">;
+  try {
+    read = await client.post("read", { path });
+  } catch (error) {
+    if (error instanceof SyncRefused && error.status === 404) {
+      return null;
+    }
+    throw error;
   }
-  const entry = read["entry"] as { version: number; mode: number; kind: string };
+  const entry = read.entry as { version: number; mode: number; kind: string };
   if (entry.kind !== "file") {
     return null;
   }
@@ -476,14 +483,14 @@ async function fetchInto(client: SyncClient, path: string, base: string, local: 
     size += piece.byteLength;
   };
   try {
-    if (typeof read["inline"] === "string") {
-      take(new Uint8Array(Buffer.from(read["inline"], "base64")));
+    if (typeof read.inline === "string") {
+      take(new Uint8Array(Buffer.from(read.inline, "base64")));
     } else {
-      const chunks = (read["chunks"] ?? []) as { sha256: string; size: number }[];
+      const chunks = (read.chunks ?? []) as { sha256: string; size: number }[];
       for (let first = 0; first < chunks.length; first += 2) {
         const got = await client.post("chunks", { path, version: entry.version, first,
                                                    count: Math.min(2, chunks.length - first) });
-        for (const part of got["chunks"] as string[]) {
+        for (const part of got.chunks) {
           take(new Uint8Array(Buffer.from(part, "base64")));
         }
       }
@@ -707,16 +714,16 @@ async function listApply(client: SyncClient, place: Place, mirror: Mirror,
                          select: () => Selection, dir: string): Promise<void> {
   let after: string | null = null;
   for (;;) {
-    const page = await client.post("list", { dir, limit: MAX_LIST,
-                                             ...(after === null ? {} : { after }) });
-    for (const entry of page["entries"] as { path: string; kind: string; version: number }[]) {
+    const page: SyncAnswer<"list"> = await client.post("list", {
+      dir, limit: MAX_LIST, ...(after === null ? {} : { after }) });
+    for (const entry of page.entries as { path: string; kind: string; version: number }[]) {
       await apply(client, place, mirror, select, entry.path, entry.kind, entry.version);
       mirror.seen(entry.path);
       if (entry.kind === "dir") {
         await listApply(client, place, mirror, select, entry.path);
       }
     }
-    after = page["next"] as string | null;
+    after = page.next;
     if (after === null) {
       return;
     }
@@ -731,8 +738,8 @@ export async function syncIn(client: SyncClient, place: Place, mirror: Mirror): 
   for (;;) {
     const cursor = mirror.cursor();
     const page = await client.post("changes", { after: cursor, limit: MAX_LIST });
-    const changes = page["changes"] as { path: string; kind: string | null; version: number }[];
-    if (page["reset"] === true) {
+    const changes = page.changes as { path: string; kind: string | null; version: number }[];
+    if (page.reset === true) {
       mirror.resetBegin();
       try {
         await listApply(client, place, mirror, select, WORKSPACE);
@@ -746,7 +753,7 @@ export async function syncIn(client: SyncClient, place: Place, mirror: Mirror): 
       } finally {
         mirror.resetEnd();
       }
-      mirror.setCursor(page["cursor"] as number);
+      mirror.setCursor(page.cursor);
       continue;
     }
     const last = new Map<string, { kind: string | null; version: number }>();
@@ -759,7 +766,7 @@ export async function syncIn(client: SyncClient, place: Place, mirror: Mirror): 
         await apply(client, place, mirror, select, path, kind, version);
       }
     }
-    mirror.setCursor(page["cursor"] as number);
+    mirror.setCursor(page.cursor);
     if (changes.length < MAX_LIST) {
       return;
     }
@@ -1059,14 +1066,14 @@ async function upload(client: SyncClient, op: Op,
   const begun = await client.post("upload_begin", { lease_id: lease.lease_id,
                                                     epoch: lease.epoch, size: op.size,
                                                     chunks: op.chunks });
-  const intentId = begun["intent_id"];
+  const intentId = begun.intent_id;
   if (typeof intentId !== "string" || intentId.length !== INTENT_ID_CHARS) {
     // Each commit op is counted with an intent id of `INTENT_ID_CHARS` (`opBytes`).
     throw new Error(`the upload door's intent id is not ${INTENT_ID_CHARS} characters: ${
       JSON.stringify(intentId)}`);
   }
   try {
-    const missing = new Set(begun["missing"] as string[]);
+    const missing = new Set(begun.missing as string[]);
     const ok = await safePieces(op.from!.base, op.from!.local, CHUNK_BYTES,
                                 async (piece, i) => {
       const hash = sha256Hex(piece);
@@ -1169,7 +1176,7 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
     }
     const answer = await client.post("commit", { lease_id: lease.lease_id, epoch: lease.epoch,
                                                   ops: sent });
-    const outcomes = answer["outcomes"] as { path: string; outcome: string;
+    const outcomes = answer.outcomes as { path: string; outcome: string;
                                              entry?: { version: number } | null;
                                              current?: { kind: string } | null;
                                              reason?: string; code?: string }[];

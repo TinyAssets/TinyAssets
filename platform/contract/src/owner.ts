@@ -23,11 +23,13 @@
  *   literal, a union's arms, a list's items, an object's fields); where it declares none, an
  *   object they pass on as it came (as JSON, or as an RPC result).
  *
- * Beside them are answers as the owner's handlers answer them whole, which readers that are
- * not the doors read by their own types: the egress door's (`EgressOpened`, `EgressReserved`,
- * `EgressRefusal`), the deploy kit's through the operator door (`OwnerStateAnswer`, the
- * rotations' and the restore's), and the runner's decide hook's (`DecideAnswer`); and the
- * billed event the E2B hook routes (`BilledEvent`).
+ * The answers the doors relay to the sandbox are the rows' too, the fields only its runner
+ * reads marked `unread` (`RelayedAnswer`, each runner protocol's record of them,
+ * `sandbox/runner/protocol.json` `relayed`). Beside them are answers as the owner's handlers
+ * answer them whole, which other readers past the doors read by their own types: the egress
+ * door's (`EgressOpened`, `EgressReserved`, `EgressRefusal`) and the deploy kit's through the
+ * operator door (`OwnerStateAnswer`, the rotations' and the restore's); and the billed event
+ * the E2B hook routes (`BilledEvent`).
  */
 import type { ServedSkill } from "./agent-definition.ts";
 import type { Binding } from "./binding.ts";
@@ -85,14 +87,6 @@ export interface EgressRefusal {
   /** The refusal's receipt row; null past the minute's refusal receipts. */
   readonly receipt: string | null;
 }
-
-/**
- * What the owner answers a run's decide hook (`runDecide`), which the doors relay whole to the
- * runner (`sandbox/runner/decide.ts`): the tools it may call and the policy's generation, a
- * yes, or the hook's own answer to hand its CLI.
- */
-export type DecideAnswer = { readonly tools: readonly string[]; readonly generation: number }
-  | { readonly allow: true } | { readonly hook: object };
 
 /**
  * A request body the doors parsed (`doors/src/kit.ts`, `jsonObject`, its one maker) and
@@ -550,7 +544,19 @@ export type DoorAnswer<D extends string> = D extends keyof DoorAnswers
   : object;
 /**
  * What the owner answers of a door: what the doors read (`DoorAnswer`), and the fields its row
- * marks `unread`, which the doors' version before may still read (`owner/src/owner-do.ts`).
+ * marks `unread`, which the doors' version before or a spoken runner protocol may still read
+ * (`owner/src/owner-do.ts`).
  */
 export type OwnerAnswer<D extends string> = DoorAnswer<D>
   & (D extends keyof UnreadAnswers ? UnreadAnswers[D] | null : unknown);
+/** A value as JSON carries it: its bytes as base64. */
+type AsJson<T> = T extends Uint8Array ? string
+  : T extends readonly (infer Item)[] ? readonly AsJson<Item>[]
+    : T extends object ? keyof T extends never ? T : { readonly [K in keyof T]: AsJson<T[K]> }
+      : T;
+/**
+ * A door's answer as the doors relay it to the sandbox, which its runner reads
+ * (`sandbox/runner/sync.ts`, `decide.ts`): what the owner answers (`OwnerAnswer`), whole, as
+ * JSON (`doors/src/egress.ts`: the sync doors by `SYNC_DOORS`, and the decide door).
+ */
+export type RelayedAnswer<D extends string> = AsJson<OwnerAnswer<D>>;

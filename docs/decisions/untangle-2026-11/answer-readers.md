@@ -154,7 +154,8 @@ the same set; a reader with no type is refused rather than passed.
 
 ## Owed
 
-- [ ] untangle/runner-answers: the runner's reads of the answers the doors relay (`sync.ts`,
+- [x] untangle/runner-answers: the runner's reads of the answers the doors relay (`sync.ts`,
   `decide.ts`) typed by the table's answers and found by `ci/kit/answer-reads.ts`, recorded
   per protocol (`sandbox/runner/protocol.json`), and the tree's owner held to every protocol
-  its sandbox Worker speaks (`SPEAKS`); research first (Fact 14).
+  its sandbox Worker speaks (`SPEAKS`); research first (Fact 14). Built as
+  `runner-answers.md` says, the serving sandbox's protocols held too.

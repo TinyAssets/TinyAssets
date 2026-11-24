@@ -443,8 +443,9 @@ export interface OwnerDO extends DoorMethods<typeof HANDLERS> {}
 
 /**
  * The doors whose handler leaves out a field its row's answer marks `unread`, which the doors'
- * version before may still read (`contract/doors.json`, `deploy/handed.ts`): `tsc` refuses
- * any, as `implements OwnerDoors` holds the rest of each answer.
+ * version before or a spoken runner protocol may still read (`contract/doors.json`,
+ * `deploy/handed.ts`): `tsc` refuses any, as `implements OwnerDoors` holds the rest of each
+ * answer.
  */
 type Unanswered = { [D in keyof DoorRows & keyof UnreadAnswers]:
   [AnswerIn<typeof HANDLERS, D>] extends [OwnerAnswer<D>] ? never : D

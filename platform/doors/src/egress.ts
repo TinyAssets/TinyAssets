@@ -51,7 +51,7 @@ import {
 import {
   DECIDE_HEADER, decideCredential, EGRESS_BEAT_S, EGRESS_ORIGIN, egressDoor, GENERATION_HEADER,
   generationIn, type Outcome, RESEALED_HEADER, RUN_HEADER, RUNNER_HEADER, SANDBOX_HEADER,
-  SYNC_HEADER, type SyncDoor,
+  SYNC_DOORS, SYNC_HEADER, type SyncDoor,
 } from "../../contract/src/egress";
 import { HEX64 } from "../../contract/src/ids";
 import type { JsonBody, SettleSent } from "../../contract/src/owner";
@@ -351,26 +351,23 @@ function serveSync(request: Request, env: DoorsEnv, door: SyncDoor): Promise<Res
                      async ({ binding, stub }, body) => {
     switch (door) {
       case "changes":
-        return stub.fileChanges(binding, body);
       case "list":
-        return stub.fileList(binding, body);
+      case "upload_begin":
+      case "upload_abort":
+        return stub[SYNC_DOORS[door]](binding, body);
       case "read": {
-        const read = await stub.fileRead(binding, body);
+        const read = await stub[SYNC_DOORS[door]](binding, body);
         return { ...read, ...(read.inline === undefined ? {} : { inline: base64(read.inline) }) };
       }
       case "chunks": {
-        const read = await stub.fileReadChunks(binding, body);
+        const read = await stub[SYNC_DOORS[door]](binding, body);
         return { chunks: read.chunks.map(base64) };
       }
       case "commit":
-        return stub.fileSyncCommit(binding, { ...body, ops: decoded(body["ops"], "inline") });
-      case "upload_begin":
-        return stub.fileSyncUploadBegin(binding, body);
+        return stub[SYNC_DOORS[door]](binding, { ...body, ops: decoded(body["ops"], "inline") });
       case "upload_chunks":
-        return stub.fileSyncUploadChunks(binding, {
+        return stub[SYNC_DOORS[door]](binding, {
           ...body, chunks: decoded(body["chunks"], "bytes") });
-      case "upload_abort":
-        return stub.fileSyncUploadAbort(binding, body);
     }
   });
 }
