@@ -126,3 +126,10 @@ must be prepared.
 - [x] `launch.ts` `#whole` and `bodies.ts` `fetch`: a lane's read of an agent file or a placed
   mail body waits on the pool, where a lane takes units only now (`unitsNow`). Research first
   whether the lane's reads take them now and hold on `busy` (`untangle/lane-pool-wait`).
+
+### Distinguish a failed read from refusal to allocate a sandbox
+
+The Doors wait contract and the Owner's run and sign-in paths reserve `sandbox_waiting` for placement capacity or an existing queue turn. On main `d662e63e`, the start also caught HTTP 429 and 503 on the team-count read and on the new sandbox's first status read. The same failed read could send an owner to the capacity queue even after its sandbox had already been made.
+
+- [x] Restrict the capacity classification to the provider's create and connect calls. A 429, a 503 or the provider's named capacity refusal on placement still qualifies. The same status on a read remains an ordinary failure. The start and both renewal paths use that classification. Four Worker cases failed on main, with two genuine placement-refusal controls passing. All 169 ordinary sandbox cases passed on this branch.
+- [ ] Recheck with the acknowledged-ID branch and #5857. Remembering the ID, classifying a refusal and preserving the verified copy across an interrupted template move have distinct checks.

@@ -15,15 +15,8 @@ import {
   created, E2bError, E2bTransport, type Handle, runtimeFetch, sandboxId,
 } from "../e2b/transport";
 
-/**
- * Whether an answer means E2B has no room for one more running sandbox now: its
- * concurrency limit (`429`) or no capacity to place one (`503`, or the
- * `sandbox_capacity_unavailable` code). A run then waits, never refused.
- */
-export function noRoom(error: unknown): boolean {
-  return error instanceof E2bError && (error.status === 429 || error.status === 503
-    || error.code === "sandbox_capacity_unavailable");
-}
+/** E2B refused a create or connect because it could not place the sandbox. */
+export class NoRoom extends E2bError {}
 
 /** What the platform API tells of one sandbox. */
 export interface SandboxInfo {
@@ -61,6 +54,18 @@ export function runtimeE2b(key: string): E2b {
 
 /** The sandbox Worker's E2B: the transport's calls and a sandbox's lifecycle. */
 export class E2b extends E2bTransport {
+  async #place(path: string, body: unknown): Promise<Handle> {
+    try {
+      return created((await this.api("POST", path, body, [200, 201])).json);
+    } catch (error) {
+      if (error instanceof E2bError && (error.status === 429 || error.status === 503
+          || error.code === "sandbox_capacity_unavailable")) {
+        throw new NoRoom(error.status, error.code, error.message);
+      }
+      throw error;
+    }
+  }
+
   /**
    * A new sandbox from `template`, its network and its timeout, paused on timeout with its
    * memory. `secure`: envd answers only a caller with the sandbox's envd token (without it,
@@ -68,12 +73,11 @@ export class E2b extends E2bTransport {
    */
   async create(request: { template: string; timeoutS: number; network: NetworkDocument;
                           metadata: Readonly<Record<string, string>> }): Promise<Handle> {
-    const { json } = await this.api("POST", "/v2/sandboxes", {
+    return this.#place("/v2/sandboxes", {
       templateID: request.template, timeout: request.timeoutS, secure: true, autoPause: true,
       autoPauseMemory: true, autoResume: { enabled: false }, network: request.network,
       metadata: request.metadata,
-    }, [201, 200]);
-    return created(json);
+    });
   }
 
   /** The sandbox's info, or null when E2B has no such sandbox (killed). */
@@ -110,8 +114,7 @@ export class E2b extends E2bTransport {
   /** Resume it if paused (memory restored), its timeout at least `timeoutS` from now. */
   async connect(id: string, timeoutS: number): Promise<Handle | null> {
     try {
-      return created((await this.api("POST", `/v2/sandboxes/${sandboxId(id)}/connect`,
-                                     { timeout: timeoutS }, [200, 201])).json);
+      return await this.#place(`/v2/sandboxes/${sandboxId(id)}/connect`, { timeout: timeoutS });
     } catch (error) {
       if (error instanceof E2bError && error.status === 404) {
         return null;
@@ -124,7 +127,7 @@ export class E2b extends E2bTransport {
    * How many sandboxes E2B runs now for the whole team the key is of (`X-Total-Running`,
    * the running sandboxes before pagination: probes and other templates count too), or
    * null when E2B gave no count. A count is advisory: two owners may read it at once, so
-   * E2B's own refusal (`noRoom`) is what holds the plan, and an unknown count means "try".
+   * E2B's own refusal (`NoRoom`) is what holds the plan, and an unknown count means "try".
    */
   async running(): Promise<number | null> {
     const { headers } = await this.api("GET", "/v2/sandboxes?state=running&limit=1");

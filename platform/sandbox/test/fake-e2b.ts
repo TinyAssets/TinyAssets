@@ -62,6 +62,8 @@ interface Script {
   noCount: boolean;
   /** How many info calls answer 500 (E2B unreachable) before they answer again. */
   down: number;
+  /** One refused platform request, consumed when the matching call arrives. */
+  apiFault: { method: string; prefix: string; status: number; code?: string } | null;
   /** A resume of a paused sandbox answered 429, creates still taken. */
   refuseResume: boolean;
   /** A runner command whose process start envd answers 502 (the sandbox went away). */
@@ -109,7 +111,7 @@ function reset(): void {
   fake.rings = [];
   fake.held = [];
   fake.script = { signin: {}, state: { live: 1, quiet: false }, others: 0, busy: 0,
-                  full: false, pauseMode: "full", noCount: false, down: 0,
+                  full: false, pauseMode: "full", noCount: false, down: 0, apiFault: null,
                   refuseResume: false, broken: null, tampered: null,
                   protocol: (env as unknown as { RUNNER_PROTOCOL: number }).RUNNER_PROTOCOL,
                   room: null, lost: null, hold: null };
@@ -216,6 +218,11 @@ async function api(request: Request, url: URL): Promise<Response> {
   const text = request.method === "GET" ? "" : await request.text();
   const body: unknown = text === "" ? null : JSON.parse(text);
   fake.calls.push({ method: request.method, path: url.pathname, body, query: url.search });
+  const fault = fake.script.apiFault;
+  if (fault !== null && request.method === fault.method && url.pathname.startsWith(fault.prefix)) {
+    fake.script.apiFault = null;
+    return Response.json({ error_code: fault.code }, { status: fault.status });
+  }
   const [, first, second, third, fourth] = url.pathname.split("/");
   if (request.method === "POST" && first === "v2" && second === "sandboxes" && !third) {
     if (fake.script.full) {

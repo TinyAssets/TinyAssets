@@ -107,7 +107,7 @@ import { type AnswerFields, ANSWERS, COMMAND, COMMAND_MS, EXIT, inboxCode, inbox
          type SigninDoc, type StartDoc, type StateAnswer,
          type WorkerCommand } from "../runner/protocol";
 
-import { type E2b, noRoom, runtimeE2b, type SandboxInfo } from "./e2b";
+import { type E2b, NoRoom, runtimeE2b, type SandboxInfo } from "./e2b";
 import { runnerBytes, runnerDigest } from "./runner-bytes";
 import { CONTROL_MIGRATIONS } from "./schema";
 import type { SandboxEnv } from "./env";
@@ -725,7 +725,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   /**
    * A paused sandbox resumed (memory restored, or rebooted when E2B kept its files only):
    * prepared again, and its runs told (`renewed`) or restarted from disk (`recover`). Null
-   * when E2B has it no more. E2B's refusal for room is thrown (`noRoom`). Every resume, a
+   * when E2B has it no more. E2B's refusal for room is thrown (`NoRoom`). Every resume, a
    * start's or the look's, makes its runner one this Worker speaks to first (`#speaking`): one
    * resumed with its memory and no renewal pending adopts this Worker's when nothing lives, so
    * the one `prepare` is the adopted runner's; a rebooted one's runs restart under the runner
@@ -861,7 +861,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       await this.#prepare(box, network!);
       return { handle: box };
     } catch (error) {
-      if (noRoom(error)) {
+      if (error instanceof NoRoom) {
         return wait();
       }
       throw error;
@@ -1419,7 +1419,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         }
         return this.#row(row.authority)!.end_at - windowMs;
       } catch (error) {
-        if (!noRoom(error)) {
+        if (!(error instanceof NoRoom)) {
           throw error;
         }
         console.error("sandbox_renewal_refused: E2B refused to resume a sandbox a lease runs " +
@@ -1544,7 +1544,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     try {
       await this.#resume({ ...row, renewing: 1 }, found, null, ceilings);
     } catch (error) {
-      if (!noRoom(error)) {
+      if (!(error instanceof NoRoom)) {
         throw error;
       }
       console.error("sandbox_renewal_refused: E2B refused a renewal's resume; asked again");
