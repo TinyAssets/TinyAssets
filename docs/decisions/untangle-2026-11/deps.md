@@ -12,12 +12,21 @@ The platform's tests refuse installed dependencies that are not `platform/packag
 
 ## As built
 
-1. `platform/ci/deps.ts`: `mismatch(root)` names the first entry the install does not hold as locked (a version, a missing package, a workspace link that does not hold its workspace's package, a package installed in a `node_modules` but not locked); an optional package may be absent only when its locked `os` or `cpu` excludes this machine, never another version. `installed()` throws with that entry, ending "run `npm ci` in platform/."
-2. In CI it always passes: `npm ci` ran. Nothing in it reads the environment.
+1. `platform/ci/deps.ts`: `mismatch(root)` names the first entry the install does not hold as locked (a version, a missing package, a workspace link that does not hold its workspace's package, a package installed in a `node_modules` but not locked); an optional package may be absent if its platform is excluded or every locked path to it passes through an absent, excluded variant. An installed optional must match its locked version. `installed()` throws with that entry, ending "run `npm ci` in platform/."
+2. The check uses the installed manifests, lockfile, host OS and architecture. It runs after the CI install.
 3. `platform/ci/guards/deps.test.ts` holds it on a lockfile and install of its own in a temp folder.
 4. `AGENTS.md` is unchanged: the refusal names its fix, so a rule there would repeat it (Direction 6).
 
 Review (2026-11-14): an optional package was allowed absent on every machine, so one npm installs here (a Linux binary marked optional) could be missing unnoticed; and a stale package left in a `node_modules`, nested ones included, would be loaded, or would shadow the hoisted one its parent loads in CI. Both are now refused; the walk adds about 9 ms.
+
+### Portable children of optional variants (November 26)
+
+On main `d662e63e`, a clean npm 11.19.1 install on Linux installed 277 packages. The ordinary test entry refused to start because it required `@emnapi/runtime` 1.11.3. In this lockfile the only paths to it run through the FreeBSD and WebContainers builds of sharp. Both variants are excluded here. npm 10 also produced a usable install, with the portable children present. Treating every optional package as dispensable would hide missing native binaries on compatible machines.
+
+The guard now follows declared edges to their actual locked paths, including hoisting and workspace-local versions. It propagates exclusions only from absent incompatible packages. A second applicable dependency path, an installed parent, or an unproved cycle keeps the child required. The prior version checks still cover packages that are present.
+
+- [x] Run the original and corrected checks on both clean installs. Original: npm 11 refused and npm 10 passed. Corrected: both passed on Node 24. The twelve focused guards and full platform TypeScript passed on the npm 11 install.
+- [ ] Check the complete CI guards and review the independent branch before integration.
 
 ## Left
 

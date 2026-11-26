@@ -2,7 +2,7 @@
  * The install check (`ci/deps.ts`) on a lockfile and an install of its own, in a temp folder:
  * an install as locked passes, and each way one differs is named.
  */
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -60,6 +60,46 @@ describe("the install check", () => {
   it("names a missing optional package that installs on this machine", () => {
     rmSync(join(root, "node_modules", "this-os"), { recursive: true });
     expect(mismatch(root)).toBe("node_modules/this-os is missing (locked 1.0.0)");
+  });
+
+  describe("shared dependencies of optional platform variants", () => {
+    const leaf = "node_modules/runtime";
+    const engine = "node_modules/wasm";
+    let packages: Record<string, Record<string, unknown>>;
+    function check(): string | null {
+      write("package-lock.json", { lockfileVersion: 3, packages });
+      return mismatch(root);
+    }
+    beforeEach(() => {
+      packages = JSON.parse(readFileSync(join(root, "package-lock.json"), "utf8")).packages;
+      packages["node_modules/other-os"]!.dependencies = { wasm: "1" };
+      packages["node_modules/other-cpu"] = { version: "1", optional: true, cpu: [`!${process.arch}`],
+        dependencies: { wasm: "1" } };
+      packages[leaf] = { version: "2", optional: true };
+      packages[engine] = { version: "1", optional: true, dependencies: { runtime: "2" } };
+    });
+    it("accepts a portable transitive shared only by absent incompatible variants", () => {
+      expect(check()).toBeNull();
+    });
+    it("requires the hoisted runtime when a workspace also asks for it", () => {
+      packages.w!.optionalDependencies = { runtime: "2" };
+      expect(check()).toBe(leaf + " is missing (locked 2)");
+    });
+    it("requires children of a variant actually installed on this machine", () => {
+      write(engine + "/package.json", { version: "1" });
+      expect(check()).toBe(leaf + " is missing (locked 2)");
+    });
+    it("resolves a workspace's own locked version before the hoisted version", () => {
+      packages.w!.devDependencies = { runtime: "3" };
+      packages["w/node_modules/runtime"] = { version: "3", optional: true };
+      expect(check()).toBe("w/node_modules/runtime is missing (locked 3)");
+      write("w/node_modules/runtime/package.json", { version: "3" });
+      expect(check()).toBeNull();
+    });
+    it("keeps an unproved optional cycle required", () => {
+      packages[leaf]!.dependencies = { wasm: "1" };
+      expect(check()).toBe(leaf + " is missing (locked 2)");
+    });
   });
 
   it("names a package installed but not locked, a nested one among them", () => {

@@ -8,8 +8,8 @@
  *
  * What is checked is what Node loads: each `packages` entry of `platform/package-lock.json`
  * against the `package.json` at its path. A package is its locked version; a workspace link
- * holds its workspace's package; an optional package may be absent only when its locked `os`
- * or `cpu` excludes this machine (npm installs it everywhere else), never another version.
+ * holds its workspace's package. An optional package can be absent when this machine
+ * excludes it or all its locked dependency paths. Installed versions must still match.
  * Every package in a `node_modules` is locked: a stale one left there is loaded, or shadows
  * the hoisted one its parent would load in CI. npm's hidden lockfile
  * (`node_modules/.package-lock.json`) says what npm last wrote, not what is there now, and
@@ -17,7 +17,8 @@
  * (`docs/decisions/untangle-2026-11/deps.md`).
  */
 import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { createRequire } from "node:module";
+import { join, relative, resolve, sep } from "node:path";
 
 import { PLATFORM } from "./paths.ts";
 
@@ -27,6 +28,10 @@ interface Locked {
   readonly resolved?: string;
   readonly link?: boolean;
   readonly optional?: boolean;
+  readonly dependencies?: Record<string, string>;
+  readonly optionalDependencies?: Record<string, string>;
+  readonly peerDependencies?: Record<string, string>;
+  readonly devDependencies?: Record<string, string>;
   readonly os?: readonly string[];
   readonly cpu?: readonly string[];
 }
@@ -63,10 +68,52 @@ function manifest(folder: string): Locked | null {
   }
 }
 
+/** npm can omit an otherwise portable package when all its parents belong to absent platform
+ * variants. Resolve each edge to its locked install path, including nested workspace versions. */
+function excludedOptionals(root: string, packages: Record<string, Locked>, missing: Set<string>): Set<string> {
+  const excluded = new Set([...missing].filter((path) => {
+    const { os, cpu } = packages[path]!;
+    return !fits(os, process.platform) || !fits(cpu, process.arch);
+  }));
+  if (excluded.size === missing.size || excluded.size === 0) return excluded;
+
+  const missingNames = new Set([...missing].map((path) => path.split("node_modules/").at(-1)!));
+  const parents = new Map<string, Set<string>>();
+  for (const [parent, locked] of Object.entries(packages)) {
+    const dependencies = { ...locked.dependencies, ...locked.optionalDependencies, ...locked.peerDependencies,
+      ...(!parent.includes("node_modules/") && locked.devDependencies) };
+    const names = Object.keys(dependencies).filter((name) => missingNames.has(name));
+    if (!names.length) continue;
+    const search = createRequire(resolve(root, parent, "package.json")).resolve.paths("dependency") ?? [];
+    for (const name of names) {
+      for (const dir of search) {
+        const path = relative(root, join(dir, name)).split(sep).join("/");
+        if (!Object.hasOwn(packages, path)) continue;
+        if (missing.has(path)) {
+          if (!parents.has(path)) parents.set(path, new Set());
+          parents.get(path)!.add(parent);
+        }
+        break;
+      }
+    }
+  }
+  // Propagate only proved omissions. Orphans, cycles and paths from an installed parent
+  // cannot acquire an exemption by referring to one another.
+  let previousSize;
+  do {
+    previousSize = excluded.size;
+    for (const [path, incoming] of parents) {
+      if ([...incoming].every((parent) => excluded.has(parent))) excluded.add(path);
+    }
+  } while (excluded.size !== previousSize);
+  return excluded;
+}
+
 /** The first locked package the install at `root` does not hold as locked, or null. */
 export function mismatch(root: string): string | null {
   const { packages } = JSON.parse(readFileSync(join(root, "package-lock.json"), "utf8")) as
     { packages: Record<string, Locked> };
+  const missing = new Set<string>();
   for (const [path, locked] of Object.entries(packages)) {
     // The root's and each workspace's own entries are the checkout's sources, not installs.
     if (!path.includes("node_modules/")) {
@@ -79,13 +126,17 @@ export function mismatch(root: string): string | null {
         return `${path} is not linked to the workspace ${locked.resolved}`;
       }
     } else if (found === null) {
-      if (!locked.optional
-          || fits(locked.os, process.platform) && fits(locked.cpu, process.arch)) {
+      if (!locked.optional) {
         return `${path} is missing (locked ${locked.version})`;
       }
+      missing.add(path);
     } else if (found.version !== locked.version) {
       return `${path} is ${found.version}, locked ${locked.version}`;
     }
+  }
+  const excluded = excludedOptionals(root, packages, missing);
+  for (const path of missing) {
+    if (!excluded.has(path)) return `${path} is missing (locked ${packages[path]!.version})`;
   }
   // The root, each workspace and each installed package may hold a `node_modules`.
   for (const [path, locked] of Object.entries(packages)) {
