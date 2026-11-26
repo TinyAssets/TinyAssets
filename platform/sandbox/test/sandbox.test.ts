@@ -18,7 +18,7 @@
  * there, and looks at each sandbox on its own.
  */
 import {
-  createExecutionContext, env, runDurableObjectAlarm, runInDurableObject,
+  createExecutionContext, env, evictDurableObject, runDurableObjectAlarm, runInDurableObject,
 } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -641,6 +641,23 @@ describe("the platform's line", () => {
     await line.took(first);
     await rung(next);
     await line.leave(next);
+  });
+
+  it("keeps a wake for the first owner when the queue refuses the notification", async () => {
+    const line = env.LINE.getByName(crypto.randomUUID());
+    const first = owner();
+    await line.wait(first, CEILING);
+    await runInDurableObject(line, (instance) => {
+      const object = instance as unknown as { env: Record<string, unknown> };
+      object.env = { ...object.env, RING: { send: () => Promise.reject(new Error("queue down")) } };
+    });
+    await expect(runDurableObjectAlarm(line)).rejects.toThrow("queue down");
+    const retryAt = await runInDurableObject(line, (_i, state) => state.storage.getAlarm());
+    expect(retryAt).toBeGreaterThan(Date.now());
+    await evictDurableObject(line);
+    await runDurableObjectAlarm(line);
+    await rung(first);
+    await line.leave(first);
   });
 
   it("rings the first in line again, backing off, while no free is seen", async () => {

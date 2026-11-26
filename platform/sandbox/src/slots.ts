@@ -124,11 +124,11 @@ export class SandboxSlots extends DurableObject<SandboxEnv> implements SlotLine 
   }
 
   async #ring(): Promise<void> {
+    await this.#arm();
     const head = this.#head();
     if (head !== null) {
       await this.env.RING.send({ owner: head.owner });
     }
-    await this.#arm();
   }
 
   /** The first in line rung again after its back-off; no one waiting, no alarm. */
