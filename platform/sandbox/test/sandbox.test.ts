@@ -624,6 +624,25 @@ describe("the platform's line", () => {
     await rung(waiter);
   });
 
+  it("keeps the first owner's promised wake when other owners join or retry", async () => {
+    const line = env.LINE.getByName(crypto.randomUUID());
+    const first = owner();
+    const next = owner();
+    await line.wait(first, CEILING);
+    const deadline = Date.now() + (LEASE_TTL_S * 1000) / 2;
+    await runInDurableObject(line, (_i, state) => state.storage.setAlarm(deadline));
+    for (const who of [next, first, next]) {
+      await line.wait(who, CEILING);
+      expect(await runInDurableObject(line, (_i, state) => state.storage.getAlarm()))
+        .toBe(deadline);
+    }
+    await runDurableObjectAlarm(line);
+    await rung(first);
+    await line.took(first);
+    await rung(next);
+    await line.leave(next);
+  });
+
   it("rings the first in line again, backing off, while no free is seen", async () => {
     const line = env.LINE.getByName(crypto.randomUUID());
     const waiter = owner();

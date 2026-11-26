@@ -141,7 +141,11 @@ export class SandboxSlots extends DurableObject<SandboxEnv> implements SlotLine 
     const ceilingMs = (this.#sql.exec<{ ceiling_s: number }>("SELECT ceiling_s FROM line")
       .toArray()[0]?.ceiling_s ?? LEASE_TTL_S) * 1000;
     const wait = Math.min(LEASE_TTL_S * 1000 * 2 ** head.misses, ceilingMs);
-    await this.ctx.storage.setAlarm(Date.now() + wait);
+    const due = Date.now() + wait;
+    const armed = await this.ctx.storage.getAlarm();
+    if (armed === null || due < armed) {
+      await this.ctx.storage.setAlarm(due);
+    }
   }
 
   /** The first in line's back-off ran out with no free rung: it is rung again, later next. */

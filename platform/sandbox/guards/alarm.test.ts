@@ -12,7 +12,7 @@ import { sourcesOf } from "../../ci/kit/sources";
 /** Each source that may name these calls, and which. */
 const CLOCKS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   "sandbox/src/control.ts": Object.freeze(["setAlarm", "deleteAlarm", "deleteAll"]),
-  "sandbox/src/slots.ts": Object.freeze(["setAlarm", "deleteAlarm"]),
+  "sandbox/src/slots.ts": Object.freeze(["getAlarm", "setAlarm", "deleteAlarm"]),
 });
 
 /** Each alarm call or wipe `source` (at `path`) names that is not its own to make. */
