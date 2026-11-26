@@ -27,3 +27,15 @@ model ids and 18 owner SQLite migrations with no sign-ins or outside
 requests. On each tree and runtime, five direct/router model pairs with
 both connection ages and either input order exercised twenty automatic
 and forty explicit connection selections. Node 22 and 24 agreed.
+
+## November 26 reconciliation
+
+Main d662e63e now shares the ranking with the sandbox route probe. Applying
+this branch's historical Owner-only change would miss that caller and the
+current tiers, plans and vendor scores. The two direct/router regressions
+on the current Owner are staged at
+[77ac0b46](https://github.com/TinyAssets/TinyAssets/commit/77ac0b46bc01a7dff0a04dc7b8d582cda4211438).
+The [current decision and results](https://github.com/TinyAssets/TinyAssets/commit/758e077edb7058618df3343ab271868493b55d5c)
+include all 12 route choices and the pinned client's distinct request
+settings for the one changed route. Reconcile at the shared ranking after
+the versioned-model versus moving-alias preference is settled.
