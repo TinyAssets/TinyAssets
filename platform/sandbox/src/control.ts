@@ -1551,6 +1551,14 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     }
   }
 
+  async waitRegistration(): Promise<number | null> {
+    return this.#slots().waitRegistration(this.#owner);
+  }
+
+  async finishWait(registration: number): Promise<void> {
+    await this.#slots().finishWait(this.#owner, registration);
+  }
+
   /** The owner waits for a sandbox no more: out of the platform's line, whose next is rung. */
   async unwait(): Promise<void> {
     await this.#slots().leave(this.#owner);

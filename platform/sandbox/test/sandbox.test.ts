@@ -18,7 +18,7 @@
  * there, and looks at each sandbox on its own.
  */
 import {
-  createExecutionContext, env, runDurableObjectAlarm, runInDurableObject,
+  createExecutionContext, env, evictDurableObject, runDurableObjectAlarm, runInDurableObject,
 } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -1816,8 +1816,10 @@ describe("whose sandboxes a call reaches", () => {
       expect(await stub(first).start(start())).toEqual(waiting);
       expect(await stub(other).start(start())).toEqual(waiting);
 
-      await env.SLOTS_GATE.arm({ method: "leave", hold: "before" });
-      const leaving = entry().unwait(first);
+      const registration = await entry().waitRegistration(first);
+      expect(registration).not.toBeNull();
+      await env.SLOTS_GATE.arm({ method: "finishWait", hold: "before" });
+      const leaving = entry().finishWait(first, registration!);
       try {
         expect(await env.SLOTS_GATE.held(2_000)).toHaveLength(1);
         const who = refresh === "same owner" ? first : other;
@@ -1855,6 +1857,44 @@ describe("whose sandboxes a call reaches", () => {
 });
 
 describe("the schema", () => {
+  it("preserves an existing turn and backoff when a newer wait supersedes an idle leave", async () => {
+    const first = owner();
+    const peer = owner();
+    const line = env.LINE.getByName(crypto.randomUUID());
+    await runInDurableObject(line, async (_instance, state) => {
+      await state.storage.deleteAll();
+      migrate(state.storage, SLOTS_MIGRATIONS.slice(0, 1));
+      const sql = state.storage.sql;
+      sql.exec("INSERT INTO line (only, next_seq, ceiling_s) VALUES (1, 41, ?)", CEILING);
+      sql.exec("INSERT INTO waiting (owner, seq, misses) VALUES (?, 13, 2), (?, 17, 0)", first, peer);
+      sql.exec("INSERT INTO held (sandbox_id) VALUES ('renewal')");
+    });
+    await evictDurableObject(line);
+    const initial = await line.waitRegistration(first);
+    const other = await line.waitRegistration(peer);
+    expect(initial).not.toBeNull();
+    expect(other).not.toBeNull();
+    expect(await line.turn(first)).toEqual({ turn: true, reserved: 1 });
+    await line.wait(first, CEILING);
+    await evictDurableObject(line);
+    const current = await line.waitRegistration(first);
+    expect(current).not.toBeNull();
+    expect(current).not.toBe(initial);
+    expect(await line.waitRegistration(peer)).toBe(other);
+    await line.finishWait(first, initial!);
+    expect(await line.turn(first)).toEqual({ turn: true, reserved: 1 });
+    const misses = await runInDurableObject(line, (_instance, state) =>
+      state.storage.sql.exec("SELECT misses FROM waiting WHERE owner = ?", first).one().misses);
+    expect(misses).toBe(2);
+    await line.finishWait(first, current!);
+    expect(await line.turn(peer)).toEqual({ turn: true, reserved: 1 });
+    await line.wait(first, CEILING);
+    await line.finishWait(first, current!);
+    expect(await line.waitRegistration(first)).not.toBeNull();
+    await line.leave(first);
+    expect(await line.waitRegistration(first)).toBeNull();
+  });
+
   it("is each object's migrations, applied once, each one's digest kept: an applied one " +
      "changed since stops the object", async () => {
     const who = owner();

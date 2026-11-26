@@ -78,4 +78,9 @@ export const SLOTS_MIGRATIONS: readonly Migration[] = Object.freeze([
       "(only = 1), next_seq INTEGER NOT NULL, ceiling_s INTEGER NOT NULL)",
     "CREATE TABLE IF NOT EXISTS held (sandbox_id TEXT PRIMARY KEY)",
   ]),
+  // 2: repeated waits keep their FIFO place but invalidate an earlier idle leave.
+  Object.freeze([
+    "ALTER TABLE waiting ADD COLUMN registration INTEGER NOT NULL DEFAULT 0",
+    "UPDATE waiting SET registration = seq",
+  ]),
 ]);

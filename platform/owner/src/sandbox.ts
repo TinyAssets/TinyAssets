@@ -29,8 +29,8 @@
  *   `unknown` if the runner is lost.
  * - `release`: the lease ended, so the sandbox is paused once nothing lives in it, unless a
  *   job launched in it since (zero idle tail).
- * - `unwait`: the owner has no run waiting for a sandbox any more, so it leaves
- *   the platform's line and the next owner in it is rung.
+ * - An apparently idle owner reads its wait registration, checks its runs again and releases
+ *   that registration. A later wait keeps its original FIFO place.
  * - `erase` (the erasure's step 2): every sandbox of the owner killed, paused ones
  *   included, and the sandbox Worker's own state of the owner deleted.
  *
@@ -77,6 +77,8 @@ export function boundSandbox(service: SandboxService, id: DurableObjectId): Owne
     signinInput: (request) => service.signinInput(owner(), request),
     signinCancel: (request) => service.signinCancel(owner(), request),
     network: (request) => service.network(owner(), request),
+    waitRegistration: () => service.waitRegistration(owner()),
+    finishWait: (registration) => service.finishWait(owner(), registration),
     unwait: () => service.unwait(owner()),
     erase: () => service.erase(owner()),
     meter: (request) => service.meter(owner(), request),

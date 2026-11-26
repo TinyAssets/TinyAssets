@@ -105,6 +105,23 @@ describe("a run the sandbox has no room for", () => {
     expect(await r.stub.sandboxRung()).toEqual({ waiting: 0 });
   });
 
+  it("rechecks its runs when a new sandbox wait arrives during the registration read", async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    await scripted(r.stub, { answer: [{ started: false, code: SANDBOX_WAITING },
+                                      { started: true }] });
+    const answer = await whileOut(r.name, "waitRegistration", () => r.stub.sandboxRung(), async () => {
+      const run = await r.stub.agentSubmit(r.bind(), { message: "new", client_send_id: "new" });
+      expect(run).toMatchObject({ state: "waiting", code: SANDBOX_WAITING });
+    });
+    expect(answer).toEqual({ waiting: 1 });
+    await drainDue(r.stub);
+    const calls = await recorder(r.stub);
+    expect(calls.unwaits).toEqual([]);
+    expect(calls.starts).toHaveLength(2);
+    expect(calls.starts[1]!.run).toBe(calls.starts[0]!.run);
+  });
+
   it("leaves the line when rung with no run waiting", async () => {
     const r = await gated();
     expect(await r.stub.sandboxRung()).toEqual({ waiting: 0 });

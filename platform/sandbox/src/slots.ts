@@ -54,6 +54,10 @@ export interface SlotLine {
    * unrung.
    */
   wait(owner: string, ceilingS: number): Promise<void>;
+  /** The owner's most recent wait, or null if it has no place in the line. */
+  waitRegistration(owner: string): Promise<number | null>;
+  /** Release only the registration that the owner observed before checking its runs. */
+  finishWait(owner: string, registration: number): Promise<void>;
   /** `owner`'s start got its sandbox: it leaves the line, and the next is rung. */
   took(owner: string): Promise<void>;
   /** `owner` waits no more (no run of its waits, or it is erased); the next is rung. */
@@ -99,9 +103,22 @@ export class SandboxSlots extends DurableObject<SandboxEnv> implements SlotLine 
     this.#sql.exec("INSERT INTO line (only, next_seq, ceiling_s) VALUES (1, ?, ?) ON CONFLICT " +
                      "(only) DO UPDATE SET next_seq = excluded.next_seq, ceiling_s = " +
                      "excluded.ceiling_s", seq + 1, ceilingS);
-    this.#sql.exec("INSERT INTO waiting (owner, seq) VALUES (?, ?) ON CONFLICT (owner) DO " +
-                     "NOTHING", owner, seq);
+    this.#sql.exec("INSERT INTO waiting (owner, seq, registration) VALUES (?, ?, ?) " +
+                     "ON CONFLICT (owner) DO UPDATE SET registration = excluded.registration",
+                   owner, seq, seq);
     await this.#arm();
+  }
+
+  async waitRegistration(owner: string): Promise<number | null> {
+    return this.#sql.exec<{ registration: number }>(
+      "SELECT registration FROM waiting WHERE owner = ?", owner).toArray()[0]?.registration ?? null;
+  }
+
+  async finishWait(owner: string, registration: number): Promise<void> {
+    if (!Number.isSafeInteger(registration) || registration < 1) {
+      throw new Error("a sandbox wait names its registration");
+    }
+    await this.#leave(owner, registration);
   }
 
   async took(owner: string): Promise<void> {
@@ -112,9 +129,14 @@ export class SandboxSlots extends DurableObject<SandboxEnv> implements SlotLine 
   }
 
   async leave(owner: string): Promise<void> {
+    await this.#leave(owner, null);
+  }
+
+  async #leave(owner: string, registration: number | null): Promise<void> {
     const wasHead = this.#head()?.owner === owner;
-    this.#sql.exec("DELETE FROM waiting WHERE owner = ?", owner);
-    if (wasHead) {
+    const removed = this.#sql.exec("DELETE FROM waiting WHERE owner = ? AND " +
+      "(? IS NULL OR registration = ?) RETURNING owner", owner, registration, registration).toArray();
+    if (wasHead && removed.length > 0) {
       await this.#ring();
     }
   }

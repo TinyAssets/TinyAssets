@@ -121,6 +121,14 @@ export default class FakeSandbox extends WorkerEntrypoint implements SandboxServ
     return { cancelled: true };
   }
 
+  async waitRegistration(_owner: string): Promise<number> {
+    return 1;
+  }
+
+  async finishWait(owner: string, _registration: number): Promise<void> {
+    recordOf(owner).unwaits.push(owner);
+  }
+
   async unwait(owner: string): Promise<void> {
     recordOf(owner).unwaits.push(owner);
   }

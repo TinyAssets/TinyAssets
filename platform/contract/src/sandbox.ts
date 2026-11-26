@@ -248,7 +248,11 @@ export interface SandboxService {
    * its vendor hosts. A paused sandbox applies it as it resumes.
    */
   network(owner: string, request: NetworkReapply): Promise<NetworkApplied>;
-  /** The owner waits for a sandbox no more: out of the platform's line. */
+  /** The registration to consult before checking whether the owner's runs still need it. */
+  waitRegistration(owner: string): Promise<number | null>;
+  /** An idle owner releases the registration it observed, provided no newer wait replaced it. */
+  finishWait(owner: string, registration: number): Promise<void>;
+  /** An older owner releases its place without a registration. */
   unwait(owner: string): Promise<void>;
   /** The owner erased: each of their sandboxes killed, the Worker's state of them deleted. */
   erase(owner: string): Promise<{ readonly killed: number }>;

@@ -68,6 +68,14 @@ export class Sandbox extends WorkerEntrypoint<SandboxEnv> implements SandboxServ
     return this.#owner(owner).network(request);
   }
 
+  async waitRegistration(owner: string): Promise<number | null> {
+    return this.#owner(owner).waitRegistration();
+  }
+
+  async finishWait(owner: string, registration: number): Promise<void> {
+    await this.#owner(owner).finishWait(registration);
+  }
+
   async unwait(owner: string): Promise<void> {
     await this.#owner(owner).unwait();
   }

@@ -2197,11 +2197,18 @@ export const runsDoors = Object.freeze({
     if (o.gone()) {
       return { waiting: 0 };
     }
-    const { waiting, leave } = await o.door(() => o.runs.sandboxRung());
-    if (leave) {
-      await o.sandbox.unwait();
+    let rung = await o.door(() => o.runs.sandboxRung());
+    if (rung.leave) {
+      const registration = await o.sandbox.waitRegistration();
+      if (registration !== null && !o.gone()) {
+        // The read crossed Workers. Check the runs again before releasing this registration.
+        rung = await o.door(() => o.runs.sandboxRung());
+        if (rung.leave) {
+          await o.sandbox.finishWait(registration);
+        }
+      }
     }
     await o.sync();
-    return { waiting };
+    return { waiting: rung.waiting };
   },
 });
