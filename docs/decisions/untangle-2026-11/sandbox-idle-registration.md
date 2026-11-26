@@ -397,3 +397,14 @@ that settlement can run. Reconcile restore with that rule and retain the
 exclusion of the old lease claim. Historical saved waits and safe runner
 cancellation require their own evidence.
 The standalone full platform typecheck passed with the added restore test.
+
+## Restoring a live run without granting its old lease
+
+A queued or running row needs a 32-character reference to satisfy the runs
+table. Restore now generates a fresh reference for that row alone. It does
+not insert a sandbox lease or a run grant. This preserves the exported state
+for the row comparison and lets the ordinary lost-run settlement record
+`unknown/lost` and remove the saved input. Other run states need no reference.
+The checked-in regression from `c66d25e1` now checks those outcomes as well
+as completion. The focused Worker check and full platform typecheck passed
+during development. Replay of an earlier waiting row remains a separate issue.

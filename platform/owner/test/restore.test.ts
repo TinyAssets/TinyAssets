@@ -251,11 +251,22 @@ describe("a restore", () => {
     await scripted(o.stub, { answer: { started: true } });
     const run = await o.stub.agentSubmit(binding, { message: "hello", client_send_id: "active" });
     expect(run.state).toBe("running");
+    const [prior] = await sqlIn(o.stub, "SELECT lease_id FROM runs WHERE id = ?", run.run_id);
     const gen = await generate(o.stub);
     const [space] = await sqlIn(o.stub, "SELECT ns FROM file_space");
     const stub = await lose(o);
     await stub.restoreBegin(platform(o.name), { namespace: space!.ns as string, gen: gen.gen });
     expect((await stepped(stub, o.name)).at(-1)).toMatchObject({ step: "done" });
+    const [restored] = await sqlIn(stub, "SELECT lease_id FROM runs WHERE id = ?", run.run_id);
+    expect(restored!.lease_id).toMatch(/^[0-9a-f]{32}$/);
+    expect(restored!.lease_id).not.toBe(prior!.lease_id);
+    expect(await sqlIn(stub, "SELECT lease_id FROM sandbox_leases")).toEqual([]);
+    expect(await sqlIn(stub, "SELECT run FROM run_grants")).toEqual([]);
+    await stub.admissionSet(platform(o.name), { admit: true });
+    await drainDue(stub);
+    expect(await sqlIn(stub, "SELECT state, code FROM runs WHERE id = ?", run.run_id))
+      .toEqual([{ state: "unknown", code: "lost" }]);
+    expect(await sqlIn(stub, "SELECT run FROM run_inputs WHERE run = ?", run.run_id)).toEqual([]);
   });
 
   it("reads a production-shaped owner back into its own object, every table and counter as " +

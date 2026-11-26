@@ -126,6 +126,7 @@ import type {
 import { Refusal } from "../../contract/src/refusal";
 
 import { clock } from "./clock";
+import { restoredRunLease } from "./runs";
 import { exported, NOT_EXPORTED } from "./export";
 import type { OwnerStorage } from "./gate";
 import type { Backups } from "./backup";
@@ -521,13 +522,23 @@ function streamed(value: unknown): unknown {
  * made afresh as 32 random bytes in hex, held by no one (an inbound route, an egress token). A
  * read of the schema, so a column a later migration adds is covered by the same rule.
  */
-function required(sql: Pick<SqlStorage, "exec">, table: string): string[] {
+function freshColumns(sql: Pick<SqlStorage, "exec">, table: string):
+    Map<string, (row: Record<string, unknown>) => string | null> {
   const omitted = exported()[table]!.omitted ?? {};
-  return sql.exec<{ name: string; notnull: number; dflt_value: SqlStorageValue }>(
+  const columns = sql.exec<{ name: string; notnull: number; dflt_value: SqlStorageValue }>(
     `PRAGMA table_info(${table})`).toArray()
     .filter((column) => Object.hasOwn(omitted, column.name) && column.notnull === 1
             && column.dflt_value === null)
     .map((column) => column.name);
+  const fresh = new Map<string, (row: Record<string, unknown>) => string | null>();
+  for (const name of columns) {
+    fresh.set(name, () => randomHex(32));
+  }
+  // This nullable column also has a row-level CHECK for live runs.
+  if (table === "runs") {
+    fresh.set("lease_id", (row) => restoredRunLease(row["state"]));
+  }
+  return fresh;
 }
 
 /**
@@ -619,11 +630,11 @@ function insert(sql: Pick<SqlStorage, "exec">, load: Load,
   const held = load.held ?? [];
   const refs = load.refs ?? [];
   const loaded = columns.filter((column) => !held.includes(column));
-  const fresh = required(sql, load.table);
+  const fresh = freshColumns(sql, load.table);
   const updated = loaded.filter((column) => !key.includes(column) && !refs.includes(column));
   // A seeded row, or one a trigger of a table loaded before made, takes the stream's values.
-  const statement = `INSERT INTO ${load.table} (${[...loaded, ...fresh, ...held].join(", ")}) ` +
-    `VALUES (${[...loaded, ...fresh].map(() => "?").concat(held.map((column) =>
+  const statement = `INSERT INTO ${load.table} (${[...loaded, ...fresh.keys(), ...held].join(", ")}) ` +
+    `VALUES (${[...loaded, ...fresh.keys()].map(() => "?").concat(held.map((column) =>
       `(SELECT ${column} FROM ${load.table})`)).join(", ")}) ON CONFLICT DO ${
       updated.length === 0 ? "NOTHING"
         : `UPDATE SET ${updated.map((column) => `${column} = excluded.${column}`).join(", ")}`}`;
@@ -634,7 +645,7 @@ function insert(sql: Pick<SqlStorage, "exec">, load: Load,
       sql.exec("UPDATE owner_restore SET held = ?", JSON.stringify(kept));
     }
     sql.exec(statement, ...loaded.map((column) => refs.includes(column) ? 0 : cell(row[column])),
-             ...fresh.map(() => randomHex(32)));
+             ...Array.from(fresh.values(), (value) => value(row)));
   }
 }
 

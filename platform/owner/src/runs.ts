@@ -441,7 +441,13 @@ type ScheduleRow = {
   origin: string | null; last_run: string | null; last_error: string | null;
 };
 
-const LIVE = "state IN ('queued', 'running')";
+const LIVE_STATES = ["queued", "running"] as const;
+const LIVE = `state IN (${LIVE_STATES.map((state) => `'${state}'`).join(", ")})`;
+
+/** The required reference on a restored live run. No lease is issued for it. */
+export function restoredRunLease(state: unknown): string | null {
+  return LIVE_STATES.some((live) => live === state) ? randomHex(16) : null;
+}
 /** A live run's grant row, with its agent, its conversation and the lease it runs under. */
 const GRANTS = "SELECT g.*, r.agent, r.conversation, r.lease_id, r.epoch FROM run_grants g " +
   "JOIN runs r ON r.id = g.run";
