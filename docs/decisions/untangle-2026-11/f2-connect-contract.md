@@ -208,3 +208,17 @@ guide's address list and connection instructions before opening Chromium.
   browser sweep passed both widths and 16 aliases, including the current
   32 directory, 33 custom and 28 run tool names, the sign-in message before
   hydration, the two origins, and five exact clipboard contents per width.
+- [x] At 8f4be08c a disposable export requested a missing local script on
+  Connect and still passed the entire browser sweep. The sweep now records
+  HTTP and transport failures for local documents, scripts, styles, images
+  and fonts. The same missing chunk failed on both widths. The unmodified
+  standalone and combined exports each passed both widths and all 16 aliases.
+  A browser exception is also recorded separately from console messages.
+- [ ] Resolve the site error-reporting dependency before the coordinated
+  release. ClientTrail sends a page-load POST to /app/client-error. The
+  legacy Python route accepts POST. The replacement Doors at d662e63e
+  directs that path to servePage, whose table has no such file or page.
+  Its identity guard expressly describes this old beacon as returning 404.
+  The offline static server returned 501 to the POST. Verify the intended
+  disposition with the site and cutover owners while retaining the React
+  fallback and existing privacy controls. Live behavior was not exercised.

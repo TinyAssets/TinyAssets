@@ -5,6 +5,7 @@ Serves `out/` on a local port, opens every public route and alias at desktop
 and phone widths, and asserts:
 
 - zero console errors and zero console warnings on every route;
+- same-origin documents, scripts, styles, images and fonts load;
 - the nav, the H1 and the footer render;
 - no horizontal overflow at 390 px or 1280 px;
 - every alias lands on its destination;
@@ -122,8 +123,22 @@ def main() -> int:
                     elif msg.type == "warning":
                         warns.append(msg.text)
 
+                def is_local_asset(request):
+                    return (request.resource_type in {"document", "script", "stylesheet", "image", "font"}
+                            and request.url.startswith(base + "/"))
+
+                def on_response(response):
+                    if response.status >= 400 and is_local_asset(response.request):
+                        failures.append(f"{label} HTTP {response.status}: {response.url}")
+
+                def on_request_failed(request):
+                    if is_local_asset(request):
+                        failures.append(f"{label} {request.failure}: {request.url}")
+
                 page.on("console", on_console)
-                page.on("pageerror", lambda e: errs.append(str(e)))
+                page.on("pageerror", lambda e: failures.append(f"{label} {page.url}: {e}"))
+                page.on("response", on_response)
+                page.on("requestfailed", on_request_failed)
                 for route in ROUTES:
                     errs.clear()
                     warns.clear()
