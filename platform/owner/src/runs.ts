@@ -934,11 +934,14 @@ export class Runs {
   /**
    * In a unit: the platform's line rang the owner (a sandbox freed): every run waiting for
    * a sandbox may start again, oldest first, through its whole admission. How many there
-   * were: none, and the owner leaves the line.
+   * were, and whether the owner can leave the line. A queued start may still return a wait.
    */
-  sandboxRung(): number {
-    return this.#sql.exec("UPDATE runs SET sandbox_wait = 0 WHERE sandbox_wait = 1 " +
-                            "RETURNING id").toArray().length;
+  sandboxRung(): { waiting: number; leave: boolean } {
+    const waiting = this.#sql.exec("UPDATE runs SET sandbox_wait = 0 WHERE sandbox_wait = 1 " +
+                                     "RETURNING id").toArray().length;
+    const leave = waiting === 0 && this.#sql.exec(
+      `SELECT 1 FROM runs WHERE ${LIVE} AND state = 'queued' LIMIT 1`).toArray().length === 0;
+    return { waiting, leave };
   }
 
   /**
@@ -2186,7 +2189,7 @@ export const runsDoors = Object.freeze({
    * Worker's ring consumer): a sandbox freed, so each run waiting for one starts again
    * through its whole admission, oldest first. It takes no binding: it carries nothing,
    * reads nothing and grants nothing, and only the doors' consumer, which binds `OWNER`,
-   * reaches it. With no run waiting the owner leaves the line, so the next owner is rung.
+   * reaches it. With no wait or outstanding start the owner leaves the line, so the next owner is rung.
    * An erased or erasing owner does nothing (its erasure takes it out of the line).
    */
   async sandboxRung(o: RunsDoorNeeds, door: Door<undefined, "none">):
@@ -2194,8 +2197,8 @@ export const runsDoors = Object.freeze({
     if (o.gone()) {
       return { waiting: 0 };
     }
-    const waiting = await o.door(() => o.runs.sandboxRung());
-    if (waiting === 0) {
+    const { waiting, leave } = await o.door(() => o.runs.sandboxRung());
+    if (leave) {
       await o.sandbox.unwait();
     }
     await o.sync();

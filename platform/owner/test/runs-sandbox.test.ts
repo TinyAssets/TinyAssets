@@ -11,7 +11,6 @@
  *   pauses that sandbox (zero idle tail).
  */
 import { evictDurableObject } from "cloudflare:test";
-import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { until } from "../../ci/workerd";
@@ -20,7 +19,7 @@ import { gated } from "./gateway-support";
 import {
   defineAgent, ownerRun, recorder, runnerBinding, scripted, startOf, whileOut,
 } from "./runs-support";
-import { drainDue, gateFor } from "./support";
+import { drainDue } from "./support";
 
 const SIGNED_IN = Object.freeze({ engine: "claude-code", credential: "vendor_login_in_sandbox",
                                   scopes: [] });
@@ -63,23 +62,22 @@ describe("a run the sandbox has no room for", () => {
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
     await scripted(r.stub, { answer: [{ started: false, code: SANDBOX_WAITING },
                                       { started: true }] });
-    const gate = gateFor(env.SANDBOX_GATE, r.name);
     const run = await whileOut(r.name, "start", () =>
       r.stub.agentSubmit(r.bind(), { message: "the input", client_send_id: "early-ring" }),
-      async () => { await r.stub.sandboxRung(); });
+      async () => {
+        expect(await r.stub.sandboxRung()).toEqual({ waiting: 0 });
+        expect((await recorder(r.stub)).unwaits).toEqual([]);
+      });
 
+    expect(run).toMatchObject({ state: "waiting", code: SANDBOX_WAITING });
+    expect(await r.stub.sandboxRung()).toEqual({ waiting: 1 });
     await drainDue(r.stub);
-    // A second ring can only reach this run if its owner still has a place in the line.
-    const calls = (await gate.calls()).filter(call => call.method === "start" ||
-                                                       call.method === "unwait");
-    if (calls.at(-1)?.method === "start") {
-      await r.stub.sandboxRung();
-      await drainDue(r.stub);
-    }
     expect(await r.stub.agentStatus(r.bind(), { run_id: run.run_id }))
       .toMatchObject({ state: "running", code: null });
     expect((await recorder(r.stub)).starts.map(start => start.run))
       .toEqual([run.run_id, run.run_id]);
+    expect(await r.stub.sandboxRung()).toEqual({ waiting: 0 });
+    expect((await recorder(r.stub)).unwaits).toHaveLength(1);
   });
 
   it("cancels a saved sandbox wait and starts only the remaining run after a ring", async () => {
