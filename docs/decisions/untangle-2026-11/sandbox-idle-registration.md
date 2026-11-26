@@ -482,3 +482,7 @@ After restore and settlement, the same binding's successful exit report is
 refused with `run_ended`, and the receipt stays `unknown/lost`. Both
 standalone cases passed. An earlier fixture incorrectly attached the
 account's control field to the runner binding and failed before restore.
+
+On `24ac8f83` both callback regressions and full types passed standalone and combined. Two more controls per tree evicted the restored Owner, submitted a new run, and sent the old runner's callback. It could not settle the new run. The new runner settled its own receipt successfully.
+
+A disposable reconciliation took the page transactions and identical-row check from `6f931a84`, preserving the current fresh-column generators. Its two running/queued checks and full types passed. The historical rollback fixture failed at setup because main no longer has `model_reservations`. A replacement using two settled run receipts confirmed the injected second-insert failure rolled the page back. After a first receipt was manually reinserted as an older partial page, retry failed with the runs table's immutable-admission constraint. Compare that prefix to the exact exported row at E before attributing the failure to the loader. The page changes remain a local experiment.
