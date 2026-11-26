@@ -17,3 +17,15 @@
   counting only allocations whose replies arrived leaves a gap. Preserve
   a renewal's existing place and FIFO for ordinary starts. Coordinator
   integration must also check #5857's optional replacement.
+
+At 267144df the full sandbox Worker and guard suite passed 170 tests. Its
+one failure was the new two-owner regression. Full Node 24 platform types
+passed. The same regression on main d662e63e also returned two successful
+starts against one available place.
+
+A separate main replay enforced the provider's physical ceiling in the
+synthetic create and resume handlers. All eight diagnostic cases passed.
+Overlapping create/create, create/resume, resume/create and resume/resume
+all delayed the paused peer until a contender released its sandbox.
+Sequential creates or resumes left the place free for the peer. Raising
+the limit from three to four let the peer resume during both overlaps.
