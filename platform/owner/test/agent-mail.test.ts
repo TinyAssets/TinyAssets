@@ -510,6 +510,48 @@ describe("mail to an agent", () => {
       .toEqual(["job 0", "job 1", "job 2"]);
   });
 
+  it.each(["cancel waiting", "finish running"] as const)(
+    "marks the recipient settled after either mail outcome: %s", async (outcome) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      onTestFinished(() => { vi.useRealTimers(); });
+      const r = await gated();
+      const control = openRecord({ ...TIERS, free: { ...TIERS.free, runs: 1 } });
+      await writeControl(env.CONTROL, JSON.parse(control));
+      const binding = r.bind({ control });
+      await defineAgent(r.stub, binding, "main", SIGNED_IN);
+      const agent = await identity(r, "main");
+      const first = await r.stub.agentSubmit(binding, { message: "hold", client_send_id: "hold" });
+      const posted = await r.stub.roomPost(binding, { room_id: dm(agent.agent_id),
+        client_message_id: "wait", body: "next job", parent_id: null });
+      await drainDue(r.stub);
+
+      const recipient = () => r.sql("SELECT * FROM ledger_recipients WHERE message_id = ? " +
+                                    "AND agent_id = ?", posted.message_id, agent.agent_id);
+      const [before] = await recipient();
+      expect(before).toMatchObject({ state: "read", unacked: 1 });
+      const [waiting] = await r.sql("SELECT id, state FROM runs WHERE mail = ?", posted.message_id);
+      expect(waiting).toMatchObject({ id: expect.any(String), state: "waiting" });
+      const run = String(waiting!.id);
+      const launches = async () => (await starts(r)).filter((start) => start.run === run).length;
+      expect(await launches()).toBe(0);
+
+      clockAt(clock() + 2);
+      if (outcome === "finish running") {
+        await end(r, await startOf(r.stub, first.run_id), "done");
+        await drainDue(r.stub);
+        expect(await launches()).toBe(1);
+        expect(await recipient()).toEqual([before]);
+        clockAt(clock() + 2);
+        await r.stub.runEvents(runnerBinding(r, await startOf(r.stub, run)),
+                               { frames: [], end: { exit_code: 0 } });
+      } else {
+        await r.stub.agentCancel(binding, { run_id: run });
+      }
+      expect(await launches()).toBe(outcome === "finish running" ? 1 : 0);
+      expect(await recipient()).toEqual([{ ...before, unacked: 0 }]);
+      expect((await receipt(r, run)).state).toBe(outcome === "finish running" ? "succeeded" : "failed");
+    });
+
   it("keeps one mail input waiting at the live-run ceiling and launches it when a place opens",
      { tags: ["large"] }, async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
