@@ -194,3 +194,20 @@
   Standalone and joined full Node 24 TypeScript passed when run serially
   after concurrent attempts exited 137. The joined sandbox's 141 ordinary
   Worker and guard checks passed. These checks leave the earlier edit open.
+
+### Existing edit detection also governs sandbox replacement (Nov 26)
+
+- [x] Compared the existing sync regression with the replacement design and
+  both runner entry points in PR #5857 at aa40cc0a. The move uses the same
+  differs function as ordinary sync to decide which existing files to carry.
+  In a local Node 24 experiment using the real carryOut, carryIn and SQLite
+  mirror, an untouched file was omitted as intended. A larger edit and an
+  equal-length edit with a different modification time transferred with their
+  original version 1. An equal-length edit with its original timestamp and
+  an executable-only edit were both omitted, including their mirror rows.
+  The result does not depend on a vendor connection or a signed-in sandbox.
+- [ ] Block treating the old sandbox as disposable on the strength of a
+  successful transfer until both histories are preserved. Test the actual
+  receiving sync, existing mirror rows, and the unchanged-file cost. Resolve
+  this in shared edit detection and the mirror representation used by sync
+  and transfer. The disposition of ambiguous historical modes remains open.
