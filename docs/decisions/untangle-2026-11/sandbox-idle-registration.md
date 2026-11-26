@@ -194,3 +194,10 @@ The permanent two-reply regression failed in both orders on the staged
 Owner (two starts observed, three expected at the first retry), passed both
 on the disposable dispatch experiment, and passed the full Node 24 platform
 typecheck with the ordinary source. The experiment has no shipped migration.
+
+At `21f5231a`, all 13 ordinary Owner sandbox-run cases ran together. The
+eleven existing cases passed and only the two new reply orders failed. The
+joined checkout ran the same complete file with exactly the same results.
+Full Node 24 platform types passed on both. The next design must recover a
+missed placement after eviction, preserve the next owner's allocation, and
+avoid using the same delayed notification to trigger successive attempts.
