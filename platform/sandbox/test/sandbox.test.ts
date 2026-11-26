@@ -414,6 +414,39 @@ describe("a start", () => {
       .toEqual(["start", "pause"]);
   });
 
+  it.each(["before", "after"] as const)(
+    "keeps at most one sandbox when its create reply fails %s allocation", async position => {
+      await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: 2 });
+      await e2b("/script", { createFailure: position, signin: { "claude-code": 0 } });
+      const who = owner();
+      expect((await faulted(() => stub(who).start(start()))).got).toBe("sandbox_start_failed");
+      const before = await seen();
+      expect(before.sandboxes).toHaveLength(position === "before" ? 0 : 1);
+      expect(before.commands).toHaveLength(0);
+      await evictDurableObject(stub(who));
+      const retry = await stub(who).start(start());
+      const after = await seen();
+      expect(after.sandboxes.length).toBeLessThanOrEqual(1);
+      if (retry.started) {
+        expect(after.sandboxes).toHaveLength(1);
+        expect(after.commands.filter(command => command.argv[1] === "launch")
+          .map(command => command.sandbox)).toEqual([after.sandboxes[0]!.id]);
+      }
+    });
+
+  it("account erasure also finds an unacknowledged creation with no local row", async () => {
+    await e2b("/script", { signin: { "claude-code": 0 } });
+    const neighbor = owner();
+    expect(await stub(neighbor).start(start())).toEqual({ started: true });
+    const other = (await seen()).sandboxes[0]!.id;
+    const who = owner();
+    await e2b("/script", { createFailure: "after" });
+    expect((await faulted(() => stub(who).start(start()))).got).toBe("sandbox_start_failed");
+    await evictDurableObject(stub(who));
+    expect(await stub(who).erase()).toEqual({ killed: 1 });
+    expect((await seen()).sandboxes.map(box => box.id)).toEqual([other]);
+  });
+
   it("prepares a sandbox a fault left running unprepared before the next start launches in " +
      "it, and only that once", async () => {
     await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 0, quiet: true } });

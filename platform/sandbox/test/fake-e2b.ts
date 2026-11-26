@@ -56,6 +56,8 @@ interface Script {
   busy: number;
   /** A create or resume answered 429 (E2B's concurrency limit). */
   full: boolean;
+  /** The next create returns the same failure before or after allocating the box. */
+  createFailure: "before" | "after" | null;
   /** What the next pause saves. */
   pauseMode: "full" | "filesystem";
   /** The list answers with no `X-Total-Running`. */
@@ -109,7 +111,7 @@ function reset(): void {
   fake.rings = [];
   fake.held = [];
   fake.script = { signin: {}, state: { live: 1, quiet: false }, others: 0, busy: 0,
-                  full: false, pauseMode: "full", noCount: false, down: 0,
+                  full: false, createFailure: null, pauseMode: "full", noCount: false, down: 0,
                   refuseResume: false, broken: null, tampered: null,
                   protocol: (env as unknown as { RUNNER_PROTOCOL: number }).RUNNER_PROTOCOL,
                   room: null, lost: null, hold: null };
@@ -221,6 +223,10 @@ async function api(request: Request, url: URL): Promise<Response> {
     if (fake.script.full) {
       return Response.json({ code: 429, message: "concurrency" }, { status: 429 });
     }
+    const fail = fake.script.createFailure;
+    fake.script.createFailure = null;
+    const unavailable = () => Response.json({ message: "no create reply" }, { status: 502 });
+    if (fail === "before") return unavailable();
     const b = body as { templateID: string; timeout: number; network: unknown; secure: boolean;
                         metadata: Record<string, string> };
     const id = `sbx${String(fake.next += 1).padStart(5, "0")}`;
@@ -229,6 +235,7 @@ async function api(request: Request, url: URL): Promise<Response> {
                                metadata: b.metadata, template: b.templateID,
                                secure: b.secure === true, runners: new Set() };
     fake.sandboxes.set(id, box);
+    if (fail === "after") return unavailable();
     return Response.json({ templateID: b.templateID, sandboxID: id, clientID: "x",
                            envdVersion: "0.10.0",
                            ...(box.secure ? { envdAccessToken: box.token } : {}) },
