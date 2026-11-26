@@ -51,3 +51,12 @@ metadata, the serialized header, four rows and end record matched byte for
 byte. The setup catalog survived. A recorded run can still identify an
 individual past choice. This comparison exercised the logical export and
 change log with local SQLite, without reading any production backup.
+
+The six ordinary Owner migration guards passed with the staged regression.
+The constructor calls the shared migrator with the ordered migrations. On
+a direct upgrade from 34 to a future 36, it still applies 35 first, in a
+transaction that drops the old listing table and records the version. A
+later SQL migration alone cannot preserve that table for owners still on
+34. Editing 35's SQL also changes the stored digest and prevents already
+upgraded owners from opening. Any proposed preservation path needs both
+starting versions covered before use.
