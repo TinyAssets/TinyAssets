@@ -1432,6 +1432,24 @@ describe("the runner, by digest", () => {
   const commandsSince = async (before: number) => (await seen()).commands.slice(before)
     .map((command) => [command.argv[1], command.runner]);
 
+  it("retains a running sandbox and its original window when E2B returns an invalid expiry",
+     async () => {
+    const who = owner();
+    const id = await bornUnder(who, "0".repeat(64));
+    const window = () => runInDurableObject(stub(who), (_instance, state) =>
+      state.storage.sql.exec("SELECT end_at, kill_at FROM sandboxes").toArray());
+    const previous = await window();
+    await e2b("/script", { endAt: "0", protocol: FOREIGN[0], state: { live: 1, quiet: true } });
+    await runDurableObjectAlarm(stub(who));
+    expect((await seen()).sandboxes.map((box) => box.id)).toContain(id);
+    expect(await window()).toEqual(previous);
+    expect(await failuresOf(who)).toBe(1);
+    await e2b("/script", { endAt: null });
+    await runDurableObjectAlarm(stub(who));
+    expect((await seen()).sandboxes.map((box) => box.id)).toContain(id);
+    expect(await failuresOf(who)).toBe(0);
+  });
+
   for (const protocol of FOREIGN) {
     it(`reaps an idle sandbox whose runner speaks protocol ${protocol}, as any other`,
        async () => {

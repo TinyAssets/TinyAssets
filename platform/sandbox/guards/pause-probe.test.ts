@@ -84,7 +84,7 @@ function e2b(metadata: Record<string, string>): { client: E2b; calls: string[] }
     const path = new URL(url).pathname;
     calls.push(`${init?.method ?? "GET"} ${path}`);
     return path === "/sandboxes/box1" ? Response.json({ sandboxID: "box1", state: "paused",
-                                                         startedAt: "", endAt: "", metadata,
+                                                         endAt: "2026-11-12T10:00:00Z", metadata,
                                                          pauseMode: "full" })
       : path.endsWith("/connect") ? Response.json({ sandboxID: "box1", envdAccessToken: "t" })
       : new Response(null, { status: path.endsWith("/pause") ? 204

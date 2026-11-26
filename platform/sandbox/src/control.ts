@@ -582,7 +582,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       this.#log(row.authority, paused === 1 ? "pause" : "resume");
     }
     this.#sql.exec("UPDATE sandboxes SET end_at = ?, paused = ? WHERE sandbox_id = ?",
-                   Date.parse(found.endAt), paused, found.sandboxID);
+                   found.endAtMs, paused, found.sandboxID);
   }
 
   #paused(authority: string): void {
@@ -677,7 +677,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       { spoken: boolean; killAt: number | null } {
     const spoken = SPEAKS.includes(state.protocol);
     const kept = this.#row(authority)?.kill_at ?? null;
-    const killAt = spoken || state.live === 0 ? null : kept ?? Date.parse(found.endAt);
+    const killAt = spoken || state.live === 0 ? null : kept ?? found.endAtMs;
     if (killAt !== null && kept === null) {
       console.error(`sandbox_runner_protocol: ${state.live} job(s) live in sandbox ${
         found.sandboxID} on a runner speaking protocol ${state.protocol}, which no renewal of ${
@@ -770,7 +770,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     const after = await e2b.info(resumed.sandboxID);
     this.#sql.exec("UPDATE sandboxes SET renewing = 0, retry_at = NULL, tries = 0, end_at = ? " +
                      "WHERE authority = ?",
-                   after === null ? Date.now() : Date.parse(after.endAt), row.authority);
+                   after === null ? Date.now() : after.endAtMs, row.authority);
     await this.#giveBack();
     return handle;
   }
@@ -852,7 +852,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       this.#forget(authority);
       this.#sql.exec("INSERT INTO sandboxes (authority, sandbox_id, lease_id, end_at, runner) " +
                        "VALUES (?, ?, NULL, ?, ?)", authority, created.sandboxID,
-                     info === null ? Date.now() : Date.parse(info.endAt), digest);
+                     info === null ? Date.now() : info.endAtMs, digest);
       this.#log(authority, "start");
       await this.#took();
       // The template holds no runner: this Worker's, installed before its first command.
@@ -1341,7 +1341,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         return;
       }
       const { found, handle } = await this.#find(row);
-      if (handle === null || Date.now() < Date.parse(found!.endAt) - windowMs) {
+      if (handle === null || Date.now() < found!.endAtMs - windowMs) {
         return;
       }
       this.#ended(found!);
@@ -1357,7 +1357,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
           return;
         }
       }
-      const until = Math.min(Date.parse(found!.endAt) - RENEW_EDGE_MS, lookEnd);
+      const until = Math.min(found!.endAtMs - RENEW_EDGE_MS, lookEnd);
       const asked = await this.#exec(handle, [COMMAND.quietWait, String(Math.floor(until))],
                                      Math.max(0, until - Date.now()) + COMMAND_MS);
       if (adopted(asked)) {
@@ -1434,7 +1434,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       return after?.releasing === 1 ? this.#later(row.authority)
         : paused || after === null ? Number.POSITIVE_INFINITY : after.end_at - windowMs;
     }
-    const endAt = Date.parse(found.endAt);
+    const endAt = found.endAtMs;
     const state = await this.#runnerState(row.authority, handle, found);
     if (state.killAt !== null) {
       // A job lives on a runner this Worker does not speak: it runs, looked at as one before
@@ -1500,7 +1500,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       return row.idle_since + ttlMs;
     }
     this.#sql.exec("DELETE FROM launched WHERE authority = ?", row.authority);
-    if (await this.#pause(found.sandboxID, Date.parse(found.endAt)) !== "paused") {
+    if (await this.#pause(found.sandboxID, found.endAtMs) !== "paused") {
       return this.#later(row.authority);
     }
     this.#paused(row.authority);

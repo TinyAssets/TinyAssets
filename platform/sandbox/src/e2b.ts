@@ -30,11 +30,24 @@ export interface SandboxInfo {
   readonly sandboxID: string;
   readonly state: "running" | "paused";
   readonly endAt: string;
+  readonly endAtMs: number;
   /** What its last pause saved: `filesystem` reboots it on resume, memory lost. */
   readonly pauseMode: "full" | "filesystem" | null;
   readonly envdAccessToken: string | null;
   readonly metadata: Readonly<Record<string, string>>;
   readonly network: unknown;
+}
+
+/** A provider date-time with an explicit offset, at the millisecond precision of the clock. */
+function expiryMs(text: string): number {
+  const calendar = /^(\d{4}-\d{2}-\d{2})T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/i.exec(text)?.[1];
+  const ms = Date.parse(text);
+  // Date.parse accepts other formats and rolls a nonexistent February date into March.
+  if (!calendar || !Number.isFinite(ms)
+      || new Date(calendar).getUTCDate() !== Number(calendar.slice(-2))) {
+    throw new E2bError(502, null, "E2B's sandbox expiry is out of shape");
+  }
+  return ms;
 }
 
 function info(value: unknown): SandboxInfo {
@@ -46,6 +59,7 @@ function info(value: unknown): SandboxInfo {
   const mode = value["pauseMode"];
   return {
     sandboxID: value["sandboxID"], state: value["state"], endAt: value["endAt"],
+    endAtMs: expiryMs(value["endAt"]),
     pauseMode: mode === "full" || mode === "filesystem" ? mode : null,
     envdAccessToken: typeof value["envdAccessToken"] === "string"
       ? value["envdAccessToken"] : null,

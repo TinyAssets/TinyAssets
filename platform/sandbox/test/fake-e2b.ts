@@ -62,6 +62,7 @@ interface Script {
   noCount: boolean;
   /** How many info calls answer 500 (E2B unreachable) before they answer again. */
   down: number;
+  endAt: string | null;
   /** A resume of a paused sandbox answered 429, creates still taken. */
   refuseResume: boolean;
   /** A runner command whose process start envd answers 502 (the sandbox went away). */
@@ -109,7 +110,7 @@ function reset(): void {
   fake.rings = [];
   fake.held = [];
   fake.script = { signin: {}, state: { live: 1, quiet: false }, others: 0, busy: 0,
-                  full: false, pauseMode: "full", noCount: false, down: 0,
+                  full: false, pauseMode: "full", noCount: false, down: 0, endAt: null,
                   refuseResume: false, broken: null, tampered: null,
                   protocol: (env as unknown as { RUNNER_PROTOCOL: number }).RUNNER_PROTOCOL,
                   room: null, lost: null, hold: null };
@@ -121,7 +122,8 @@ function info(box: FakeSandbox): unknown {
     templateID: box.template, sandboxID: box.id, clientID: "x", envdVersion: "0.10.0",
     ...(box.secure ? { envdAccessToken: box.token } : {}),
     startedAt: new Date(box.startedAt).toISOString(),
-    endAt: new Date(box.startedAt + box.timeout * 1000).toISOString(), cpuCount: 2,
+    endAt: fake.script.endAt ?? new Date(box.startedAt + box.timeout * 1000).toISOString(),
+    cpuCount: 2,
     memoryMB: 1024, diskSizeMB: 20000, state: box.state, metadata: box.metadata,
     network: box.network, lifecycle: { autoResume: false, onTimeout: "pause" },
     ...(box.state === "paused" ? { pauseMode: box.pauseMode } : {}),
