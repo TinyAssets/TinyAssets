@@ -172,3 +172,13 @@ guide's address list and connection instructions before opening Chromium.
 - [ ] Repeat the coordinated site release rehearsal on current main with
   its catalog and route configuration. Browser and live route readiness
   remain separate checks.
+- [x] On 3e739fdc, all 41 site tests passed after checking out their brand
+  fixtures. The standalone Next export and a second export using the
+  platform contract from main d662e63e each completed 31 generation steps.
+  Parsed all 27 HTML files in the second export: 62 app links and nine
+  canonical tags used the public zone, as did the eight sitemap entries
+  and robots link. The guide named the stage MCP host and the public app,
+  and Connect rendered six app sections including main's Muse Code update.
+  This combines the site with main's contract only. Playwright stopped
+  before navigation, its browser download failed and system Chromium
+  could not launch. The earlier mark PR #5685 is already merged.
