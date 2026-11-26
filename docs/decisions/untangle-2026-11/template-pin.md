@@ -35,3 +35,17 @@ full platform TypeScript.
 - [ ] Passing these control tests also requires preserving each pending file
   and its original version. [The transfer can omit equal-length edits and
   executable-only changes](https://github.com/TinyAssets/TinyAssets/commit/acabc5e8ca13906bce6ec9725821a324eba1e829).
+- [x] The next control returns the same 502 for a delete request lost before
+  it takes effect and an acknowledgement lost afterwards. It evicts the real
+  local Durable Object and retries the same start. The before-delete history
+  retained the copy. After deletion, zero sandboxes remained; after eviction
+  the retry fulfilled with a freshly created sandbox lacking the transfer.
+  The full Worker/guard suite with four new tests passed 167 on main; the
+  PR passed 166 and failed three. Both platform typechecks passed serially
+  after overlapping attempts were killed.
+- [ ] Before promotion, a transfer failure should leave the old sandbox
+  available. After verifying a complete transfer, record the destination
+  as authoritative and the original as pending cleanup before deleting it.
+  The existing vendor deletion accepts both 204 and 404. Design and verify
+  cleanup across restart, uncertain creation, and account erasure. A reread
+  of two IDs alone does not establish which copy was verified.

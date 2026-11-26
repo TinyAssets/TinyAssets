@@ -18,7 +18,7 @@
  * there, and looks at each sandbox on its own.
  */
 import {
-  createExecutionContext, env, runDurableObjectAlarm, runInDurableObject,
+  createExecutionContext, env, evictDurableObject, runDurableObjectAlarm, runInDurableObject,
 } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -564,16 +564,19 @@ describe("interrupted replacement of an idle sandbox", () => {
     expect(state.commands.filter(command => command.argv[1] === "launch").at(-1)?.sandbox).toBe(old);
   });
 
-  it("keeps a copy if deletion succeeded but its acknowledgement was lost", async () => {
+  it.each(["delete-request", "delete-ack"])("keeps a recoverable copy through %s and restart", async lost => {
     const who = owner();
     const old = await idleFromPreviousTemplate(who);
-    await e2b("/script", { lost: "delete-ack" });
-    // The start may be refused while the two sandboxes are reconciled.
-    await Promise.allSettled([stub(who).start(next())]);
-    const state = await seen();
-    const holdsCopy = state.sandboxes.some(box =>
+    await e2b("/script", { lost });
+    // Both failure histories return the same response. Recovery may refuse the
+    // first start, but never discard the only sandbox that has the owner's copy.
+    const hasCopy = (state: Seen) => state.sandboxes.some(box =>
       box.id === old || state.files[`${box.id}:carried`] === `carry of ${old}`);
-    expect(holdsCopy).toBe(true);
+    await stub(who).start(next()).catch(() => undefined);
+    const beforeRestart = hasCopy(await seen());
+    await evictDurableObject(stub(who));
+    await stub(who).start(next()).catch(() => undefined);
+    expect([beforeRestart, hasCopy(await seen())]).toEqual([true, true]);
   });
 });
 

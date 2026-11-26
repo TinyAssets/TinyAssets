@@ -257,10 +257,13 @@ async function api(request: Request, url: URL): Promise<Response> {
     return Response.json(info(box));
   }
   if (request.method === "DELETE") {
-    fake.sandboxes.delete(id);
-    if (fake.script.lost === "delete-ack") {
+    const lost = fake.script.lost;
+    if (lost !== "delete-request") {
+      fake.sandboxes.delete(id);
+    }
+    if (lost === "delete-request" || lost === "delete-ack") {
       fake.script.lost = null;
-      return new Response("reply lost after delete", { status: 502 });
+      return new Response("delete outcome unknown", { status: 502 });
     }
     return new Response(null, { status: 204 });
   }
