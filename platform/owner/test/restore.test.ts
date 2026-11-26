@@ -267,29 +267,28 @@ describe("a restore", () => {
   it("rolls back a failed load page and resumes an identical receipt kept by an older loader",
      async () => {
     const o = await owner();
-    const receipt = "INSERT INTO model_reservations (id, run, connection_id, source, model, " +
-      "state, max_output_tokens, est_tokens, est_cost, tokens, cost, policy_generation, day, " +
-      "month, created_at, settled_at) VALUES (?, 'r', 'c', 's', 'm', 'succeeded', 10, 10, " +
-      "7, 9, 5, 1, '20261101', '202611', 1, 2)";
-    for (const id of ["a", "b"]) {
-      await sqlIn(o.stub, receipt, id);
+    const receipt = "INSERT INTO policy_receipts (seq, bucket, kind, at, generation) " +
+      "VALUES (?, 'refusal', 'refusal', 1, 1)";
+    for (const seq of [70, 71]) {
+      await sqlIn(o.stub, receipt, seq);
     }
     const gen = await generate(o.stub);
     const [space] = await sqlIn(o.stub, "SELECT ns FROM file_space");
     const stub = await lose(o);
     await stub.restoreBegin(platform(o.name), { namespace: space!["ns"] as string, gen: gen.gen });
-    await sqlIn(stub, "CREATE TRIGGER reject_second BEFORE INSERT ON model_reservations " +
-      "WHEN NEW.id = 'b' BEGIN SELECT RAISE(ABORT, 'receipt interrupted'); END");
+    await sqlIn(stub, "CREATE TRIGGER reject_second BEFORE INSERT ON policy_receipts " +
+      "WHEN NEW.seq = 71 BEGIN SELECT RAISE(ABORT, 'receipt interrupted'); END");
     await expect(stepped(stub, o.name)).rejects.toThrow(/receipt interrupted/);
-    expect(await sqlIn(stub, "SELECT id FROM model_reservations")).toEqual([]);
-    expect(await sqlIn(stub, "SELECT cost FROM model_spend")).toEqual([]);
+    const rows = "SELECT seq FROM policy_receipts WHERE bucket = 'refusal' ORDER BY seq";
+    const count = "SELECT refusal_receipts FROM policy_usage";
+    expect(await sqlIn(stub, rows)).toEqual([]);
+    expect(await sqlIn(stub, count)).toEqual([{ refusal_receipts: 0 }]);
     await sqlIn(stub, "DROP TRIGGER reject_second");
-    // Older code could commit this exact prefix without advancing its cursor.
-    await sqlIn(stub, receipt, "a");
+    // The older loader could commit this exact prefix without advancing its cursor.
+    await sqlIn(stub, receipt, 70);
     expect((await stepped(stub, o.name)).at(-1)?.step).toBe("done");
-    expect(await sqlIn(stub, "SELECT id FROM model_reservations ORDER BY id"))
-      .toEqual([{ id: "a" }, { id: "b" }]);
-    expect(await sqlIn(stub, "SELECT cost FROM model_spend")).toEqual([{ cost: 10 }, { cost: 10 }]);
+    expect(await sqlIn(stub, rows)).toEqual([{ seq: 70 }, { seq: 71 }]);
+    expect(await sqlIn(stub, count)).toEqual([{ refusal_receipts: 2 }]);
   });
 
   it("reads a production-shaped owner back into its own object, every table and counter as " +
