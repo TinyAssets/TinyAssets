@@ -120,3 +120,10 @@ def test_cooldown_observes_complete_listing(tmp_path, listing):
     else:
         assert run.returncode == 71, run.stderr
         assert not output.exists()
+
+
+def test_cooldown_waits_for_successful_watch():
+    jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
+    # GitHub skips dependent jobs after a failed prerequisite by default.
+    assert jobs["cooldown"]["needs"] == "watch"
+    assert jobs["cooldown"].get("if", "success()") == "success()"

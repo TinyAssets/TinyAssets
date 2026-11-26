@@ -191,6 +191,9 @@ jobs:
           done
 
   cooldown:
+    # Only evaluate the settled proposal list. A replacement may have reached
+    # GitHub even when the watcher did not receive its acknowledgement.
+    needs: watch
     environment: production
     runs-on: ubuntu-latest
     timeout-minutes: 5
