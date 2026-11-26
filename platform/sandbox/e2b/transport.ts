@@ -201,11 +201,16 @@ export class E2bTransport {
   async sandboxes(metadata?: string):
       Promise<Listed[]> {
     const listed: Listed[] = [];
+    const requested = new Set<string>();
     let next: string | null = null;
     do {
       const query = new URLSearchParams({ ...(metadata === undefined ? {} : { metadata }),
                                           state: "running,paused" });
       if (next !== null) {
+        if (requested.has(next)) {
+          throw new E2bError(502, null, "E2B's sandbox list repeated a page token");
+        }
+        requested.add(next);
         query.set("nextToken", next);
       }
       const { json: page, headers } = await this.api("GET", `/v2/sandboxes?${query}`);
