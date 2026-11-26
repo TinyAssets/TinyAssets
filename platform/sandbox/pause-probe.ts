@@ -287,8 +287,8 @@ async function start(e2b: E2b, summary: Summary): Promise<void> {
       unkilled.length === 0 ? "" : `, but not ${unkilled.join(", ")}`}`);
   }
   summary.line();
-  summary.line(`Check with mode \`check\` at 14 and 30 days: ids \`${made.join(" ")}\`, or none ` +
-               `to find them by \`${PROBE.key}=${PROBE.value}\`.`);
+  summary.line("For the 14-day check, pass only the scratch sandbox ID from the table. " +
+               `For the 30-day check, pass both original IDs: \`${made.join(" ")}\`.`);
 }
 
 /**
@@ -341,6 +341,11 @@ async function check(e2b: E2b, summary: Summary, ids: readonly string[]): Promis
   if (boxes.length === 0) {
     throw new Error("no long-pause sandbox to check: run start first");
   }
+  summary.line(ids.length > 0
+    ? `Checking the requested sandbox IDs: ${boxes.join(", ")}.`
+    : `Checking currently listed sandboxes: ${boxes.join(", ")}. ` +
+      "Pass the original IDs to check whether every sandbox from the start still exists.");
+  summary.line();
   const columns = ["sandbox", "label", "since start", "paused for", "connect", "first byte",
                    "verify", "tick", "paused again", "result"];
   summary.line(`| ${columns.join(" | ")} |`);
@@ -364,7 +369,7 @@ async function check(e2b: E2b, summary: Summary, ids: readonly string[]): Promis
     throw new Error(failed.join("; "));
   }
   summary.line();
-  summary.line("Every sandbox held its file, its process and its scratch, and is paused again.");
+  summary.line(`Verified and paused again: ${boxes.join(", ")}.`);
 }
 
 async function cleanup(e2b: E2b, summary: Summary): Promise<void> {

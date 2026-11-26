@@ -121,6 +121,7 @@ it("checks each explicitly named sandbox once", () => {
     "--import", "./template/resolve.mjs", "pause-probe.ts", "check", "--ids", "first,first second first",
   ], { cwd: join(PLATFORM, "sandbox"), encoding: "utf8", env: { E2B_API_KEY: "fixture-key" } });
   expect(result.status).toBe(1);
+  expect(result.stdout).toContain("Checking the requested sandbox IDs: first, second.");
   expect(result.stdout.split("\n").filter(line => line.startsWith("| `")).map(line => line.split("`")[1]))
     .toEqual(["first", "second"]);
 });

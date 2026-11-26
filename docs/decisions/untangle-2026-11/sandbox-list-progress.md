@@ -30,3 +30,21 @@ The sandbox Worker collects the owner's running and paused sandboxes before eras
   14-day check and both original IDs from the start record for the 30-day
   check. Record individual outcomes before cleanup. Neither duration was
   measured by these offline runs.
+
+The start report now identifies the scratch-only and original-pair checks.
+A check identifies its requested or discovered IDs before resuming any, and
+a successful result names the sandboxes that passed. Two offline start runs
+(Node 22 and 24) generated both rows and the original pair. All ten offline
+check runs retained their expected exit and row count. Both the standalone
+and combined candidates passed all 22 listing and pause-probe guards.
+
+On the preceding 344072b7 source, the combined sandbox rehearsal on main
+d662e63e included #5857 aa40cc0a, slot wake and waiting-owner changes,
+creation and expiry stages, late template reservation 65bd6de3 and cached
+provider count 73909350. Full platform types passed. The first suite launch
+stopped before collection because workspace dependencies were missing. With
+the lockfile-matching packages present, 204 passed and 15 failed. All 11
+previous failures remained. The four additional failures were the competing
+starts, ordinary start and optional move racing a new reservation, and
+successive starts receiving the same cached count. Both listing regressions
+passed. No real pause duration was tested.
