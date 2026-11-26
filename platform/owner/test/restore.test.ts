@@ -1236,6 +1236,40 @@ const schemaOf = (stub: Stub) => sqlIn(stub, "SELECT type, name FROM sqlite_mast
                                              "substr(name, 1, 4) != '_cf_' ORDER BY 1, 2");
 
 describe("a restore into a live owner", () => {
+  it("wipes a pinned Owner after its change log crosses the segment byte limit",
+     { tags: ["large"] }, async () => {
+    const o = await owner();
+    let wrote = false;
+    const chosen = await generate(o.stub, { afterUnit: async ({ gate }) => {
+      const sql = gate.storage.sql;
+      if (wrote || sql.exec<{ capturing: number }>(
+            "SELECT capturing FROM log_capture").one().capturing === 0) {
+        return;
+      }
+      wrote = true;
+      await gate.write(() => {
+        const run = "run_" + "a".repeat(32);
+        const input = "x".repeat(12_000);
+        sql.exec("INSERT INTO run_inputs (run, prompt, bytes) VALUES (?, ?, ?)", run,
+                 input, input.length);
+        for (let i = 1; i < 375; i++) {
+          const prompt = i + input;
+          sql.exec("UPDATE run_inputs SET prompt = ?, bytes = ? WHERE run = ?",
+                   prompt, prompt.length, run);
+        }
+      });
+    } });
+    const [space] = await sqlIn(o.stub, "SELECT ns FROM file_space");
+    const root = (await env.FILES.getManifestRoot(space!.ns as string, chosen.gen))!;
+    expect(root.parts.length).toBe(1);
+    expect(root.segments.length).toBeGreaterThan(1);
+    const hold = await pinnedTo(o.stub, o.name, chosen.gen);
+    const stub = await wipedWith(o.stub, o.name, hold.confirm!);
+    expect((await stub.restoreSource(platform(o.name))).restore).toMatchObject({
+      step: "wiped", gen: chosen.gen, fresh: hold.fresh,
+    });
+  });
+
   it("wipes a pinned Owner after its undo generation spans a base page", { tags: ["large"] },
      async () => {
     const o = await owner();
