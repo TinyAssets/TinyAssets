@@ -140,7 +140,8 @@ describe("check's resume", () => {
     const { client, calls } = e2b({ ta_probe: "long-pause", ta_label: "small",
                                    ta_started: "2020-11-01T10:00:00.000Z" });
     expect(await checkOne(client, "box1")).toEqual({
-      cells: ["small", "", "", "", "", "", "", expect.stringMatching(/ms, full$/)],
+      cells: ["small", expect.stringMatching(/^\d{4}-.*Z$/), "", "", "", "", "", "",
+              expect.stringMatching(/ms, full, confirmed \d{4}-.*Z$/)],
       failures: ["envd's process start answered 502"] });
     expect(calls).toContain("POST /sandboxes/box1/pause");
   });
@@ -154,6 +155,7 @@ it("checks each explicitly named sandbox once", () => {
   ], { cwd: join(PLATFORM, "sandbox"), encoding: "utf8", env: { E2B_API_KEY: "fixture-key" } });
   expect(result.status).toBe(1);
   expect(result.stdout).toContain("Checking the requested sandbox IDs: first, second.");
+  expect(result.stdout).toContain("| resume requested (UTC) | since start | since pre-pause marker |");
   expect(result.stdout.split("\n").filter(line => line.startsWith("| `")).map(line => line.split("`")[1]))
     .toEqual(["first", "second"]);
 });

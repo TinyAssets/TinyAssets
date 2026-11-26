@@ -236,7 +236,7 @@ async function pause(e2b: E2b, box: Handle): Promise<string> {
   if (listed?.state !== "paused") {
     throw new Error(`${box.sandboxID} is ${listed?.state ?? "gone"} after its pause`);
   }
-  return `${ms} ms, ${listed.pauseMode ?? "mode not given"}`;
+  return `${ms} ms, ${listed.pauseMode ?? "mode not given"}, confirmed ${new Date().toISOString()}`;
 }
 
 /** One sandbox made and filled, its record written and verified, then paused: its row. */
@@ -332,6 +332,7 @@ export async function checkOne(e2b: E2b, id: string):
   if (!(started <= resumed)) {
     return { cells, failures: ["missing, invalid or future probe start time"] };
   }
+  cells.push(new Date(resumed).toISOString());
   const box = await e2b.connect(id, RESUMED_S);
   const connected = Date.now() - resumed;
   if (box === null) {
@@ -372,8 +373,11 @@ async function check(e2b: E2b, summary: Summary, ids: readonly string[]): Promis
     : `Checking currently listed sandboxes: ${boxes.join(", ")}. ` +
       "Pass the original IDs to check whether every sandbox from the start still exists.");
   summary.line();
-  const columns = ["sandbox", "label", "since start", "paused for", "connect", "first byte",
-                   "verify", "tick", "paused again", "result"];
+  summary.line("The in-sandbox marker is written before requesting a pause. Compare the previous " +
+               "confirmed pause with this resume request when reporting the elapsed interval.");
+  const columns = ["sandbox", "label", "resume requested (UTC)", "since start",
+                   "since pre-pause marker", "connect", "first byte", "verify", "tick",
+                   "paused again", "result"];
   summary.line(`| ${columns.join(" | ")} |`);
   summary.line(`|${"---|".repeat(columns.length)}`);
   const failed: string[] = [];
