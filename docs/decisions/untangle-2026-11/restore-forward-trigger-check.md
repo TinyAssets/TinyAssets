@@ -27,3 +27,12 @@ This check strengthens the prerequisite for the live-run ceiling review on
 `codex/sandbox-wait-answer`. Demonstrating that a proposed predicate change
 admits existing generations still requires replaying their rows in the
 actual restore order.
+
+All 448 ordinary Owner guards and full platform types passed standalone on
+Node 24 and with the staged sandbox changes on Node 22. The joined guard
+entry initially reported 445 passes and three failures. The sparse rehearsal
+lacked the tracked limits-audit file, and the starter's successful child
+process wrote the host's experimental proxy warning to stderr. Using the
+file from the joined base and suppressing that warning alone cleared all
+three. The earlier joined typecheck exited 137 and passed on a bounded-heap
+retry. The checked-in guard leaves the migration definitions unchanged.
