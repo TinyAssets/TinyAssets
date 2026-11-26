@@ -126,3 +126,24 @@ a sign-in's start with no answer ended the sign-in but did not stop a CLI that m
 - [x] `owner/src/launch.ts` `launch`: a start's call is bounded by nothing, where every other
   outside call a lane's row makes is bounded by `LANE_CALL_MS` (`inTime`). Research first how a
   late start stays fenced (`untangle/lane-start-bound`).
+
+### Open: a slot rings while the start's wait answer is on its way
+
+On main `d662e63e`, the sandbox registers the owner in the platform line before it returns
+`sandbox_waiting`. Owner sets the run's `sandbox_wait` only after that answer arrives. A
+ring in between sees no waiting runs and calls `unwait`, giving up the owner's place. The
+late answer then marks the run waiting. The runs lane skips it until a ring, and the line
+has nobody to ring for this owner. The slot alarm changes on `94be59ef` protect a registered
+waiter. This history loses the registration itself. The launch and ring callers are identical
+on main, template move `aa40cc0a`, move retention `2763f6eb`, capacity `1c3aed85`, list
+`72bb0ecb` and slot wake `94be59ef`.
+
+- [x] Exercise both orders in the ordinary Owner Workerd suite. Holding the sandbox's
+  completed answer at the existing gate reproduces the stranded run. The new regression
+  fails with `waiting/sandbox_waiting` where the same run must be running. Ringing after
+  the wait is recorded starts it, and an owner with no pending work leaves. Five existing
+  tests passed alongside the one failure. Full Node 22 platform types passed.
+- [ ] Reconcile when Owner can give up its place with starts whose outcomes have not arrived.
+  Keep FIFO, full re-admission, and the existing event-driven wait. Include simultaneous
+  starts, a cancelled or lost start, idle-owner cleanup and erasure. A local pending flag
+  alone cannot establish the disposition of starts interrupted across an eviction.

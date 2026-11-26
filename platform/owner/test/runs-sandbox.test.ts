@@ -10,15 +10,16 @@
  * - a lease that ends (its last live run settled) is released to the sandbox Worker, which
  *   pauses that sandbox (zero idle tail).
  */
+import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { until } from "../../ci/workerd";
 import { SANDBOX_WAITING } from "../../contract/src/sandbox";
 import { gated } from "./gateway-support";
 import {
-  defineAgent, ownerRun, recorder, runnerBinding, scripted, startOf,
+  defineAgent, ownerRun, recorder, runnerBinding, scripted, startOf, whileOut,
 } from "./runs-support";
-import { drainDue } from "./support";
+import { drainDue, gateFor } from "./support";
 
 const SIGNED_IN = Object.freeze({ engine: "claude-code", credential: "vendor_login_in_sandbox",
                                   scopes: [] });
@@ -54,6 +55,30 @@ describe("a run the sandbox has no room for", () => {
     expect(await r.stub.agentStatus(r.bind(), { run_id: run.run_id }))
       .toMatchObject({ state: "running", code: null });
     expect((await recorder(r.stub)).unwaits).toEqual([]);
+  });
+
+  it("can start after a ring crosses the sandbox's answer that the run must wait", async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    await scripted(r.stub, { answer: [{ started: false, code: SANDBOX_WAITING },
+                                      { started: true }] });
+    const gate = gateFor(env.SANDBOX_GATE, r.name);
+    const run = await whileOut(r.name, "start", () =>
+      r.stub.agentSubmit(r.bind(), { message: "the input", client_send_id: "early-ring" }),
+      async () => { await r.stub.sandboxRung(); });
+
+    await drainDue(r.stub);
+    // A second ring can only reach this run if its owner still has a place in the line.
+    const calls = (await gate.calls()).filter(call => call.method === "start" ||
+                                                       call.method === "unwait");
+    if (calls.at(-1)?.method === "start") {
+      await r.stub.sandboxRung();
+      await drainDue(r.stub);
+    }
+    expect(await r.stub.agentStatus(r.bind(), { run_id: run.run_id }))
+      .toMatchObject({ state: "running", code: null });
+    expect((await recorder(r.stub)).starts.map(start => start.run))
+      .toEqual([run.run_id, run.run_id]);
   });
 
   it("leaves the line when rung with no run waiting", async () => {
