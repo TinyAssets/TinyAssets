@@ -283,6 +283,58 @@ describe("a restore", () => {
     expect(await sqlIn(stub, "SELECT run FROM run_inputs WHERE run = ?", run.run_id)).toEqual([]);
   });
 
+  it.each(["before", "after"] as const)(
+    "keeps a running receipt lost across a pin with cancellation held %s Sandbox handles it",
+    async (hold) => {
+      const o = await owner();
+      const binding = o.bind(null, { control: EVERY_SIGNIN_RECORD });
+      await defineAgent(o.stub, binding, "main", {
+        engine: "claude-code", credential: "vendor_login_in_sandbox", scopes: [],
+      });
+      await scripted(o.stub, { answer: { started: true } });
+      const old = await o.stub.agentSubmit(binding, { message: "old", client_send_id: "old" });
+      expect(old.state).toBe("running");
+      const gen = await generate(o.stub);
+      const [space] = await sqlIn(o.stub, "SELECT ns FROM file_space");
+      const gate = gateFor(env.SANDBOX_GATE, o.name);
+      await gate.arm("cancel", { hold });
+      const cancel = o.stub.agentCancel(binding, { run_id: old.run_id }).then(
+        () => "answered", () => "interrupted");
+      try {
+        await gate.held("cancel");
+        const sent = hold === "after" ? 1 : 0;
+        const cancels = async (stub: Stub, run: string) =>
+          (await recorder(stub)).cancels.filter((request) => request.run === run).length;
+        expect(await cancels(o.stub, old.run_id)).toBe(sent);
+        expect(await sqlIn(o.stub, "SELECT state, cancel_requested FROM runs WHERE id = ?", old.run_id))
+          .toEqual([{ state: "running", cancel_requested: 1 }]);
+
+        const pin = await pinnedTo(o.stub, o.name, gen.gen);
+        // Pin also stops the active run, independently of the user's outstanding cancel.
+        expect(await cancels(o.stub, old.run_id)).toBe(sent + 1);
+        const stub = await wipedWith(o.stub, o.name, pin.confirm!);
+        await stub.restoreBegin(platform(o.name), { namespace: space!.ns as string, gen: gen.gen });
+        expect((await stepped(stub, o.name)).at(-1)?.step).toBe("done");
+        await stub.admissionSet(platform(o.name), { admit: true });
+        await drainDue(stub);
+        const fresh = await stub.agentSubmit(binding, { message: "fresh", client_send_id: "fresh" });
+        expect(fresh.state).toBe("running");
+
+        await gate.release("cancel");
+        await cancel;
+        expect(await sqlIn(stub, "SELECT state, code FROM runs WHERE id = ?", old.run_id))
+          .toEqual([{ state: "unknown", code: "lost" }]);
+        expect((await recorder(stub)).starts.filter((start) => start.run === old.run_id))
+          .toHaveLength(1);
+        expect(await cancels(stub, fresh.run_id)).toBe(0);
+        await stub.agentCancel(binding, { run_id: fresh.run_id });
+        expect(await cancels(stub, fresh.run_id)).toBe(1);
+      } finally {
+        await gate.release("cancel");
+        await cancel;
+      }
+    });
+
   it("keeps a settled conversation turn from launching twice after a pinned restore", async () => {
     const o = await owner();
     const binding = o.bind(null, { control: EVERY_SIGNIN_RECORD });
