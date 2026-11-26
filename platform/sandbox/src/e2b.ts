@@ -136,6 +136,7 @@ export class E2b extends E2bTransport {
   async list(key: string, value: string): Promise<string[]> {
     const listed = await this.sandboxes(`${encodeURIComponent(key)}=${encodeURIComponent(value)}`);
     // E2B's own filter, checked.
-    return listed.filter((each) => each.metadata[key] === value).map((each) => each.sandboxID);
+    const ids = listed.filter((each) => each.metadata[key] === value).map((each) => each.sandboxID);
+    return [...new Set(ids)];
   }
 }

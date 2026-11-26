@@ -4,8 +4,12 @@
  * its scratch, how much scratch a disk takes, and which sandbox `check` may resume. No E2B
  * call leaves the test: E2B's answers are given to the client's own fetch.
  */
+import { spawnSync } from "node:child_process";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
+import { PLATFORM } from "../../ci/paths";
 import { checkOne, facts, HEADROOM, SCRATCH_FLOOR, SCRATCH_TARGET, scratchBytes, TICKER,
   verdict } from "../pause-probe";
 import { E2b } from "../src/e2b";
@@ -108,4 +112,15 @@ describe("check's resume", () => {
       failures: ["envd's process start answered 502"] });
     expect(calls).toContain("POST /sandboxes/box1/pause");
   });
+});
+
+it("checks each explicitly named sandbox once", () => {
+  const fetchMissing = "globalThis.fetch = async () => new Response(null, { status: 404 })";
+  const result = spawnSync(process.execPath, [
+    "--experimental-strip-types", "--no-warnings", "--import", "data:text/javascript," + encodeURIComponent(fetchMissing),
+    "--import", "./template/resolve.mjs", "pause-probe.ts", "check", "--ids", "first,first second first",
+  ], { cwd: join(PLATFORM, "sandbox"), encoding: "utf8", env: { E2B_API_KEY: "fixture-key" } });
+  expect(result.status).toBe(1);
+  expect(result.stdout.split("\n").filter(line => line.startsWith("| `")).map(line => line.split("`")[1]))
+    .toEqual(["first", "second"]);
 });

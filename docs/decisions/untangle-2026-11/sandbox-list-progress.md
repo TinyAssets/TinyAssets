@@ -6,3 +6,27 @@ The sandbox Worker collects the owner's running and paused sandboxes before eras
 - [x] On `9031d5ce`, 166 sandbox Worker and guard tests and 385 deploy tests passed (one deploy size case excluded), with the full platform typecheck on Node 22. The ordinary two-page inventory case passed independently. Fourteen local histories per Node 22 and 24 exercised both the owner-filtered Worker reader and the unfiltered administrative reader, including 128 advancing pages and three ways to repeat a token.
 - [x] Rehearse with #5857 at `aa40cc0a` and the retention tests at `511c9391`. The full platform typecheck passed. The sandbox suite passed 171 cases with the same four move failures seen before this change. All three new pagination regressions passed.
 - [ ] #5857 still needs a durable record of the verified destination and the old sandbox's pending retirement. See the [capacity and restart evidence](https://github.com/TinyAssets/TinyAssets/commit/c9ce0d5999747dc5ababbe82928da5aff342331c).
+
+## One measurement per named sandbox
+
+- [x] A running or paused sandbox can appear on two distinct pages. The
+  [provider's team list](https://github.com/e2b-dev/infra/blob/86cb50338fe3bd73c10b13270aaa576b48f5d582/packages/api/internal/orchestrator/team_list_snapshot.go)
+  describes this behavior. The tagged ID reader now returns each matching
+  ID once in first-seen order. The pause probe also treats explicitly
+  repeated IDs as one request. The administrative reader still returns
+  every metadata observation for its route check.
+- [x] On 72bb0ecb a two-page fixture repeated one ID. The actual probe
+  resumed that sandbox twice during discovery and when its ID was supplied
+  twice. Cleanup reported two kills for the same ID. In separate offline
+  processes on Node 22 and 24, the corrected probe issued one resume or
+  one delete in each case and still reported the synthetic command failure.
+  All 168 ordinary sandbox tests and full Node 24 platform types passed.
+- [x] Recheck the planned 14- and 30-day measurements. In five synthetic
+  CLI runs on each Node version, discovery reported success with the scratch
+  sandbox alone. Naming both original IDs correctly failed for the missing
+  small sandbox and passed for the pair. Naming just the scratch sandbox
+  passed for the single-sandbox measurement.
+- [ ] Coordinator: use the recorded scratch sandbox ID alone for the
+  14-day check and both original IDs from the start record for the 30-day
+  check. Record individual outcomes before cleanup. Neither duration was
+  measured by these offline runs.

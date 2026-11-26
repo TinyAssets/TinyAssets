@@ -395,7 +395,7 @@ async function main(argv: readonly string[]): Promise<number> {
   if (mode !== "start" && mode !== "check" && mode !== "cleanup") {
     throw new Error(USAGE);
   }
-  const ids = (options.get("--ids") ?? "").split(/[\s,]+/).filter((id) => id !== "");
+  const ids = [...new Set((options.get("--ids") ?? "").split(/[\s,]+/).filter(Boolean))];
   if (ids.length > 0 && mode !== "check") {
     throw new Error("ids are for check alone: start makes its own, and cleanup kills every " +
                     "long-pause sandbox");

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { E2bTransport } from "../e2b/transport";
+import { E2b } from "../src/e2b";
 
 function listing(tokens: readonly string[]) {
   const requests: (string | null)[] = [];
@@ -28,4 +29,19 @@ describe("the shared sandbox list", () => {
       await expect(client.sandboxes()).rejects.toMatchObject({ status: 502 });
       expect(requests).toEqual([null, ...tokens.slice(0, -1)]);
     });
+});
+
+it("returns each matching sandbox ID once when two pages overlap", async () => {
+  const calls: (string | null)[] = [];
+  const client = new E2b("fixture-key", async url => {
+    const next = new URL(url).searchParams.get("nextToken");
+    calls.push(next);
+    const ids = next === null ? ["first", "both"] : ["both", "last"];
+    return Response.json([
+      ...ids.map(sandboxID => ({ sandboxID, metadata: { group: "ours" } })),
+      { sandboxID: "foreign", metadata: { group: "elsewhere" } },
+    ], { headers: next === null ? { "x-next-token": "second" } : {} });
+  });
+  expect(await client.list("group", "ours")).toEqual(["first", "both", "last"]);
+  expect(calls).toEqual([null, "second"]);
 });
