@@ -7,7 +7,7 @@
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { PLATFORM } from "../../ci/paths";
 import { checkOne, facts, HEADROOM, SCRATCH_FLOOR, SCRATCH_TARGET, scratchBytes, TICKER,
@@ -117,8 +117,28 @@ describe("check's resume", () => {
     expect(calls).toEqual(["GET /sandboxes/box1"]);
   });
 
+  it.each([
+    ["", "2020-11-02T00:00:00.000Z", false],
+    ["2020-02-30T00:00:00.000Z", "2020-11-02T00:00:00.000Z", false],
+    ["2020-11-01T00:00:00.000Z", "", true],
+    ["2020-11-01T00:00:00.000Z", "bad", true],
+    ["2020-11-01T00:00:00.000Z", "2020-10-31T00:00:00.000Z", true],
+    ["2020-11-01T00:00:00.000Z", "2999-01-01T00:00:00.000Z", true],
+  ] as const)("refuses an unmeasurable interval from %s to %s", async (started, paused, resumed) => {
+    const { client, calls } = e2b({ ta_probe: "long-pause", ta_label: "small", ta_started: started });
+    vi.spyOn(client, "exec").mockResolvedValue({
+      exitCode: 0, stdout: inspected({ paused_at: paused }, null), stderr: "",
+    });
+    const result = await checkOne(client, "box1");
+    expect(result.failures).toHaveLength(1);
+    expect(result.failures[0]).toMatch(resumed ? /pause time/ : /start time/);
+    expect(calls.includes("POST /v2/sandboxes/box1/connect")).toBe(resumed);
+    expect(calls.includes("POST /sandboxes/box1/pause")).toBe(resumed);
+  });
+
   it("is paused again, in its own cell, when a command fails after the resume", async () => {
-    const { client, calls } = e2b({ ta_probe: "long-pause", ta_label: "small" });
+    const { client, calls } = e2b({ ta_probe: "long-pause", ta_label: "small",
+                                   ta_started: "2020-11-01T10:00:00.000Z" });
     expect(await checkOne(client, "box1")).toEqual({
       cells: ["small", "", "", "", "", "", "", expect.stringMatching(/ms, full$/)],
       failures: ["envd's process start answered 502"] });

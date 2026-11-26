@@ -172,6 +172,16 @@ export function scratchBytes(free: number): { bytes: number; note: string | null
                               `B free and keeps ${HEADROOM} B` };
 }
 
+/** Both timestamps belong to the probe. Its writers use UTC ISO strings. */
+function probeTime(text: string | undefined): number {
+  const ms = Date.parse(text ?? "");
+  if (!Number.isFinite(ms)) {
+    return NaN;
+  }
+  const iso = new Date(ms).toISOString();
+  return text === iso || text === iso.replace(".000Z", "Z") ? ms : NaN;
+}
+
 function span(ms: number): string {
   return `${(ms / 3_600_000).toFixed(1)} h (${(ms / 86_400_000).toFixed(2)} d)`;
 }
@@ -317,8 +327,11 @@ export async function checkOne(e2b: E2b, id: string):
   if (listed.state !== "paused") {
     return { cells, failures: [`${listed.state}, not paused: no resume to measure`] };
   }
-  const started = listed.metadata["ta_started"];
+  const started = probeTime(listed.metadata["ta_started"]);
   const resumed = Date.now();
+  if (!(started <= resumed)) {
+    return { cells, failures: ["missing, invalid or future probe start time"] };
+  }
   const box = await e2b.connect(id, RESUMED_S);
   const connected = Date.now() - resumed;
   if (box === null) {
@@ -330,8 +343,12 @@ export async function checkOne(e2b: E2b, id: string):
     const firstByte = Date.now() - resumed;
     const { seen, ms } = await inspect(e2b, box);
     failures.push(...verdict(seen, label));
-    const since = (iso: string | undefined) => iso ? span(resumed - Date.parse(iso)) : "?";
-    cells.push(since(started), since(seen["paused_at"]), `${connected} ms`, `${firstByte} ms`,
+    const paused = probeTime(seen["paused_at"]);
+    const measured = started <= paused && paused <= resumed;
+    if (!measured) {
+      failures.push("missing or invalid pause time, or pause outside the start and resume interval");
+    }
+    cells.push(span(resumed - started), measured ? span(resumed - paused) : "?", `${connected} ms`, `${firstByte} ms`,
                `${ms} ms`, seen["tick"] || "?");
   } catch (error) {
     failures.push(reason(error));  // its cells left blank, and it is paused again all the same
