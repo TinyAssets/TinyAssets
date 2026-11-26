@@ -1033,6 +1033,45 @@ describe("the look before the runtime ceiling", () => {
     expect(await turn("nobody")).toBe(true);
   });
 
+  it("keeps a renewal's slot when two other owners start together", async () => {
+    await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: 3 });
+    await e2b("/script", { others: 1, signin: { "claude-code": 0 }, state: { live: 1, quiet: true } });
+    const peer = owner();
+    expect(await stub(peer).start(start())).toEqual({ started: true });
+    const peerId = (await seen()).sandboxes[0]!.id;
+    try {
+      await e2b("/age", { id: peerId, s: CEILING - WINDOW + 5 });
+      await e2b("/script", { refuseResume: true });
+      await runDurableObjectAlarm(stub(peer));
+      expect((await seen()).sandboxes[0]!.state).toBe("paused");
+      expect(await reserved()).toBe(1);
+
+      await e2b("/script", { hold: "create" });
+      const first = stub(owner()).start(start());
+      await seenOnce(state => state.held.includes("create"), "the first provider create");
+      const second = stub(owner()).start(start());
+      // Let the second request overlap a slow provider. A correct implementation may
+      // make it wait for the first placement to finish instead of immediately answering.
+      try {
+        await Promise.race([second, scheduler.wait(500)]);
+      } finally {
+        await e2b("/release", {});
+      }
+      const outcomes = await Promise.all([first, second]);
+      expect(outcomes.filter(outcome => outcome.started)).toHaveLength(1);
+      expect(outcomes.filter(outcome => !outcome.started && outcome.code === "sandbox_waiting"))
+        .toHaveLength(1);
+      expect((await seen()).sandboxes.filter(box => box.state === "running")).toHaveLength(1);
+      expect(await reserved()).toBe(1);
+      await e2b("/script", { refuseResume: false });
+      await runDurableObjectAlarm(stub(peer));
+      expect((await seen()).sandboxes.find(box => box.id === peerId)?.state).toBe("running");
+      expect(await reserved()).toBe(0);
+    } finally {
+      await slots().unreserve(peerId);
+    }
+  });
+
   it("keeps a renewal's slot across its pause: the first in line cannot take it",
      async () => {
     await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: 2 });
