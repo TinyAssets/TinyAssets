@@ -44,6 +44,46 @@ leave. It lost the same owner's refreshed wait, while a peer refresh advanced co
 Old Slots code refuses the newer on-disk schema. These are coordinator integration
 constraints. The idle-leave change does not recover registrations already lost.
 
-A duplicate ring before readmission and a successful placement while another start
-reply is in flight require separate proofs. Both can occur without any newer
-registration arriving between the idle decision and deletion.
+## Duplicate delivery and local eligibility
+
+The first ring clears the run's wait flag, making it eligible for local readmission.
+A second ring can arrive before that starts. At `88f59875` the ordinary Owner test
+issued a leave. At `244ce35e` a duplicate delivery consults the same eligibility
+query the runs lane uses. A woken sandbox wait can retain its turn while it can be
+readmitted. When tier capacity prevents readmission, the peer can advance.
+
+The two ordinary Owner files passed 57 tests and the combined Owner file passed nine.
+All 5,184 SQLite scenarios on each of Node 22 and 24 preserved the previous choice
+of the next run in ordinary admission. The new leave decision matched the expected
+result for each scenario, including 234 where a ready run kept its turn.
+
+Both full platform typechecks passed. In a separate three-Worker replay with both
+owners eligible, the older run launched first and the peer launched second. Sampling
+the FIFO after the duplicate was insufficient to verify this: the scheduler could
+already have started the first run and correctly advanced the peer. The provider's
+launch record and the Owner's outgoing calls distinguished those outcomes.
+
+With its tier temporarily unavailable, the older owner released its registration
+and the peer started. Reading file status with the restored tier and draining due
+work left the earlier run waiting in this replay. A subsequent directory creation
+and drain started it. Review how a fresh control record makes local work runnable
+on a read before relying on tier restoration alone to restart an idle owner.
+
+## One placement notification can arrive too early
+
+Two local three-Worker rehearsals on the registration candidate added an experimental
+notification to the owner acquiring a sandbox, before releasing its registration and
+notifying the next owner. Both notifications reached the test queue. The new placement
+was a second run for the same owner under a different authority. The peer retained
+the next turn for an allocation.
+
+- When the original wait reply was held, Owner processed its notification while the
+  original start was still queued. After the peer started and the held reply arrived,
+  the original run was waiting. The line was empty. Freeing another slot produced
+  no further notification.
+- When the original wait had already been saved, the notification woke it for
+  readmission. The peer and the original run both started.
+
+Keep this experimental send out of the candidate. A successful enqueue does not establish
+that Owner had saved the affected wait. The placement design still needs to retain a
+way to wake that run across a delayed reply and eviction while honoring the peer's turn.
