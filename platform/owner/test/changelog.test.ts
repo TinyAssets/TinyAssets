@@ -151,6 +151,28 @@ describe("a log segment's build", () => {
     expect(shipped).toMatchObject({ shipped: shipped.last, left: 0 });
   });
 
+  it.each([2, 375])("releases the segment sizing reader after %i captured inputs", async (count) => {
+    const o = await owner();
+    await runInDurableObject(o.stub, (_instance: OwnerDO, state) => {
+      const sql = state.storage.sql;
+      const log = new ChangeLog(state.storage);
+      log.begin("0123456789abcdef");
+      sql.exec("CREATE TABLE schema_change_control (x INTEGER)");
+      const input = "x".repeat(12_000);
+      const run = "run_" + "a".repeat(32);
+      sql.exec("INSERT INTO run_inputs (run, prompt, bytes) VALUES (?, ?, ?)", run, input,
+               input.length);
+      for (let i = 1; i < count; i++) {
+        const prompt = i + input;
+        sql.exec("UPDATE run_inputs SET prompt = ?, bytes = ? WHERE run = ?", prompt,
+                 prompt.length, run);
+      }
+      const last = log.state().last;
+      expect(log.pending(last)!.b < last).toBe(count === 375);
+      sql.exec("DROP TABLE schema_change_control");
+    });
+  });
+
   it("sizes again a span pinned under the old sizing that is past a part as written, once, " +
      "and ships every line", { tags: ["large"] }, async () => {
     const o = await owner();
