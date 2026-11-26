@@ -1236,6 +1236,20 @@ const schemaOf = (stub: Stub) => sqlIn(stub, "SELECT type, name FROM sqlite_mast
                                              "substr(name, 1, 4) != '_cf_' ORDER BY 1, 2");
 
 describe("a restore into a live owner", () => {
+  it("wipes a pinned Owner after its undo generation spans a base page", { tags: ["large"] },
+     async () => {
+    const o = await owner();
+    const chosen = await generate(o.stub);
+    await sqlIn(o.stub, "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE " +
+      "i < ?) INSERT INTO owner_notices (at, type, detail) SELECT 0, 'x', printf('%.1000c', 'a') " +
+      "FROM n", PAGE + 1);
+    const hold = await pinnedTo(o.stub, o.name, chosen.gen);
+    const stub = await wipedWith(o.stub, o.name, hold.confirm!);
+    expect((await stub.restoreSource(platform(o.name))).restore).toMatchObject({
+      step: "wiped", gen: chosen.gen, fresh: hold.fresh,
+    });
+  });
+
   it("pins the generation, holds the owner and writes its present state, wipes the object " +
      "to pending and empty with R2 untouched, and restores the pinned one equal at E",
      async () => {
