@@ -74,6 +74,22 @@ describe("the strongest source, on the platform's ranking", () => {
       .toEqual(["c-o/vendor/unranked-y", "c-o/vendor/unranked-x"]);
   });
 
+  it("orders direct and routed versions by the model name matched by the ranking", () => {
+    const direct = key("direct", "anthropic", 1, model("claude-fable-5"));
+    const routed = key("routed", "openrouter", 2, model("anthropic/claude-fable-5.1"));
+    for (const keys of [[direct, routed], [routed, direct]]) {
+      expect(first(keys, [])).toBe("routed/anthropic/claude-fable-5.1");
+    }
+  });
+
+  it("uses the older connection when the same ranked name is listed through a router", () => {
+    const direct = key("direct", "openai", 1, model("gpt-6.1-sol"));
+    const routed = key("routed", "openrouter", 2, model("openai/gpt-6.1-sol"));
+    for (const keys of [[direct, routed], [routed, direct]]) {
+      expect(first(keys, [])).toBe("direct/gpt-6.1-sol");
+    }
+  });
+
   it("orders unknown models by their vendor's score, a scored one first, then by price, " +
      "never above a ranked one", () => {
     const free = (id: string) => model(id, 0);
