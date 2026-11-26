@@ -1311,6 +1311,8 @@ describe("the admission unit", () => {
     };
     expect(await started({ ...TIERS, free: { ...TIERS.free, runs: 1 } })).toEqual([]);
     expect(await started(undefined)).toEqual([]);
+    // No tier capacity is available for readmission. The peer may use the freed slot.
+    expect((await recorder(r.stub)).unwaits).toEqual([r.name]);
     expect(await started({ ...TIERS, free: { ...TIERS.free, runs: 2 } }))
       .toEqual([own.run_id]);
   });

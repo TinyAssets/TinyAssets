@@ -57,6 +57,22 @@ describe("a run the sandbox has no room for", () => {
     expect((await recorder(r.stub)).unwaits).toEqual([]);
   });
 
+  it("keeps an eligible waiting run's turn when a duplicate ring precedes readmission", async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    await scripted(r.stub, { answer: [{ started: false, code: SANDBOX_WAITING }, { started: true }] });
+    const run = await r.stub.agentSubmit(r.bind(), { message: "first", client_send_id: "two-rings" });
+    expect(run).toMatchObject({ state: "waiting", code: SANDBOX_WAITING });
+    expect(await r.stub.sandboxRung()).toEqual({ waiting: 1 });
+    expect(await r.stub.sandboxRung()).toEqual({ waiting: 0 });
+    expect((await recorder(r.stub)).unwaits).toEqual([]);
+    await drainDue(r.stub);
+    expect(await r.stub.agentStatus(r.bind(), { run_id: run.run_id }))
+      .toMatchObject({ state: "running", code: null });
+    expect(await r.stub.sandboxRung()).toEqual({ waiting: 0 });
+    expect((await recorder(r.stub)).unwaits).toEqual([r.name]);
+  });
+
   it("can start after a ring crosses the sandbox's answer that the run must wait", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);

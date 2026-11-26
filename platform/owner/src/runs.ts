@@ -880,9 +880,10 @@ export class Runs {
   /**
    * The waiting run whose turn it is, oldest first: the first waiting in a conversation with
    * no live run, while the tier has room, and not one waiting for a sandbox until the
-   * platform's line rings the owner (`sandbox_wait`). A read; null for none.
+   * platform's line rings the owner (`sandbox_wait`). When a wait code is supplied, only
+   * eligible runs with that code count. A read; null for none.
    */
-  nextWaiting(): RunRow | null {
+  nextWaiting(code: typeof SANDBOX_WAITING | null = null): RunRow | null {
     const room = this.#capacity();
     if (room === null || this.live() >= room) {
       return null;
@@ -891,7 +892,8 @@ export class Runs {
       "SELECT w.* FROM runs w WHERE w.state = 'waiting' AND NOT EXISTS (SELECT 1 FROM runs r " +
         `WHERE r.conversation = w.conversation AND r.${LIVE}) AND NOT EXISTS (SELECT 1 FROM ` +
         "runs e WHERE e.conversation = w.conversation AND e.state = 'waiting' " +
-        "AND e.seq < w.seq) AND w.sandbox_wait = 0 ORDER BY w.seq LIMIT 1").toArray()[0]
+        "AND e.seq < w.seq) AND w.sandbox_wait = 0 AND (? IS NULL OR w.code = ?) " +
+        "ORDER BY w.seq LIMIT 1", code, code).toArray()[0]
       ?? null;
   }
 
@@ -939,8 +941,15 @@ export class Runs {
   sandboxRung(): { waiting: number; leave: boolean } {
     const waiting = this.#sql.exec("UPDATE runs SET sandbox_wait = 0 WHERE sandbox_wait = 1 " +
                                      "RETURNING id").toArray().length;
-    const leave = waiting === 0 && this.#sql.exec(
-      `SELECT 1 FROM runs WHERE ${LIVE} AND state = 'queued' LIMIT 1`).toArray().length === 0;
+    if (waiting > 0) {
+      return { waiting, leave: false };
+    }
+    const starting = this.#sql.exec(
+      `SELECT 1 FROM runs WHERE ${LIVE} AND state = 'queued' LIMIT 1`).toArray().length > 0;
+    // The first ring cleared the wait flag. A duplicate can arrive before the runs lane
+    // readmits an eligible sandbox wait, which still owns its turn for a new allocation.
+    const leave = !starting &&
+      (this.#host.unadmitted() !== null || this.nextWaiting(SANDBOX_WAITING) === null);
     return { waiting, leave };
   }
 
