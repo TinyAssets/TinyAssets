@@ -78,3 +78,35 @@ def test_proposal(tmp_path, ref, history, fail, rc, actions):
     run = subprocess.run(["bash", "-c", MOCK + step], env=env, capture_output=True, text=True)
     assert run.returncode == rc, run.stderr
     assert log.read_text().splitlines() == actions
+
+
+@pytest.mark.parametrize("listing", ["complete", "failed", "interrupted"])
+def test_cooldown_observes_complete_listing(tmp_path, listing):
+    steps = yaml.safe_load(WORKFLOW.read_text())["jobs"]["cooldown"]["steps"]
+    step = next(s["run"] for s in steps if s.get("id") == "due")
+    output = tmp_path / "result"
+    records = [
+        {**proposal(11), "isDraft": True, "createdAt": "2020-01-01T00:00:00Z",
+         "labels": []},
+        {**proposal(12), "isDraft": True, "createdAt": "2020-01-01T00:00:00Z",
+         "labels": [{"name": "needs-founder"}]},
+    ]
+    env = {"PATH": os.defpath, "RECORDS": json.dumps(records), "LISTING": listing,
+           "GH_REPO": "example/repo", "PREFIX": "okf-watch/", "COOLDOWN_DAYS": "7",
+           "GITHUB_OUTPUT": str(output)}
+    command = r"""
+gh() {
+  if [[ "$1 $2" == "api user" ]]; then echo watcher; return; fi
+  [[ "$1 $2" == 'pr list' ]] || return 93
+  [[ "$LISTING" != failed ]] || return 71
+  jq -r "${!#}" <<< "$RECORDS"
+  [[ "$LISTING" != interrupted ]] || return 71
+}
+"""
+    run = subprocess.run(["bash", "-c", command + step], env=env, capture_output=True, text=True)
+    if listing == "complete":
+        assert run.returncode == 0, run.stderr
+        assert output.read_text().splitlines() == ["ready=11", "founder=12"]
+    else:
+        assert run.returncode == 71, run.stderr
+        assert not output.exists()

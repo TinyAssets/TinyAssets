@@ -220,6 +220,9 @@ jobs:
           me=$(gh api user --jq .login)
           ready=""
           founder=""
+          proposals=$(gh pr list --label okf-watch --state open \
+                     --json number,createdAt,isDraft,labels,headRefName,author \
+                     --jq ".[] | select(.isDraft and (.headRefName | startswith(\"${PREFIX}\")) and .author.login == \"${me}\") | [.number, .createdAt, ([.labels[].name] | join(\",\"))] | @tsv")
           while IFS=$'\t' read -r number created labels; do
             [ -n "$number" ] || continue
             if [ "$(date -u -d "$created" +%s)" -gt "$cutoff" ]; then
@@ -230,9 +233,7 @@ jobs:
               *,needs-founder,*) founder="$founder $number" ;;
               *) ready="$ready $number" ;;
             esac
-          done < <(gh pr list --label okf-watch --state open \
-                     --json number,createdAt,isDraft,labels,headRefName,author \
-                     --jq ".[] | select(.isDraft and (.headRefName | startswith(\"${PREFIX}\")) and .author.login == \"${me}\") | [.number, .createdAt, ([.labels[].name] | join(\",\"))] | @tsv")
+          done <<< "$proposals"
           {
             echo "ready=${ready# }"
             echo "founder=${founder# }"
