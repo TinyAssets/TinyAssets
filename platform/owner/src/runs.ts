@@ -1390,7 +1390,7 @@ export class Runs {
                                      epoch: number | null; mail: string | null;
                                      agent: string }>(
       "UPDATE runs SET state = ?, code = CASE WHEN cancel_requested = 1 AND ? = 'failed' " +
-        "THEN 'cancelled' ELSE ? END, exit_code = ?, settled_at = ? WHERE id = ? " +
+        "THEN 'cancelled' ELSE ? END, sandbox_wait = 0, exit_code = ?, settled_at = ? WHERE id = ? " +
         `AND ${UNSETTLED} RETURNING conversation, lease_id, epoch, mail, agent`, state, state,
       code, exitCode, now, runId).toArray();
     if (settled.length === 0) {

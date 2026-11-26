@@ -10,6 +10,7 @@
  * - a lease that ends (its last live run settled) is released to the sandbox Worker, which
  *   pauses that sandbox (zero idle tail).
  */
+import { evictDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
@@ -79,6 +80,30 @@ describe("a run the sandbox has no room for", () => {
       .toMatchObject({ state: "running", code: null });
     expect((await recorder(r.stub)).starts.map(start => start.run))
       .toEqual([run.run_id, run.run_id]);
+  });
+
+  it("cancels a saved sandbox wait and starts only the remaining run after a ring", async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    const wait = { started: false, code: SANDBOX_WAITING } as const;
+    await scripted(r.stub, { answer: [wait, wait, { started: true }] });
+    const submit = (message: string) => r.stub.agentSubmit(r.bind(), { message, client_send_id: message });
+    const first = await submit("first");
+    const second = await submit("second");
+    expect([first.code, second.code]).toEqual([SANDBOX_WAITING, SANDBOX_WAITING]);
+
+    await evictDurableObject(r.stub);
+    expect(await r.stub.agentCancel(r.bind(), { run_id: first.run_id }))
+      .toMatchObject({ state: "failed", code: "cancelled" });
+    expect(await r.sql("SELECT prompt FROM run_inputs WHERE run = ?", first.run_id)).toEqual([]);
+    expect(await r.stub.sandboxRung()).toEqual({ waiting: 1 });
+    await until(async () => {
+      await drainDue(r.stub);
+      return (await r.stub.agentStatus(r.bind(), { run_id: second.run_id })).state === "running";
+    }, "the remaining run started");
+    expect((await recorder(r.stub)).starts.map(start => start.run))
+      .toEqual([first.run_id, second.run_id, second.run_id]);
+    expect(await r.stub.sandboxRung()).toEqual({ waiting: 0 });
   });
 
   it("leaves the line when rung with no run waiting", async () => {
