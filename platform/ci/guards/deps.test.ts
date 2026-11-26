@@ -96,7 +96,15 @@ describe("the install check", () => {
       write("w/node_modules/runtime/package.json", { version: "3" });
       expect(check()).toBeNull();
     });
-    it("keeps an unproved optional cycle required", () => {
+    it("accepts a cycle reached only through omitted variants", () => {
+      packages[leaf]!.dependencies = { wasm: "1" };
+      expect(check()).toBeNull();
+      packages.w!.dependencies = { wasm: "1" };
+      expect(check()).toBe(leaf + " is missing (locked 2)");
+    });
+    it("keeps an unanchored optional cycle required", () => {
+      delete packages["node_modules/other-os"]!.dependencies;
+      delete packages["node_modules/other-cpu"]!.dependencies;
       packages[leaf]!.dependencies = { wasm: "1" };
       expect(check()).toBe(leaf + " is missing (locked 2)");
     });

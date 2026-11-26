@@ -97,16 +97,25 @@ function excludedOptionals(root: string, packages: Record<string, Locked>, missi
       }
     }
   }
-  // Propagate only proved omissions. Orphans, cycles and paths from an installed parent
-  // cannot acquire an exemption by referring to one another.
+  // First find everything reachable from an absent variant, including optional cycles.
+  // Then withdraw that proof wherever another parent needs the same install.
+  const reachable = new Set(excluded);
   let previousSize;
   do {
-    previousSize = excluded.size;
+    previousSize = reachable.size;
     for (const [path, incoming] of parents) {
-      if ([...incoming].every((parent) => excluded.has(parent))) excluded.add(path);
+      if ([...incoming].some((parent) => reachable.has(parent))) reachable.add(path);
     }
-  } while (excluded.size !== previousSize);
-  return excluded;
+  } while (reachable.size !== previousSize);
+  do {
+    previousSize = reachable.size;
+    for (const [path, incoming] of parents) {
+      if (!excluded.has(path) && [...incoming].some((parent) => !reachable.has(parent))) {
+        reachable.delete(path);
+      }
+    }
+  } while (reachable.size !== previousSize);
+  return reachable;
 }
 
 /** The first locked package the install at `root` does not hold as locked, or null. */

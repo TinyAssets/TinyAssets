@@ -26,7 +26,10 @@ On main `d662e63e`, a clean npm 11.19.1 install on Linux installed 277 packages.
 The guard now follows declared edges to their actual locked paths, including hoisting and workspace-local versions. It propagates exclusions only from absent incompatible packages. A second applicable dependency path, an installed parent, or an unproved cycle keeps the child required. The prior version checks still cover packages that are present.
 
 - [x] Run the original and corrected checks on both clean installs. Original: npm 11 refused and npm 10 passed. Corrected: both passed on Node 24. The twelve focused guards and full platform TypeScript passed on the npm 11 install.
-- [ ] Check the complete CI guards and review the independent branch before integration.
+- [x] On `5d401928`, the full CI workspace passed 367 tests with one skipped. An initial sparse-checkout attempt lacked repository files: nine assertions failed and one suite could not load. The complete checkout supplied those files.
+- [x] A second, offline npm 11 install using three local tarballs found a missed case: the excluded platform variant was the only way into a two-package cycle. npm omitted both members but the first change required them. Trace reachability from excluded variants through cycles, then remove any path with an applicable parent. Making one cycle member a direct dependency installed both. Removing its sibling was rejected and restoring it passed, on Node 22 and 24 with the real generated locks.
+- [x] After the cycle correction, 13 focused guards, the full CI workspace (368 passed, one skipped), and full platform TypeScript passed. The actual npm 10 and npm 11 platform installs remain covered.
+- [ ] Coordinator review and integration. The change is staged on the ordinary CI branch.
 
 ## Left
 
