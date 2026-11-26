@@ -19,7 +19,7 @@ import { gated } from "./gateway-support";
 import {
   defineAgent, ownerRun, recorder, runnerBinding, scripted, startOf, whileOut,
 } from "./runs-support";
-import { drainDue } from "./support";
+import { drainDue, openRecord } from "./support";
 
 const SIGNED_IN = Object.freeze({ engine: "claude-code", credential: "vendor_login_in_sandbox",
                                   scopes: [] });
@@ -72,6 +72,29 @@ describe("a run the sandbox has no room for", () => {
     expect(await r.stub.sandboxRung()).toEqual({ waiting: 0 });
     expect((await recorder(r.stub)).unwaits).toEqual([r.name]);
   });
+
+  it.each(["read", "write"] as const)(
+    "readmits a woken run when an ordinary %s restores its tier", async (door) => {
+      const r = await gated();
+      await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+      await scripted(r.stub, { answer: [{ started: false, code: SANDBOX_WAITING }, { started: true }] });
+      const run = await r.stub.agentSubmit(r.bind(), { message: "wait", client_send_id: "tier" });
+      expect(run).toMatchObject({ state: "waiting", code: SANDBOX_WAITING });
+      await r.stub.fileStat(r.bind({ control: openRecord(undefined) }), { path: "/workspace" });
+      expect(await r.stub.sandboxRung()).toEqual({ waiting: 1 });
+      await drainDue(r.stub);
+      expect(await r.stub.sandboxRung()).toEqual({ waiting: 0 });
+      expect((await recorder(r.stub)).unwaits).toEqual([r.name]);
+
+      if (door === "read") {
+        await r.stub.fileStat(r.bind(), { path: "/workspace" });
+      } else {
+        await r.stub.fileMkdir(r.bind(), { path: "/workspace/example", expected_etag: null });
+      }
+      await drainDue(r.stub);
+      expect(await r.stub.agentStatus(r.bind(), { run_id: run.run_id }))
+        .toMatchObject({ state: "running", code: null });
+    });
 
   it("can start after a ring crosses the sandbox's answer that the run must wait", async () => {
     const r = await gated();
