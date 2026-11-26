@@ -722,17 +722,13 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     this.#sql.exec("UPDATE sandboxes SET prepared = 1 WHERE sandbox_id = ?", box.sandboxID);
   }
 
-  /**
-   * A paused sandbox resumed (memory restored, or rebooted when E2B kept its files only):
-   * prepared again, and its runs told (`renewed`) or restarted from disk (`recover`). Null
-   * when E2B has it no more. E2B's refusal for room is thrown (`noRoom`). Every resume, a
-   * start's or the look's, makes its runner one this Worker speaks to first (`#speaking`): one
-   * resumed with its memory and no renewal pending adopts this Worker's when nothing lives, so
-   * the one `prepare` is the adopted runner's; a rebooted one's runs restart under the runner
-   * that launched them, and a renewal's runs go on under theirs.
-   */
-  async #resume(row: Row, found: SandboxInfo, network: NetworkDocument | null,
-                ceilings: SandboxCeilings, slot: "turn" | "held"): Promise<Box | null> {
+  async #resumeHeld(row: Row, found: SandboxInfo, network: NetworkDocument | null,
+                    ceilings: SandboxCeilings): Promise<Box | null> {
+    const resumed = await this.#connect(row, found, ceilings);
+    return resumed === null ? null : this.#finishResume(row, found, network, resumed);
+  }
+
+  async #connect(row: Row, found: SandboxInfo, ceilings: SandboxCeilings): Promise<Handle | null> {
     const e2b = this.#e2b();
     this.#ended(found);  // a pause E2B made on its own is logged before the resume
     const resumed = await e2b.connect(found.sandboxID, ceilings.runtime_ceiling_s);
@@ -750,10 +746,13 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     this.#sql.exec("UPDATE sandboxes SET paused = 0, heard = 0, prepared = 0 WHERE authority = ?",
                    row.authority);
     this.#owe(resumed.sandboxID);
-    if (slot === "turn") {
-      // The provider has allocated the slot even if preparing the resumed box fails.
-      await this.#took();
-    }
+    return resumed;
+  }
+
+  /** A rebooted sandbox restarts its runs under the runner that wrote its disk. */
+  async #finishResume(row: Row, found: SandboxInfo, network: NetworkDocument | null,
+                      resumed: Handle): Promise<Box> {
+    const e2b = this.#e2b();
     // Its own runner: the one that wrote its disk and launched its runs.
     let handle: Box = { sandboxID: resumed.sandboxID, envdAccessToken: resumed.envdAccessToken,
                         runner: row.runner };
@@ -816,7 +815,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     };
     if (row !== null && row.renewing === 1 && found !== null) {
       // A renewal's own sandbox keeps its slot: resumed without its turn.
-      const handle = await this.#resume(row, found, network, ceilings, "held");
+      const handle = await this.#resumeHeld(row, found, network, ceilings);
       return handle === null ? "lost" : { handle };
     }
     const { turn, reserved } = await slots.turn(this.#owner);
@@ -832,8 +831,11 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         return await wait();
       }
       if (found !== null) {
-        const handle = await this.#resume(row!, found, network, ceilings, "turn");
-        if (handle !== null) {
+        const resumed = await this.#connect(row!, found, ceilings);
+        if (resumed !== null) {
+          // This turn has been used even if preparing the resumed sandbox fails.
+          await this.#took();
+          const handle = await this.#finishResume(row!, found, network, resumed);
           return { handle };
         }
         if (network === null) {
@@ -1416,7 +1418,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       // off, and is the founder's alert.
       await this.#hold(found.sandboxID);
       try {
-        if (await this.#resume(row, found, null, ceilings, "held") === null) {
+        if (await this.#resumeHeld(row, found, null, ceilings) === null) {
           this.#forget(row.authority);
           return Number.POSITIVE_INFINITY;
         }
@@ -1545,7 +1547,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       return;
     }
     try {
-      await this.#resume({ ...row, renewing: 1 }, found, null, ceilings, "held");
+      await this.#resumeHeld({ ...row, renewing: 1 }, found, null, ceilings);
     } catch (error) {
       if (!noRoom(error)) {
         throw error;

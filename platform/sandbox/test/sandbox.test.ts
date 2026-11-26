@@ -550,6 +550,24 @@ describe("a start", () => {
     expect(state.commands.filter((command) => command.argv[1] === "prepare")).toHaveLength(2);
   });
 
+  it.each(["full", "filesystem"])("finishes the interrupted %s resume before launching after eviction", async (pauseMode) => {
+    const who = owner();
+    await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 0, quiet: true }, pauseMode });
+    expect(await stub(who).start(start())).toEqual({ started: true });
+    expect(await stub(who).release({ lease_id: LEASE.lease_id })).toEqual({ paused: true });
+    const next = start({ run: `run_${hex(32, "6")}`, lease: { lease_id: hex(32, "f"), epoch: 2 } });
+    await e2b("/script", { broken: "prepare" });
+    expect((await faulted(() => stub(who).start(next))).got).toBe("sandbox_start_failed");
+    expect((await seen()).sandboxes[0]!.state).toBe("running");
+    await evictDurableObject(stub(who));
+    await e2b("/script", { broken: null });
+    const prior = (await seen()).commands.length;
+    expect(await stub(who).start(next)).toEqual({ started: true });
+    const steps = (await seen()).commands.slice(prior).map((command) => command.argv[1])
+      .filter((step) => ["prepare", "recover", "launch"].includes(step!));
+    expect(steps).toEqual(pauseMode === "filesystem" ? ["prepare", "recover", "launch"] : ["prepare", "launch"]);
+  });
+
   it("restarts a rebooted sandbox's runs from disk when E2B kept its files only", async () => {
     await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 0, quiet: true },
                            pauseMode: "filesystem" });
@@ -928,6 +946,26 @@ describe("the look before the runtime ceiling", () => {
     await runDurableObjectAlarm(stub(who));
     expect((await seen()).calls.filter((call) => call.path.endsWith("/connect")))
       .toHaveLength(1);
+  });
+
+  it("keeps a wait for another authority when an active sandbox resumes on its own slot", async () => {
+    const first = owner();
+    const peer = owner();
+    await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: 1 });
+    await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 1, quiet: true } });
+    expect(await stub(first).start(start())).toEqual({ started: true });
+    const id = (await seen()).sandboxes[0]!.id;
+    const waiting = { started: false, code: "sandbox_waiting" };
+    const run = `run_${hex(32, "3")}`;
+    expect(await stub(first).start(start({
+      run, conversation: `cv_${hex(32, "4")}`, authority: hex(64, "4"),
+      lease: { lease_id: hex(32, "f"), epoch: 2 }, urls: runUrls(run, hex(64, "e")),
+    }))).toEqual(waiting);
+    expect(await stub(peer).start(start())).toEqual(waiting);
+    await e2b("/pause", { id });
+    await runDurableObjectAlarm(stub(first));
+    expect((await seen()).sandboxes[0]!.state).toBe("running");
+    expect([await turn(first), await turn(peer)]).toEqual([true, false]);
   });
 
   it("resumes a sandbox E2B paused while a lease runs in it, its slot its own",

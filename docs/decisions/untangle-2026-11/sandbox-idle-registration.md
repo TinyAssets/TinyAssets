@@ -242,3 +242,28 @@ each candidate. The peer launched in the spare slot, then the first owner
 repaired preparation and launched in its original box. A lost provider
 response is a separate case: confirmation is absent. Reliable notice to a
 different run of the placed owner is still open.
+
+On `da6d24cf` the provider connection and runner preparation are two
+distinct steps. The follow-up makes that boundary explicit in the source.
+The ordinary start releases its turn between the steps. A held resume goes
+through both without releasing a queued turn. A new Workerd control verified
+that a different authority of the same owner kept its existing turn while
+the alarm resumed an active leased sandbox. The peer remained second on
+both candidates.
+
+The reboot case remains open. After a confirmed resume and a failed prepare,
+the retry after eviction issued prepare and launch in both pause modes.
+That satisfies a full-memory resume. The filesystem-only resume also needs
+recover before launch. The same permanent regression failed on both
+candidates; the full-memory control passed on both.
+
+A separate four-case Worker experiment at `9f5297b0` lost the connect
+response after the fake provider made the same box running. After eviction
+both retries launched without preparing, the filesystem case omitted
+recovery, and the peer still waited despite spare capacity. With an
+acknowledged response, both modes prepared, the filesystem case recovered,
+and the peer launched. The existing running-box path sees no pause mode in
+the fake's running info. Preserve the observed resume requirement across
+the provider call and its completion before relying on that path. Also
+verify retry after a lost recovery-command acknowledgement before choosing
+how to complete the obligation.
