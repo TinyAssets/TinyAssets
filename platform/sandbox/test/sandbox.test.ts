@@ -568,6 +568,43 @@ describe("interrupted replacement of an idle sandbox", () => {
     return old;
   }
 
+  it("keeps the old sandbox when another owner reserves during the move capacity read", async () => {
+    await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: 2 });
+    const who = owner();
+    const old = await runningFromPreviousTemplate(who);
+    const peer = owner();
+    await e2b("/script", { state: { live: 1, quiet: true } });
+    expect(await stub(peer).start(start())).toEqual({ started: true });
+    const id = (await seen()).sandboxes.find(box => box.id !== old)!.id;
+    const request = next();
+    await e2b("/age", { id, s: CEILING - WINDOW + 5 });
+    await e2b("/script", { hold: "running-count", state: { live: 0, quiet: true } });
+    let finished = false;
+    const launch = stub(who).start(request).finally(() => { finished = true; });
+    try {
+      const state = await seenOnce(s => finished || s.held.includes("running-count"),
+        "the original sandbox served the run or the move asked about capacity");
+      if (state.held.includes("running-count")) {
+        await e2b("/script", { refuseResume: true, state: { live: 1, quiet: true } });
+        const renewal = runDurableObjectAlarm(stub(peer));
+        // A shared allocator may finish the count before the renewal is allowed to pause.
+        try {
+          await Promise.race([renewal, scheduler.wait(500)]);
+        } finally {
+          await e2b("/release", {});
+        }
+        await renewal;
+      }
+      expect(await launch).toEqual({ started: true });
+      const after = await seen();
+      expect(after.commands.filter(c => c.argv[2] === request.run).at(-1)?.sandbox).toBe(old);
+      expect(after.calls.filter(c => c.method === "POST" && c.path === "/v2/sandboxes")).toHaveLength(2);
+    } finally {
+      await e2b("/release", {});
+      await slots().unreserve(id);
+    }
+  });
+
   it.each([false, true])("keeps a renewing peer's slot during a template move (count absent: %s)",
     async noCount => {
       await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: 2 });

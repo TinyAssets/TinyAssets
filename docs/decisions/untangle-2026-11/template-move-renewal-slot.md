@@ -11,8 +11,10 @@
   establishes use of the reserved place, not loss of the renewing job.
 - [ ] Reconcile optional replacement with the same capacity rule ordinary
   starts use. A replacement can be deferred and the start served on the
-  original. Verify a reservation that appears during the capacity check and
-  a control with genuinely spare capacity before accepting the move.
+  original. The two timing cases below belong in that shared rule.
+- [x] Exercise a renewal that starts after the replacement asks how many
+  sandboxes are running. Compare a full team with a team that has a spare
+  place while the copy is still in progress.
 
 The first test draft left the reservation in the shared fixture after a failure.
 Each case now returns its own reservation during teardown.
@@ -29,3 +31,17 @@ at each create and resume. With limit two the other owner stayed paused
 during the copy and resumed after the move finished. With limit three it
 resumed during the copy. Both observations passed on aa40cc0a. The test
 exercised recovery after the delay. No permanent job loss was observed.
+
+The new ordinary Worker regression held the provider's count open and then
+started the other owner's renewal. The start on the standalone branch used
+its original sandbox. On #5857 at aa40cc0a the identical assertion failed:
+the run used the third sandbox. All 175 ordinary sandbox tests and full
+Node 24 platform types passed on the standalone test tree.
+
+In two separate local Worker replays of aa40cc0a, the synthetic provider
+enforced the team limit on both creation and resume. In each replay the
+reservation count rose from zero to one while the move's count was in
+flight. At two places the other owner resumed only after the copy finished.
+At three it resumed while the copy was still held. The remaining dependency
+is a shared allocation decision for ordinary starts, renewals and optional
+moves. A deferred move must still serve the run on the original sandbox.

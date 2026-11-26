@@ -211,6 +211,16 @@ function connected(box: FakeSandbox, status = 200): Response {
                          clientID: "x", envdVersion: "0.10.0" }, { status });
 }
 
+/** Hold a selected provider request or runner command until the test releases it. */
+async function holdNext(operation: string): Promise<void> {
+  if (fake.script.hold !== operation) return;
+  fake.script.hold = null;
+  const held = { command: operation };
+  fake.held.push(held);
+  // Workerd wakes no request by a promise that another request resolves.
+  while (fake.held.includes(held)) await scheduler.wait(2);
+}
+
 async function api(request: Request, url: URL): Promise<Response> {
   if (request.headers.get("X-API-Key") !== "e2b_test_key_0000") {
     return Response.json({ code: 401, message: "bad key" }, { status: 401 });
@@ -243,6 +253,9 @@ async function api(request: Request, url: URL): Promise<Response> {
                          { status: 201 });
   }
   if (request.method === "GET" && first === "v2" && second === "sandboxes" && !third) {
+    if (url.searchParams.get("state") === "running" && !url.searchParams.has("metadata")) {
+      await holdNext("running-count");
+    }
     const states = (url.searchParams.get("state") ?? "running,paused").split(",");
     const [key, value] = (url.searchParams.get("metadata") ?? "=").split("=")
       .map(decodeURIComponent);
@@ -351,15 +364,7 @@ async function envd(request: Request, url: URL): Promise<Response> {
     // next test's reset (an alarm's look still running from the test before), lands in the
     // discarded log, never in the next test's.
     const log = fake.commands;
-    if (command !== undefined && command === fake.script.hold) {
-      // Polled inside this request: workerd wakes no request by a promise another resolves.
-      fake.script.hold = null;
-      const held = { command };
-      fake.held.push(held);
-      while (fake.held.includes(held)) {
-        await scheduler.wait(2);
-      }
-    }
+    if (command !== undefined) await holdNext(command);
     const done = loader(box, raw);
     const argv = done.argv;
     log.push({ sandbox: id, argv, runner: done.runner, user });
