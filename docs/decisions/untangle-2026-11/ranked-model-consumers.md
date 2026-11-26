@@ -35,3 +35,13 @@ transport. No vendor request or template acceptance was run.
   data. Do not guess the upstream revision or special-case the probe.
   Recheck all route choices, including custom full-ID-only patterns,
   together with Owner selection before integrating a runtime fix.
+
+A four-path inventory of 161 live branch heads compared the shared ranking
+source and data, Owner selection, and sandbox probe. Fifteen heads including
+main and the open template-move PR had main's exact four blobs. Of 142
+heads with the older Owner and probe layout, only the historical ranking
+branch had its altered Owner comparator. Three legacy heads had none of
+the four paths. The remaining head was the Ship plan PR #5856; its actual
+PR diff changes only a decision document. Its older runtime files are
+branch history. The historical ranking branch now links back to the
+current regression and shared-caller decision at 67faa4db.
