@@ -998,6 +998,32 @@ describe("the look before the runtime ceiling", () => {
       .exec("SELECT 1 FROM launched").toArray().length)).toBe(0);
   });
 
+  it("waits on a refused resume of its own reserved sandbox and keeps its slot", async () => {
+    await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: 2 });
+    await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 1, quiet: true } });
+    const who = owner();
+    expect(await stub(who).start(start())).toEqual({ started: true });
+    const id = (await seen()).sandboxes[0]!.id;
+    await e2b("/age", { id, s: CEILING - WINDOW + 5 });
+    await e2b("/script", { others: 1, refuseResume: true });
+    await runDurableObjectAlarm(stub(who));
+    expect(await reserved()).toBe(1);
+
+    const other = owner();
+    expect(await stub(other).start(start())).toEqual({ started: false, code: "sandbox_waiting" });
+    const run = `run_${hex(32, "4")}`;
+    const joining = start({ run, tokens: null, network: null, urls: runUrls(run, hex(64, "e")) });
+    expect(await stub(who).start(joining)).toEqual({ started: false, code: "sandbox_waiting" });
+    expect(await reserved()).toBe(1);
+    expect(await turn(other)).toBe(true);
+    await e2b("/script", { refuseResume: false });
+    expect(await stub(who).start(joining)).toEqual({ started: true });
+    expect(await reserved()).toBe(0);
+    expect((await seen()).sandboxes.map(box => box.id)).toEqual([id]);
+    await stub(other).unwait();
+    expect(await turn("nobody")).toBe(true);
+  });
+
   it("keeps a renewal's slot across its pause: the first in line cannot take it",
      async () => {
     await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: 2 });

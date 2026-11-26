@@ -810,16 +810,20 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       await slots.wait(this.#owner, ceilings.runtime_ceiling_s);
       return "waiting" as const;
     };
-    if (row !== null && row.renewing === 1 && found !== null) {
-      // A renewal's own sandbox keeps its slot: resumed without its turn.
-      const handle = await this.#resume(row, found, network, ceilings);
-      return handle === null ? "lost" : { handle };
-    }
-    const { turn, reserved } = await slots.turn(this.#owner);
-    if (!turn) {
-      return wait();
-    }
     try {
+      if (row !== null && row.renewing === 1 && found !== null) {
+        // A renewal's own sandbox keeps its slot: resumed without its turn.
+        const handle = await this.#resume(row, found, network, ceilings);
+        if (handle === null) {
+          return "lost";
+        }
+        await this.#took();
+        return { handle };
+      }
+      const { turn, reserved } = await slots.turn(this.#owner);
+      if (!turn) {
+        return wait();
+      }
       const count = await e2b.running();
       // E2B's count is the team's, and advisory: unknown, the create is tried and E2B's
       // own refusal holds the plan. A renewal's sandbox, paused for a moment, keeps its slot
