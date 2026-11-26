@@ -3,6 +3,7 @@
  * which says what a lock holds and when a migration is pinned).
  */
 import { createHash } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
 
 import { describe, expect, it } from "vitest";
 
@@ -94,34 +95,99 @@ describe("no REPLACE against an exported table (review L5-2)", () => {
 const EXPORT_SHAPE = { schema: 35, sha256:
   "c33e3a62020f259faf5a52aeadf081843c5e60fd6af8f5c55e69c8d9b9ae9449" };
 
-describe("every migration says how a generation from before it is brought forward", () => {
-  it("one entry a migration, null only where its text names no exported table, nor reaches " +
-     "one through a trigger", () => {
-    expect(FORWARD).toHaveLength(MIGRATIONS.length);
-    const exportedTables = new Set(Object.keys(exported()));
-    const tables = [...exportedTables, ...Object.keys(NOT_EXPORTED)];
-    // Each table's triggers' writes, from every trigger a migration made: a write to a table
-    // reaches what they write, as `file_scope_chunks_removed` reaches `file_chunks`.
-    const writes = new Map<string, string[]>();
-    for (const sql of MIGRATIONS.flat()) {
-      const on = /^CREATE TRIGGER \w+ [^;]*? ON (\w+)/.exec(sql)?.[1];
-      if (on !== undefined) {
-        writes.set(on, [...writes.get(on) ?? [], ...[...sql.slice(sql.indexOf(" BEGIN "))
-          .matchAll(/\b(?:UPDATE|INTO|DELETE FROM)\s+(\w+)/g)].map((write) => write[1]!)]);
+/** A DROP names the trigger, which need not name the table whose writes it observed. */
+function removedTriggerTables(migrations: readonly Migration[], forward: readonly (string | null)[]):
+    Set<string>[] {
+  const db = new DatabaseSync(":memory:");
+  try {
+    const read = db.prepare("SELECT name, tbl_name, sql FROM sqlite_schema WHERE type = 'trigger'");
+    const triggers = () => new Map(read.all().map((row) =>
+      [String(row.name), { table: String(row.tbl_name), sql: row.sql }]));
+    return migrations.map((migration, index) => {
+      const removed = new Set<string>();
+      if (forward[index] !== null) {
+        for (const sql of migration) {
+          db.exec(sql);
+        }
+        return removed;
       }
+      let before = triggers();
+      for (const sql of migration) {
+        // SQLite splits the statements, including a trigger body with internal semicolons.
+        // A trailing SELECT gives whitespace and comments a final harmless statement.
+        let remaining = sql + "\n;SELECT 1";
+        for (;;) {
+          const statement = db.prepare(remaining).sourceSQL;
+          remaining = remaining.slice(statement.length);
+          if (remaining.length === 0) {
+            break;
+          }
+          db.exec(statement);
+          const after = triggers();
+          for (const [name, trigger] of before) {
+            if (after.get(name)?.sql !== trigger.sql) {
+              removed.add(trigger.table);
+            }
+          }
+          before = after;
+        }
+      }
+      return removed;
+    });
+  } finally {
+    db.close();
+  }
+}
+
+function forwardChanges(migrations: readonly Migration[], forward: readonly (string | null)[]): string[] {
+  const exportedTables = new Set(Object.keys(exported()));
+  const tables = [...exportedTables, ...Object.keys(NOT_EXPORTED)];
+  // Each table's triggers' writes, from every trigger a migration made: a write to a table
+  // reaches what they write, as `file_scope_chunks_removed` reaches `file_chunks`.
+  const writes = new Map<string, string[]>();
+  for (const sql of migrations.flat()) {
+    const on = /^CREATE TRIGGER \w+ [^;]*? ON (\w+)/.exec(sql)?.[1];
+    if (on !== undefined) {
+      writes.set(on, [...writes.get(on) ?? [], ...[...sql.slice(sql.indexOf(" BEGIN "))
+        .matchAll(/\b(?:UPDATE|INTO|DELETE FROM)\s+(\w+)/g)].map((write) => write[1]!)]);
     }
-    const reached = (from: string[]): Set<string> => {
-      const seen = new Set(from);
-      for (const table of seen) {
-        (writes.get(table) ?? []).forEach((write) => seen.add(write));
-      }
-      return seen;
-    };
-    const named = MIGRATIONS.flatMap((migration, at) => FORWARD[at] !== null ? []
-      : [...reached(tables.filter((table) => migration.some((sql) =>
-          new RegExp(`\\b${table}\\b`).test(sql))))].filter((table) => exportedTables.has(table))
-        .map((table) => `migration ${at + 1} names or reaches ${table}`));
-    expect(named).toEqual([]);
+  }
+  const reached = (from: string[]): Set<string> => {
+    const seen = new Set(from);
+    for (const table of seen) {
+      (writes.get(table) ?? []).forEach((write) => seen.add(write));
+    }
+    return seen;
+  };
+  const removed = removedTriggerTables(migrations, forward);
+  return migrations.flatMap((migration, at) => forward[at] !== null ? []
+    : [...reached(tables.filter((table) => removed[at]!.has(table) || migration.some((sql) =>
+        new RegExp(`\\b${table}\\b`).test(sql))))].filter((table) => exportedTables.has(table))
+      .map((table) => `migration ${at + 1} names or reaches ${table}`));
+}
+
+describe("every migration says how a generation from before it is brought forward", () => {
+  it("one entry a migration, null only where it names or reaches no exported table", () => {
+    expect(FORWARD).toHaveLength(MIGRATIONS.length);
+    expect(forwardChanges(MIGRATIONS, FORWARD)).toEqual([]);
+  });
+
+  it("identifies both direct and indirect changes when only a trigger name is dropped", () => {
+    const migrations = [MIGRATIONS[0]!, [
+      'DROP TRIGGER main."object_owner_logged_insert"',
+      'DROP TRIGGER "file_scope_chunks_removed"',
+    ]];
+    const changed = forwardChanges(migrations, [FORWARD[0]!, null]);
+    expect(changed).toContain("migration 2 names or reaches object_owner");
+    expect(changed).toContain("migration 2 names or reaches file_chunks");
+  });
+
+  it("finds the table of a dropped trigger even when the same migration reinstalls it", () => {
+    const create = MIGRATIONS[0]!.find((sql) =>
+      sql.startsWith("CREATE TRIGGER object_owner_logged_insert "))!;
+    const drop = 'DROP TRIGGER "object_owner_logged_insert"';
+    const migrations = [MIGRATIONS[0]!, [drop + "; " + create + "; -- restored before commit"]];
+    expect([...removedTriggerTables(migrations, [FORWARD[0]!, null])[1]!]).toEqual(["object_owner"]);
   });
 
   it("brings a generation forward from schema 31 on (migration 31 keys each private row " +
