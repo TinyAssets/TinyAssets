@@ -36,7 +36,7 @@ import {
   standing, writtenAt,
 } from "./generation-support";
 import { MUSE, registerOn, signedIn, dm } from "./ledger-support";
-import { defineAgent, recorder, scripted, whileOut } from "./runs-support";
+import { defineAgent, recorder, runnerBinding, scripted, startOf, whileOut } from "./runs-support";
 import {
   drainDue, EVERY_SIGNIN_RECORD, failure, gateFor, laneAt, laneJobs, OPEN_RECORD, ownerObject, storesOn,
 } from "./support";
@@ -258,6 +258,10 @@ describe("a restore", () => {
         queued = await generate(o.stub);
       });
     expect(run.state).toBe("running");
+    const runner = runnerBinding({
+      bind: (extra) => ({ owner: o.name, caller: o.name, origin: null, ...extra }),
+    }, await startOf(o.stub, run.run_id));
+    await o.stub.runEvents(runner, { frames: [] });
     const [prior] = await sqlIn(o.stub, "SELECT lease_id FROM runs WHERE id = ?", run.run_id);
     const gen = queued ?? await generate(o.stub);
     const [space] = await sqlIn(o.stub, "SELECT ns FROM file_space");
@@ -271,6 +275,9 @@ describe("a restore", () => {
     expect(await sqlIn(stub, "SELECT run FROM run_grants")).toEqual([]);
     await stub.admissionSet(platform(o.name), { admit: true });
     await drainDue(stub);
+    expect((await failure(() => stub.runEvents(runner, {
+      frames: [], end: { exit_code: 0 },
+    }))).code).toBe("run_ended");
     expect(await sqlIn(stub, "SELECT state, code FROM runs WHERE id = ?", run.run_id))
       .toEqual([{ state: "unknown", code: "lost" }]);
     expect(await sqlIn(stub, "SELECT run FROM run_inputs WHERE run = ?", run.run_id)).toEqual([]);

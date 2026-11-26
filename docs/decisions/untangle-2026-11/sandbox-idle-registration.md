@@ -459,3 +459,26 @@ the wipe. The predicate changes are experimental. A read-only trigger can
 still forbid replay of a valid old row, and dropping a capture trigger can
 silence later export changes. Compatibility requires evidence for both
 normal writes and historical base and log rows before changing the schema.
+
+All 59 ordinary restore cases also passed in the combined rehearsal. The
+separate ceiling regression failed at the same insert on that tree. The
+independent migration guard on `codex/restore-forward-trigger-check`
+(`7e033698`) passed 448 Owner guards standalone and combined.
+
+Three Workerd controls compared the historical base and change-log routes
+with the same final live/wait ordering. The synthetic schema-35 writer made
+two captured heartbeat updates to the thousandth live row after its base
+page had been read, returning every column of the row to its original
+value. With no overlay the old insert guard refused the later waiting row.
+With the overlay the old guard reached done: the base skipped the shadowed
+live row, so the wait loaded before the thousandth live record from the log.
+The experimental AFTER predicates also reached done with that overlay. A
+change in which rows reach the log can therefore change the old restore
+outcome even when the final run rows match.
+
+The queued and running regression also submits an ordinary callback using
+the original recorded launch. The active Owner accepts it before restore.
+After restore and settlement, the same binding's successful exit report is
+refused with `run_ended`, and the receipt stays `unknown/lost`. Both
+standalone cases passed. An earlier fixture incorrectly attached the
+account's control field to the runner binding and failed before restore.
