@@ -267,3 +267,64 @@ the fake's running info. Preserve the observed resume requirement across
 the provider call and its completion before relying on that path. Also
 verify retry after a lost recovery-command acknowledgement before choosing
 how to complete the obligation.
+
+## What survives an interrupted resume or restore
+
+On `c325ee55` the ordinary sandbox Worker and guard entry passed 170 and
+failed three. The failures were notification after ordinary placement,
+notification after sign-in placement, and filesystem recovery after failed
+preparation. The combined candidate passed 217 and failed 17. Both full
+platform typechecks passed. An earlier unfiltered invocation included the
+privileged runner and other suites. It recorded 267 passes, 26 failures and
+177 skips standalone, and 314 passes, 42 failures and 179 skips combined.
+Some privileged cases could not start a namespace. Those runs do not establish
+privileged acceptance.
+
+A disposable resume candidate saved the observed pause mode before connecting.
+Twelve local Worker scenarios covered both modes, eviction, failure before and
+after a provider action, and loss of a command acknowledgement. A lost prepare
+response repeated prepare. A lost recover response repeated recover. An
+acknowledged recover followed by failed info did not repeat recover. All used
+a fake provider. A separate experiment exercised the shipped runner with
+synthetic children. On Node 22 and 24, sequential recovery while the recorded
+child was alive left one child. Two recoveries that both observed a dead PID
+before either saved its replacement left two live children for the same run
+in either release order. On Node 24, interrupting just one recovery after
+spawn and before recording its PID left a live child. A later sequential
+retry spawned a second. The PID file identified only the later child.
+Serializing the calls alone does not cover interruption between spawn and
+publication. Vendor execution and live provider behavior were outside the test.
+
+A local Owner Worker restored the same saved generation twice. It held a
+waiting run at the time of backup. On the first restore, admission, a fresh
+tier read and draining due work left the run waiting. A ring dispatched it.
+After that dispatch the Owner was lost again. Restoring the original generation
+produced the same waiting row. Another ring issued a second successful start
+request for the same run ID to a recording Sandbox. The first two-restore test
+used the aborted stub a second time and failed at reset. The rerun obtained
+a fresh stub for each loss and passed. The existing restore rule for a live
+run with a missing lease does not cover this saved wait. Determine how Owner
+can reconcile the later execution before replaying a restored wait. The
+recording service counted start requests, not effects from a real engine.
+
+A separate offline Slots model exercised 216 SQLite histories. A durable
+placement record outside the FIFO survived failure before enqueue, missing
+acknowledgement and eviction. Matching the acknowledgement to one placement
+preserved newer records. Finishing an older placement could still delete the
+same owner's newer registration with an unconditional take. A conditional
+take alone suppressed the placement when the registration had already changed.
+Record the placement and release the observed registration as distinct events.
+An empty FIFO removes its alarm, so pending delivery also needs a retry wake.
+Eight failed sends to one owner blocked a peer when each retry started with
+the oldest undelivered send. Independent send attempts reached the peer in
+all eight cases.
+
+On the Owner side, waiting for every outstanding dispatch before acknowledging
+one placement allowed a fast run to keep trying while another dispatch stayed
+open. Eight duplicate deliveries produced ten fast attempts and two slow ones.
+In 72 model schedules, recording receipt once and marking the already outstanding
+dispatches in the same Owner transaction let each affected run retry once.
+These models have not established a mixed-version protocol. Older Doors drops
+a ring with an extra field and older Owner cannot acknowledge a new placement.
+Recovery after a lost provider response, interrupted runner recovery, restored
+waits and retry of the notification itself remain distinct integration cases.
