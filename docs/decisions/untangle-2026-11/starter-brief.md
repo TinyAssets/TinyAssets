@@ -91,3 +91,10 @@ production dependency and representative census remain open.
   give the combined package a later version and regenerate both plugin surfaces.
   Recheck migration from the released package and importer tier fit on the
   selected commit. The watcher still points to its prior upstream repository.
+
+### November 26 current-main replay of PR #5692
+
+Main at `d662e63e` now carries starter 10 with 16 files and both plugins at 1.0.10. The draft still proposes starter 8 with 14 files. The older two-v8 comparison above describes its original base.
+
+- [x] Replay main's watcher against the draft's exact proposed spec and README. Both Git blob IDs matched the frozen upstream inputs. The watcher proposed starter 11. The normal starter and plugin generators kept all 16 paths, changed only the managed OKF reference, and emitted plugin version 1.0.11 for both consumers. The managed reference text matched the reviewed draft byte for byte.
+- [ ] Regenerate the draft from current main if this upstream revision is still the coordinator's choice. Confirm the actual release base and owner upgrade before integration. This was a disposable projection. The draft and main remain at their observed versions.
