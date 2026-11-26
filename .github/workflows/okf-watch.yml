@@ -135,28 +135,60 @@ jobs:
           WIDENS: ${{ steps.check.outputs.widens }}
         run: |
           set -euo pipefail
-          if gh api "repos/${GH_REPO}/branches/${BRANCH}" --silent 2>/dev/null; then
-            echo "This upstream is already proposed on ${BRANCH}."
-            exit 0
-          fi
           me=$(gh api user --jq .login)
-          git push -q "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git" \
-            "HEAD:refs/heads/${BRANCH}"
-          gh label create okf-watch --color 0e8a16 \
-            --description "The OKF watcher's proposals" --force
-          gh label create needs-founder --color d93f0b \
-            --description "Could widen what agents do: the founder reviews it" --force
-          labels="okf-watch"
-          if [ "$WIDENS" = "true" ]; then labels="okf-watch,needs-founder"; fi
+          # A pushed branch can survive a failed PR creation. A closed proposal can
+          # survive deletion of its branch. Consult the proposal history first.
+          proposal=$(gh pr list --base main --head "$BRANCH" --state all \
+            --json number,state,author,isCrossRepository --jq \
+            '[.[] | select(.isCrossRepository == false)] | first | select(. != null) |
+             [.number,.state,.author.login] | @tsv')
+          if [[ -n "$proposal" ]]; then
+            read -r number state author <<< "$proposal"
+            if [[ "$state" != OPEN || "$author" != "$me" ]]; then
+              echo "Leaving existing proposal #${number} with its reviewer."
+              exit 0
+            fi
+          else
+            remote="https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git"
+            ref="refs/heads/${BRANCH}"
+            existing=$(git ls-remote --heads "$remote" "$ref")
+            if [[ -n "$existing" ]]; then
+              read -r sha _ <<< "$existing"
+              expected="$(git rev-parse 'HEAD^{tree}') $(git rev-parse HEAD^)"
+              actual=$(gh api "repos/${GH_REPO}/git/commits/${sha}" --jq \
+                '[.tree.sha, (.parents[].sha)] | join(" ")')
+              if [[ "$actual" != "$expected" ]]; then
+                echo "The existing proposal branch differs from this build. Review it before resuming." >&2
+                exit 1
+              fi
+            else
+              git push -q --force-with-lease="$ref:" "$remote" "HEAD:$ref"
+            fi
+            gh label create okf-watch --color 0e8a16 \
+              --description "The OKF watcher's proposals" --force
+            gh label create needs-founder --color d93f0b \
+              --description "Could widen what agents do: the founder reviews it" --force
+            labels="okf-watch"
+            if [ "$WIDENS" = "true" ]; then labels="okf-watch,needs-founder"; fi
+            url=$(gh pr create --draft --base main --head "$BRANCH" --label "$labels" \
+              --title "$TITLE" --body-file "$RUNNER_TEMP/body.md")
+            number=${url##*/}
+          fi
+          [[ "$number" =~ ^[1-9][0-9]*$ ]]
           # Older proposals: the watcher's own alone (its prefix, its author), never a pull
           # request someone else labelled.
-          for n in $(gh pr list --label okf-watch --state open --json number,headRefName,author \
-                       --jq ".[] | select((.headRefName | startswith(\"${PREFIX}\")) and .author.login == \"${me}\") | .number"); do
+          older=$(gh pr list --label okf-watch --base main --state open --limit 1000 \
+            --json number,headRefName,author,isCrossRepository --jq \
+            ".[] | select((.headRefName | startswith(\"$PREFIX\")) and .author.login == \"$me\" and
+             .isCrossRepository == false and .number < $number) | .number")
+          if [[ -n "$proposal" && -n "$older" ]]; then
+            echo "Proposal #${number} already exists. Review older open proposals: $older" >&2
+            exit 1
+          fi
+          for n in $older; do
             gh pr close "$n" --delete-branch \
               --comment "Superseded: the upstream moved on (${BRANCH#"$PREFIX"})."
           done
-          gh pr create --draft --base main --head "$BRANCH" --label "$labels" \
-            --title "$TITLE" --body-file "$RUNNER_TEMP/body.md"
 
   cooldown:
     environment: production
