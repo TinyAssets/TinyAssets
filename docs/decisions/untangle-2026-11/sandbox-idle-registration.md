@@ -201,3 +201,27 @@ joined checkout ran the same complete file with exactly the same results.
 Full Node 24 platform types passed on both. The next design must recover a
 missed placement after eviction, preserve the next owner's allocation, and
 avoid using the same delayed notification to trigger successive attempts.
+
+## Which placement evidence survives at the queue boundary
+
+At `f532e726`, the existing Doors consumer acknowledges and drops a ring
+that contains a valid owner and an additional placement field. Its ordinary
+owner-only control reaches the Owner. The regression now checks the actual
+queue entry and verifies the dropped message produced no leave request.
+Erasure uses the same strict owner-only parser. A producer cannot start
+adding a placement token and rely on a successful send or acknowledgement
+as proof that the Owner saw it.
+
+Two real Slots objects began with the same owners at positions one and two.
+One completed a placement for the head. The other released its observed wait.
+After eviction the full contents of their readable SQLite tables matched,
+the peer was first in both, and the only queue recipient in either history
+was the peer. After the peer left, the tables matched again and neither
+object had an alarm. The comparisons passed on this branch and on the joined
+sandbox candidate. A subsequent lookup of current line membership alone
+cannot recover the missing distinction.
+
+Any design retaining the owner-only doorbell must preserve the placement
+outcome independently of the removed wait until the Owner can consume it.
+An extended message would also need compatible Doors before producer
+activation and a recovery path for old messages. Keep erasure's parser strict.

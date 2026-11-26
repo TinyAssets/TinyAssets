@@ -37,10 +37,12 @@ describe("the ring queue's consumer", () => {
   });
 
   it("drops a ring out of shape, acknowledged, reaching no object", async () => {
-    const dropped = batch([null, "user_x", { owner: "user_x", extra: 1 }, { owner: "" }]);
-    await ringQueue(dropped.batch, env as unknown as DoorsEnv);
+    const owner = `user_${crypto.randomUUID().replace(/-/g, "")}`;
+    const dropped = batch([null, "user_x", { owner, placement: 1 }, { owner: "" }]);
+    await worker.queue(dropped.batch, env as unknown as DoorsEnv);
     expect(dropped.acked).toEqual([0, 1, 2, 3]);
     expect(dropped.retried).toEqual([]);
+    expect((await recorded(owner)).unwaits).toEqual([]);
   });
 });
 
