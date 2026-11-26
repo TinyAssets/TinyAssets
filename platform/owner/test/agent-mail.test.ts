@@ -12,6 +12,7 @@ import { runDurableObjectAlarm } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 
+import { RUNS_CEILING } from "../../contract/src/control";
 import { toolsNamed } from "../../contract/src/doors";
 import {
   AGENT_RETIRED, type Ledger, LEDGER_LIMITS, MAIL_HEADER_BYTES, mailInput,
@@ -23,8 +24,8 @@ import { mailConversation, type RunReceipt, UNATTENDED_REFUSED } from "../src/ru
 import { gated, type Gated } from "./gateway-support";
 import { MCP, MUSE, registerOn, rig, signedIn, dm } from "./ledger-support";
 import {
-  ALL_SCOPES, defineAgent, OPEN_RECORD, ownerRun, recorder, runBinding, runnerBinding, startOf,
-  whileOut,
+  ALL_SCOPES, defineAgent, OPEN_RECORD, openRecord, ownerRun, recorder, runBinding, runnerBinding,
+  scripted, startOf, TIERS, whileOut,
 } from "./runs-support";
 import { clock } from "../src/clock";
 import { LANE_PASS_S, LANE_RETRY_S } from "../src/schedule";
@@ -507,6 +508,38 @@ describe("mail to an agent", () => {
     await runDurableObjectAlarm(r.stub);
     expect((await starts(r)).map((start) => told(start).body))
       .toEqual(["job 0", "job 1", "job 2"]);
+  });
+
+  it("keeps one mail input waiting at the live-run ceiling and launches it when a place opens",
+     { tags: ["large"] }, async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    onTestFinished(() => { vi.useRealTimers(); });
+    const r = await gated();
+    const control = openRecord({ ...TIERS, free: { ...TIERS.free, runs: RUNS_CEILING } });
+    await writeControl(env.CONTROL, JSON.parse(control));
+    const binding = r.bind({ control });
+    await defineAgent(r.stub, binding, "main", SIGNED_IN);
+    const agent = await identity(r, "main");
+    await scripted(r.stub, { answer: { started: true } });
+    const first = await r.stub.agentSubmit(binding, { message: "first", client_send_id: "first" });
+    for (let i = 1; i < RUNS_CEILING; i++) {
+      await r.stub.agentSubmit(binding, { message: "fill", client_send_id: `fill-${i}` });
+    }
+
+    const posted = await r.stub.roomPost(binding, { room_id: dm(agent.agent_id),
+      client_message_id: "at-ceiling", body: "deliver after a place opens", parent_id: null });
+    await drainDue(r.stub);
+    const runs = () => r.sql("SELECT state FROM runs WHERE mail = ?", posted.message_id);
+    expect(await runs()).toEqual([{ state: "waiting" }]);
+    expect(await r.sql("SELECT state, unacked FROM ledger_recipients WHERE message_id = ? " +
+                       "AND agent_id = ?", posted.message_id, agent.agent_id))
+      .toEqual([{ state: "read", unacked: 1 }]);
+
+    await end(r, await startOf(r.stub, first.run_id), "done");
+    await drainDue(r.stub);
+    expect(await runs()).toEqual([{ state: "running" }]);
+    const delivered = (await starts(r)).filter((start) => start.prompt.includes(posted.message_id));
+    expect(delivered.map((start) => told(start).body)).toEqual(["deliver after a place opens"]);
   });
 
   it("past the tier's simultaneous runs waits its turn, never refused", async () => {
