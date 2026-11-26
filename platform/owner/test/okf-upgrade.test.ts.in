@@ -1,0 +1,37 @@
+// In a disposable checkout of the current starter, copy this to okf-upgrade.test.ts and
+// the proposed starter.json beside it as okf-candidate.json. Run the Owner workerd project.
+import { expect, it } from "vitest";
+
+import current from "../../starter/starter.json";
+import { NEWER, starterPackage } from "../src/starter-package";
+import candidate from "./okf-candidate.json";
+import { pass, readText, receipts, settledOwner, versionOf } from "./starter-support";
+import { text } from "./support";
+
+it.each([false, true])("upgrades the proposed OKF reference with an owner edit: %s", async edited => {
+  const pkg = starterPackage(candidate);
+  const path = current.okf.vendored;
+  expect(candidate.okf.vendored).toBe(path);
+  expect(pkg.version).toBeGreaterThan(current.version);
+  const old = current.files.find(file => file.path === path)!;
+  const next = pkg.files.find(file => file.path === path)!;
+  expect(next.class).toBe("managed");
+  expect(next.text).not.toBe(old.text);
+
+  const owner = await settledOwner();
+  expect(await versionOf(owner)).toBe(current.version);
+  expect(await readText(owner, path)).toBe(old.text);
+  const expectedPaths = new Set([...Object.keys(await receipts(owner)), ...pkg.files.map(file => file.path)]);
+  const local = "My working copy of the OKF reference.";
+  if (edited) {
+    const { entry } = await owner.stub.fileStat(owner.bind(null), { path });
+    await owner.stub.fileWrite(owner.session(null), {
+      path, expected_etag: entry!.etag, content: text(local),
+    });
+  }
+  await pass(owner, pkg);
+  expect(await versionOf(owner)).toBe(pkg.version);
+  expect(await readText(owner, path)).toBe(edited ? local : next.text);
+  expect(await readText(owner, path + NEWER)).toBe(edited ? next.text : null);
+  expect(Object.keys(await receipts(owner)).sort()).toEqual([...expectedPaths].sort());
+});
