@@ -1807,6 +1807,37 @@ describe("whose sandboxes a call reaches", () => {
     expect(await turn("nobody")).toBe(true);
   });
 
+  it.each(["same owner", "other owner"] as const)(
+    "a delayed idle leave respects a newer wait from the %s", async (refresh) => {
+      const first = owner();
+      const other = owner();
+      const waiting = { started: false, code: "sandbox_waiting" };
+      await e2b("/script", { full: true, signin: { "claude-code": 0 } });
+      expect(await stub(first).start(start())).toEqual(waiting);
+      expect(await stub(other).start(start())).toEqual(waiting);
+
+      await env.SLOTS_GATE.arm({ method: "leave", hold: "before" });
+      const leaving = entry().unwait(first);
+      try {
+        expect(await env.SLOTS_GATE.held(2_000)).toHaveLength(1);
+        const who = refresh === "same owner" ? first : other;
+        const run = `run_${hex(32, "3")}`;
+        expect(await stub(who).start(start({
+          run, conversation: `cv_${hex(32, "4")}`, urls: runUrls(run, hex(64, "e")),
+        }))).toEqual(waiting);
+        expect([await turn(first), await turn(other)]).toEqual([true, false]);
+      } finally {
+        await env.SLOTS_GATE.release();
+        await leaving;
+      }
+
+      const next = refresh === "same owner" ? first : other;
+      expect(await turn(next)).toBe(true);
+      expect(await turn("nobody")).toBe(false);
+      await slots().freed();
+      await rung(next);
+    });
+
   it("is none from a control reached by no owner's name", async () => {
     const who = owner();
     const nameless = [env.SANDBOXES.newUniqueId(),
