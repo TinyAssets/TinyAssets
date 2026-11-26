@@ -79,6 +79,7 @@ jobs:
             echo "changed=$(jq -r .changed "$RUNNER_TEMP/report.json")"
             echo "spec=$(jq -r .spec_changed "$RUNNER_TEMP/report.json")"
             echo "widens=$(jq -r .widens "$RUNNER_TEMP/report.json")"
+            echo "proposal=$(jq -r .proposal "$RUNNER_TEMP/report.json")"
             echo "commit=$(jq -r .commit "$RUNNER_TEMP/report.json")"
           } >> "$GITHUB_OUTPUT"
 
@@ -104,10 +105,11 @@ jobs:
         id: make
         env:
           COMMIT: ${{ steps.check.outputs.commit }}
+          PROPOSAL: ${{ steps.check.outputs.proposal }}
           SPEC: ${{ steps.check.outputs.spec }}
         run: |
           set -euo pipefail
-          branch="${PREFIX}${COMMIT:0:12}"
+          branch="${PREFIX}${PROPOSAL}"
           git switch -c "$branch"
           node platform/starter/okf-watch.ts apply --upstream "$RUNNER_TEMP/okf" \
             --body "$RUNNER_TEMP/body.md"

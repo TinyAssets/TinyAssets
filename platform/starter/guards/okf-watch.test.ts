@@ -6,7 +6,8 @@
  * (`ci/guards/generated.test.ts` holds the committed ones).
  */
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -56,6 +57,31 @@ describe("the OKF watcher", () => {
   const readme = "# Open Knowledge Format (OKF)\n\nRead SPEC.md.\n";
   const pin = { repository: "GoogleCloudPlatform/open-knowledge-format", commit: "a".repeat(40),
                 spec_blob: blobId(spec), readme_blob: blobId(readme), vendored: "/x", tags: [] };
+
+  it("distinguishes new tags on the same upstream commit when naming a proposal", () => {
+    const dir = mkdtempSync(join(tmpdir(), "okf-tags-"));
+    const git = (...args: string[]) => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" }).trim();
+    const check = () => JSON.parse(execFileSync(process.execPath,
+      [join(STARTER, "okf-watch.ts"), "check", "--upstream", dir], { encoding: "utf8" }));
+    try {
+      git("init", "-q");
+      writeFileSync(join(dir, "SPEC.md"), spec);
+      writeFileSync(join(dir, "README.md"), readme);
+      git("add", ".");
+      git("-c", "user.name=fixture", "-c", "user.email=test@example.invalid", "commit", "-qm", "fixture");
+      const prefix = git("rev-parse", "HEAD").slice(0, 12);
+      expect(check().proposal).toBe(prefix);
+      git("tag", "v1");
+      const first = check().proposal;
+      expect(first).toMatch(new RegExp("^" + prefix + "-[a-f0-9]{40}$"));
+      git("tag", "v2");
+      expect(check().proposal).not.toBe(first);
+      git("tag", "-d", "v2");
+      expect(check().proposal).toBe(first);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   it("blob ids are git's own", () => {
     // `printf 'hello\n' | git hash-object --stdin`

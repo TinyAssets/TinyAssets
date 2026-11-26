@@ -241,7 +241,10 @@ function main(argv: readonly string[]): void {
   const found = report(pin, upstream, vendoredSpec(vendored));
   if (command === "check") {
     const out = option("--out");
-    const json = `${JSON.stringify({ ...found, commit: upstream.commit }, null, 2)}\n`;
+    // Tags can arrive without a new commit. Keep the original name for untagged snapshots.
+    const tags = [...upstream.tags].sort();
+    const proposal = upstream.commit.slice(0, 12) + (tags.length ? "-" + blobId(JSON.stringify(tags)) : "");
+    const json = `${JSON.stringify({ ...found, commit: upstream.commit, proposal }, null, 2)}\n`;
     if (out === null) {
       process.stdout.write(json);
     } else {
