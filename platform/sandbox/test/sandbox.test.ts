@@ -434,6 +434,20 @@ describe("a start", () => {
       }
     });
 
+  it("recovers a create with a lost reply when its sandbox occupies the last slot", async () => {
+    await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: 1 });
+    await e2b("/script", { createFailure: "after", signin: { "claude-code": 0 } });
+    const who = owner();
+    expect((await faulted(() => stub(who).start(start()))).got).toBe("sandbox_start_failed");
+    const id = (await seen()).sandboxes[0]!.id;
+    await evictDurableObject(stub(who));
+    expect(await stub(who).start(start())).toEqual({ started: true });
+    const after = await seen();
+    expect(after.sandboxes.map(box => box.id)).toEqual([id]);
+    expect(after.commands.filter(command => command.argv[1] === "launch")
+      .map(command => command.sandbox)).toEqual([id]);
+  });
+
   it("account erasure also finds an unacknowledged creation with no local row", async () => {
     await e2b("/script", { signin: { "claude-code": 0 } });
     const neighbor = owner();
