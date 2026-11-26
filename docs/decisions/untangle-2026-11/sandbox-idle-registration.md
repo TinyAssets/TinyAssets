@@ -433,3 +433,29 @@ and queued-to-running transitions keep it constant. Waiting inputs already
 have their own count and byte bounds. Any migration must keep frozen history
 and preserve previously restorable generations. The current forwarding guard
 flags a predicate change naming an exported table even if it rewrites no rows.
+
+The ordinary restore file passed in four disjoint non-size groups on
+`578f62c4` (13, 17, 14 and 15). An earlier whole-file invocation reported 55
+passes and one skip before its Worker crashed. The standalone and combined
+queued/running checks passed, as did both pin/undo cases on each tree.
+
+In local SQLite and Workerd rehearsals, an AFTER INSERT guard for live rows
+and an AFTER UPDATE guard for entry into a live state passed the ceiling
+case. The earlier BEFORE predicates misreported a same-row upsert and an
+illegal change to a settled run. Across Node 22 and 24 each set of three
+predicate versions faced 17 transition cases. After restore all 1,000 original
+runs settled unknown/lost. The one waiting input legitimately started with
+a new grant. A second visit after eviction made no additional start. The
+regression therefore checks the delivered prompt after draining: retaining
+the input row is transient once the new run consumes it.
+
+The experimental migration restored five historical fixture generations
+(schemas 31 through 35). A schema-35 generation with a seeded ceiling-sized
+cohort also survived an interrupted target upgrade: the old guard stopped
+at the later wait, the next wake migrated the database, the restore reported
+the required wipe, and a second restore of the same generation completed.
+The longer public-submission version of that upgrade check crashed after
+the wipe. The predicate changes are experimental. A read-only trigger can
+still forbid replay of a valid old row, and dropping a capture trigger can
+silence later export changes. Compatibility requires evidence for both
+normal writes and historical base and log rows before changing the schema.

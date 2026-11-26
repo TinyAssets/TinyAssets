@@ -36,7 +36,7 @@ import {
   standing, writtenAt,
 } from "./generation-support";
 import { MUSE, registerOn, signedIn, dm } from "./ledger-support";
-import { defineAgent, scripted, whileOut } from "./runs-support";
+import { defineAgent, recorder, scripted, whileOut } from "./runs-support";
 import {
   drainDue, EVERY_SIGNIN_RECORD, failure, gateFor, laneAt, laneJobs, OPEN_RECORD, ownerObject, storesOn,
 } from "./support";
@@ -313,8 +313,13 @@ describe("a restore", () => {
     const stub = await lose(o);
     await stub.restoreBegin(platform(o.name), { namespace: space!.ns as string, gen: gen.gen });
     expect((await stepped(stub, o.name)).at(-1)).toMatchObject({ step: "done" });
-    expect(await sqlIn(stub, "SELECT prompt FROM run_inputs WHERE run = ?", later.run_id))
-      .toEqual([{ prompt: "later" }]);
+    await stub.admissionSet(platform(o.name), { admit: true });
+    await drainDue(stub);
+    expect(await sqlIn(stub, "SELECT COUNT(*) AS n FROM runs WHERE state = 'unknown' " +
+      "AND code = 'lost' AND id != ?", later.run_id)).toEqual([{ n: RUNS_CEILING }]);
+    const { starts } = await recorder(stub);
+    expect(starts.filter((start) => start.run === later.run_id).map((start) => start.prompt))
+      .toEqual(["later"]);
   });
 
   it("reads a production-shaped owner back into its own object, every table and counter as " +
