@@ -121,24 +121,28 @@ describe("a log segment's build", () => {
     expect(made.same).toBe(0);
   });
 
-  it("ships a log full of large REAL values a part at most each, every line shipped: never a " +
-     "span whose segment as written is past a part", { tags: ["large"] },
-     async () => {
+  it.each([2000, 4000])("ships %i large-REAL lines within the part limit and releases its sizing reader",
+     { tags: ["large"] }, async (count) => {
     const o = await owner();
     const shipped = await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
       const sql = state.storage.sql;
       const log = new ChangeLog(state.storage);
       log.begin("0123456789abcdef");
-      // 4,000 lines of a hundred numbers SQLite writes with an exponent: 1.0e+20, 21 digits
+      // Lines of a hundred numbers SQLite writes with an exponent: 1.0e+20, 21 digits
       // as JSON, so each line as written is about twice its stored bytes.
       const numbers = Array.from({ length: 100 }, (_, n) => `"f${n}":1.0e+20`).join(",");
-      for (let n = 1; n <= 4000; n++) {
+      for (let n = 1; n <= count; n++) {
         sql.exec("INSERT INTO change_log (line) VALUES (?)",
                  `{"t":"row","table":"egress_reservations","row":{"id":"r${n}",${numbers}}}`);
       }
-      const { last } = log.state();
+      const { bytes: stored, last } = log.state();
+      expect(stored <= CHUNK_BYTES).toBe(count === 2000);
+      sql.exec("CREATE TABLE sizing_control (x INTEGER)");
+      const first = log.pending(last)!;
+      expect(first.b).toBeLessThan(last);
+      sql.exec("DROP TABLE sizing_control");
       const sizes: number[] = [];
-      for (let span = log.pending(last); span !== null; span = log.pending(last)) {
+      for (let span: typeof first | null = first; span !== null; span = log.pending(last)) {
         const bytes = await log.segment(span.a, span.b);
         sizes.push(bytes.byteLength);
         log.acknowledge(span.b);
