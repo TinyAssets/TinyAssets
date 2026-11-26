@@ -362,3 +362,38 @@ the spawn and signal behavior independently. It does not establish a vendor
 effect. Before relying on replay, reconcile the restored Owner's dispatch
 with the surviving execution and verify cancellation in the privileged suite.
 Both full platform typechecks passed with the new runner case.
+
+## Where replay evidence ends
+
+Standalone and combined, two real Worker histories started with the same
+running box and the same Sandbox SQL fixture. One launched run A, the other
+run B. Releasing their common lease while the provider still reported live
+work removed the launch rows in each. After eviction all application SQL
+tables compared equal. A later absence from that table cannot distinguish
+the two past launches.
+
+Each candidate also passed two restore comparisons with the real Owner,
+Files, Sandbox and Slots and a fake provider. With the original box retained,
+two restores of the same waiting generation sent launch twice to that box.
+With the original box gone after the first launch, the second restore sent
+the same run to a new box. A record kept only on the first box would be
+unavailable in the latter history.
+
+The ordinary pin and undo paths exposed a separate restore failure. On both
+candidates, pinning the earlier waiting generation after the run launched,
+wiping, and restoring that pinned generation loaded the waiting row. A ring
+sent launch again. Choosing the undo generation written during the pin
+instead failed inside restoreStep before admission. SQLite requires a lease
+ID, epoch and heartbeat on a queued or running run. The export deliberately
+omits the lease ID. The pin requests cancellation of a live run and can
+write its generation while the run still has a live state.
+
+The same failure reproduced with the Owner source on main `d662e63e` and
+on `c325ee55` by backing up one genuinely running row, losing the Owner
+and restoring it. No slot queue, pin or duplicate delivery was needed.
+The ordinary restore Worker suite now has this regression. R5r expects a
+live run without its lease to settle unknown. The row fails to load before
+that settlement can run. Reconcile restore with that rule and retain the
+exclusion of the old lease claim. Historical saved waits and safe runner
+cancellation require their own evidence.
+The standalone full platform typecheck passed with the added restore test.

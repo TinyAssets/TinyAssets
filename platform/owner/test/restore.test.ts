@@ -35,8 +35,9 @@ import {
   standing, writtenAt,
 } from "./generation-support";
 import { MUSE, registerOn, signedIn, dm } from "./ledger-support";
+import { defineAgent, scripted } from "./runs-support";
 import {
-  drainDue, failure, gateFor, laneAt, laneJobs, OPEN_RECORD, ownerObject, storesOn,
+  drainDue, EVERY_SIGNIN_RECORD, failure, gateFor, laneAt, laneJobs, OPEN_RECORD, ownerObject, storesOn,
 } from "./support";
 
 type Stub = DurableObjectStub<OwnerDO>;
@@ -241,6 +242,22 @@ async function source(): Promise<{ o: Owner; gen: Generated; ns: string; rows: s
 }
 
 describe("a restore", () => {
+  it("loads a generation saved while a sandbox run was running", async () => {
+    const o = await owner();
+    const binding = o.bind(null, { control: EVERY_SIGNIN_RECORD });
+    await defineAgent(o.stub, binding, "main", {
+      engine: "claude-code", credential: "vendor_login_in_sandbox", scopes: [],
+    });
+    await scripted(o.stub, { answer: { started: true } });
+    const run = await o.stub.agentSubmit(binding, { message: "hello", client_send_id: "active" });
+    expect(run.state).toBe("running");
+    const gen = await generate(o.stub);
+    const [space] = await sqlIn(o.stub, "SELECT ns FROM file_space");
+    const stub = await lose(o);
+    await stub.restoreBegin(platform(o.name), { namespace: space!.ns as string, gen: gen.gen });
+    expect((await stepped(stub, o.name)).at(-1)).toMatchObject({ step: "done" });
+  });
+
   it("reads a production-shaped owner back into its own object, every table and counter as " +
      "at E, every chunk read back, nothing put to R2 and no row in an answer", async () => {
     const { o, gen, ns, rows, counters, usage } = await source();
