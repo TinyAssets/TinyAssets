@@ -594,6 +594,21 @@ describe("the platform's line", () => {
     expect(await turn("nobody")).toBe(true);
   });
 
+  it("can still wake a waiting run after another authority of its owner takes a slot",
+     async () => {
+    const who = owner();
+    await e2b("/script", { full: true, signin: { "claude-code": 0 } });
+    expect(await stub(who).start(start())).toEqual({ started: false, code: "sandbox_waiting" });
+    await e2b("/script", { full: false });
+    const run = `run_${hex(32, "3")}`;
+    expect(await stub(who).start(start({
+      run, conversation: `cv_${hex(32, "4")}`, authority: hex(64, "4"),
+      lease: { lease_id: hex(32, "f"), epoch: 2 }, urls: runUrls(run, hex(64, "e")),
+    }))).toEqual({ started: true });
+    await slots().freed();
+    await rung(who);
+  });
+
   it("starts, its sandbox prepared, though the line refuses its leave after the create",
      async () => {
     await e2b("/script", { full: true, signin: { "claude-code": 0 } });
