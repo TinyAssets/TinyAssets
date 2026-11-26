@@ -36,3 +36,5 @@ process wrote the host's experimental proxy warning to stderr. Using the
 file from the joined base and suppressing that warning alone cleared all
 three. The earlier joined typecheck exited 137 and passed on a bounded-heap
 retry. The checked-in guard leaves the migration definitions unchanged.
+
+The companion [restore comparison](https://github.com/TinyAssets/TinyAssets/commit/4e479fb513bb103d4730de53f9ba04acc0ab2c90) exercised the two predicates on writer schemas 31–35. The existing predicate distinguished two layouts with the same final run rows on every writer version. With the experimental predicates both layouts restored and reached the expected settled state on all five versions. This is a behavioral compatibility result for those fixtures. Deciding how the next migration brings an older generation forward remains open, and the guard still checks every changed trigger.
