@@ -1036,7 +1036,7 @@ describe("the look before the runtime ceiling", () => {
   it.each([2, 3])("keeps a peer's place when it renews during the provider count at limit %i",
      async (limit) => {
     await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: limit });
-    await e2b("/script", { others: 1, state: { live: 1, quiet: true } });
+    await e2b("/script", { others: 1, signin: { "claude-code": 0 }, state: { live: 1, quiet: true } });
     const peer = owner();
     const contender = owner();
     expect(await stub(peer).start(start())).toEqual({ started: true });
