@@ -116,12 +116,20 @@ function held(text: string | undefined): Held | null {
  * the ticker alive at its pid (running or asleep, not a zombie, and still the ticker), and the
  * scratch's size and SHA-256. None: it held all of it.
  */
-export function verdict(seen: Facts): string[] {
+export function verdict(seen: Facts, label: string): string[] {
   const record = held(seen["record"]);
   if (record === null) {
     return [`the probe's record (${RECORD}) is missing or unreadable`];
   }
   const out: string[] = [];
+  const setup = SANDBOXES.find(each => each.label === label);
+  if (setup === undefined) {
+    out.push(`unknown long-pause probe label: ${label}`);
+  } else if (setup.scratched && (record.scratch === null || record.scratch.bytes < SCRATCH_FLOOR)) {
+    out.push(`the scratch sandbox has no record of the required ${SCRATCH_FLOOR} B of scratch`);
+  } else if (!setup.scratched && (record.scratch !== null || seen["scratch_bytes"] !== undefined)) {
+    out.push("the small sandbox contains scratch that its setup did not write");
+  }
   const known = seen["known_sha256"] ?? "";
   if (known !== record.known_sha256) {
     out.push(`the known file's SHA-256 is ${known || "missing"}, not ${record.known_sha256}`);
@@ -252,7 +260,7 @@ async function startOne(e2b: E2b, template: string, started: string,
   }
   const record: Held = { known_sha256: knownSha, pid, scratch };
   await e2b.upload(box, RECORD, new TextEncoder().encode(JSON.stringify(record)));
-  const failures = verdict((await inspect(e2b, box)).seen);
+  const failures = verdict((await inspect(e2b, box)).seen, label);
   if (failures.length > 0) {
     throw new Error(`${box.sandboxID} (${label}) failed its own check before the pause: ${
       failures.join("; ")}`);
@@ -301,7 +309,8 @@ export async function checkOne(e2b: E2b, id: string):
   if (listed === null) {
     return { cells: [], failures: ["E2B holds no such sandbox: dropped while paused, or killed"] };
   }
-  const cells = [listed.metadata["ta_label"] ?? "?"];
+  const label = listed.metadata["ta_label"] ?? "?";
+  const cells = [label];
   if (listed.metadata[PROBE.key] !== PROBE.value) {
     return { cells, failures: ["not a long-pause probe sandbox: refused, not resumed"] };
   }
@@ -320,7 +329,7 @@ export async function checkOne(e2b: E2b, id: string):
     await sh(e2b, box, "echo ok");
     const firstByte = Date.now() - resumed;
     const { seen, ms } = await inspect(e2b, box);
-    failures.push(...verdict(seen));
+    failures.push(...verdict(seen, label));
     const since = (iso: string | undefined) => iso ? span(resumed - Date.parse(iso)) : "?";
     cells.push(since(started), since(seen["paused_at"]), `${connected} ms`, `${firstByte} ms`,
                `${ms} ms`, seen["tick"] || "?");

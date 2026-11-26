@@ -19,7 +19,7 @@ const SCRATCH = "b".repeat(64);
 
 /** An inspection's output, as the sandbox prints it, with `change` applied. */
 function inspected(change: Record<string, string | null> = {},
-                   scratch: { bytes: number; sha256: string } | null = { bytes: 5, sha256: SCRATCH }):
+                   scratch: { bytes: number; sha256: string } | null = { bytes: SCRATCH_TARGET, sha256: SCRATCH }):
     string {
   const lines: Record<string, string | null> = {
     record: JSON.stringify({ known_sha256: KNOWN, pid: 42, scratch }),
@@ -38,8 +38,8 @@ function inspected(change: Record<string, string | null> = {},
 
 describe("a resumed sandbox's verdict", () => {
   it("holds when the file, the ticker and the scratch are all as recorded", () => {
-    expect(verdict(facts(inspected()))).toEqual([]);
-    expect(verdict(facts(inspected({}, null)))).toEqual([]);
+    expect(verdict(facts(inspected()), "scratch")).toEqual([]);
+    expect(verdict(facts(inspected({}, null)), "small")).toEqual([]);
   });
 
   it.each([
@@ -50,13 +50,25 @@ describe("a resumed sandbox's verdict", () => {
     ["the ticker is a zombie", { pid_state: "Z" }, /process 42 is in state Z/],
     ["the pid is another process", { pid_cmd: "/usr/bin/envd " }, /another process/],
     ["the pid file moved", { pid: "43" }, /pid file says 43, not 42/],
-    ["the scratch is short", { scratch_bytes: "4" }, /scratch is 4 B, not 5 B/],
+    ["the scratch is short", { scratch_bytes: "4" }, new RegExp(`scratch is 4 B, not ${SCRATCH_TARGET} B`)],
     ["the scratch is gone", { scratch_bytes: null, scratch_sha256: null }, /scratch is missing/],
     ["the scratch changed", { scratch_sha256: "d".repeat(64) }, /scratch's SHA-256 is d+/],
   ])("fails when %s", (_what, change, why) => {
-    const failures = verdict(facts(inspected(change)));
+    const failures = verdict(facts(inspected(change)), "scratch");
     expect(failures).toHaveLength(1);
     expect(failures[0]).toMatch(why);
+  });
+
+  it("requires the scratch promised by the sandbox label", () => {
+    expect(verdict(facts(inspected({}, null)), "scratch")).toHaveLength(1);
+    expect(verdict(facts(inspected()), "small")).toHaveLength(1);
+    expect(verdict(facts(inspected({ scratch_bytes: "123" }, null)), "small")).toHaveLength(1);
+    expect(verdict(facts(inspected({}, null)), "unknown")).toHaveLength(1);
+    for (const bytes of [0, SCRATCH_FLOOR - 1]) {
+      expect(verdict(facts(inspected({}, { bytes, sha256: SCRATCH })), "scratch")).toHaveLength(1);
+    }
+    expect(verdict(facts(inspected({}, { bytes: SCRATCH_FLOOR, sha256: SCRATCH })), "scratch"))
+      .toEqual([]);
   });
 
   it("keeps a value's own = signs", () => {
