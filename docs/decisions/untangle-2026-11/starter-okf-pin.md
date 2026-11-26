@@ -7,3 +7,5 @@ Main at `d662e63e` approves the upstream revision in the starter manifest. The w
 - [ ] Coordinator reviews the proposed upstream change and release ordering. This branch changes the guard only. The version 11 package was a local rehearsal.
 
 Verification of the staged guard `e93f8e65`: the separate size case also passed on each package, and full platform TypeScript passed on the branch. Two additional local Owner Workerd journeys began at the actual version 10 package, ran the projected version 11 package and finished with all 16 receipts. The untouched reference updated in place with no extra file. The edited reference kept the owner's exact text and put the proposed upstream bytes beside it in the normal `.ta-new` file. These are synthetic owners; the published draft is still version 8.
+
+The ordinary Owner starter and starter-review Workerd files subsequently passed all 24 cases on version 10 and all 24 on the version 11 projection. Full platform TypeScript passed on the projection as well. PR #5692 links the independent guard and the two real upgrade journeys. The coordinator's upstream and release decision remains open.
