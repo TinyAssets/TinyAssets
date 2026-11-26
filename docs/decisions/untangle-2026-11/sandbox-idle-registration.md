@@ -225,3 +225,20 @@ Any design retaining the owner-only doorbell must preserve the placement
 outcome independently of the removed wait until the Owner can consume it.
 An extended message would also need compatible Doors before producer
 activation and a recovery path for old messages. Keep erasure's parser strict.
+
+## A provider resume can succeed before preparation fails
+
+With two slots, a paused owner and its peer waited in that order. When room
+returned, the first owner's provider resume succeeded but its runner's
+prepare failed. The real Sandbox Worker left that owner at the head. The
+peer was refused the spare slot. This failed on both the standalone and
+joined candidates.
+
+An ordinary resume now records its use of the turn after the provider
+confirms it and Sandbox records the running box, before contacting the
+runner. A background resume that holds its own slot bypasses this step.
+The new case and the previous prepare-on-retry case passed together on
+each candidate. The peer launched in the spare slot, then the first owner
+repaired preparation and launched in its original box. A lost provider
+response is a separate case: confirmation is absent. Reliable notice to a
+different run of the placed owner is still open.

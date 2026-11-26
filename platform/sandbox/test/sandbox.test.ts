@@ -344,6 +344,27 @@ describe("a start", () => {
     expect(Object.keys(state.files).filter((path) => path.includes(`${INBOX}/`))).toEqual([]);
   });
 
+  it("lets the peer use spare capacity after a queued resume consumes a slot and preparation fails", async () => {
+    const first = owner();
+    const peer = owner();
+    await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: 2 });
+    await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 0, quiet: true } });
+    expect(await stub(first).start(start())).toEqual({ started: true });
+    expect(await stub(first).release({ lease_id: LEASE.lease_id })).toEqual({ paused: true });
+    const next = start({ run: `run_${hex(32, "6")}`, lease: { lease_id: hex(32, "f"), epoch: 2 } });
+    const waiting = { started: false, code: "sandbox_waiting" };
+    await e2b("/script", { others: 2 });
+    expect(await stub(first).start(next)).toEqual(waiting);
+    expect(await stub(peer).start(start())).toEqual(waiting);
+    await e2b("/script", { others: 0, broken: "prepare" });
+    expect((await faulted(() => stub(first).start(next))).got).toBe("sandbox_start_failed");
+    expect((await seen()).sandboxes[0]!.state).toBe("running");
+    await e2b("/script", { broken: null });
+    expect(await stub(peer).start(start())).toEqual({ started: true });
+    expect(await stub(first).start(next)).toEqual({ started: true });
+    expect((await seen()).sandboxes).toHaveLength(2);
+  });
+
   it("prepares a sandbox a fault left running unprepared before the next start launches in " +
      "it, and only that once", async () => {
     await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 0, quiet: true } });

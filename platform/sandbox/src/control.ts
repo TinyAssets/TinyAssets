@@ -732,7 +732,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    * that launched them, and a renewal's runs go on under theirs.
    */
   async #resume(row: Row, found: SandboxInfo, network: NetworkDocument | null,
-                ceilings: SandboxCeilings): Promise<Box | null> {
+                ceilings: SandboxCeilings, slot: "turn" | "held"): Promise<Box | null> {
     const e2b = this.#e2b();
     this.#ended(found);  // a pause E2B made on its own is logged before the resume
     const resumed = await e2b.connect(found.sandboxID, ceilings.runtime_ceiling_s);
@@ -750,6 +750,10 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     this.#sql.exec("UPDATE sandboxes SET paused = 0, heard = 0, prepared = 0 WHERE authority = ?",
                    row.authority);
     this.#owe(resumed.sandboxID);
+    if (slot === "turn") {
+      // The provider has allocated the slot even if preparing the resumed box fails.
+      await this.#took();
+    }
     // Its own runner: the one that wrote its disk and launched its runs.
     let handle: Box = { sandboxID: resumed.sandboxID, envdAccessToken: resumed.envdAccessToken,
                         runner: row.runner };
@@ -812,7 +816,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     };
     if (row !== null && row.renewing === 1 && found !== null) {
       // A renewal's own sandbox keeps its slot: resumed without its turn.
-      const handle = await this.#resume(row, found, network, ceilings);
+      const handle = await this.#resume(row, found, network, ceilings, "held");
       return handle === null ? "lost" : { handle };
     }
     const { turn, reserved } = await slots.turn(this.#owner);
@@ -828,9 +832,8 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         return await wait();
       }
       if (found !== null) {
-        const handle = await this.#resume(row!, found, network, ceilings);
+        const handle = await this.#resume(row!, found, network, ceilings, "turn");
         if (handle !== null) {
-          await this.#took();
           return { handle };
         }
         if (network === null) {
@@ -1413,7 +1416,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       // off, and is the founder's alert.
       await this.#hold(found.sandboxID);
       try {
-        if (await this.#resume(row, found, null, ceilings) === null) {
+        if (await this.#resume(row, found, null, ceilings, "held") === null) {
           this.#forget(row.authority);
           return Number.POSITIVE_INFINITY;
         }
@@ -1542,7 +1545,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       return;
     }
     try {
-      await this.#resume({ ...row, renewing: 1 }, found, null, ceilings);
+      await this.#resume({ ...row, renewing: 1 }, found, null, ceilings, "held");
     } catch (error) {
       if (!noRoom(error)) {
         throw error;
