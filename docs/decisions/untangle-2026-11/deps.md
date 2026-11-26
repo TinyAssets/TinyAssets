@@ -31,6 +31,15 @@ The guard now follows declared edges to their actual locked paths, including hoi
 - [x] After the cycle correction, 13 focused guards, the full CI workspace (368 passed, one skipped), and full platform TypeScript passed. The actual npm 10 and npm 11 platform installs remain covered.
 - [ ] Coordinator review and integration. The change is staged on the ordinary CI branch.
 
+### Earlier staged heads and optional peers
+
+The Nov 26, 05:20 Pacific inventory covered 151 remote heads. Six shared main's 365-entry lock, 142 shared the 368-entry historical lock, and three had no platform lock. This compares file contents across refs. Installs and test execution used one checkout for each distinct lock.
+
+On the historical lock (`341e4223dde7af8fcf76f23af7df9677201d82e8`), npm 10.9.11 installed 282 packages and npm 11.19.1 installed 279. Both commands exited successfully. From the Owner's installed Agents SDK, normal Node resolution selected the locked MCP Server 2.4.0 with npm 10 and the hoisted 2.3.1 with npm 11. The SDK declares the optional peer at 2.4.0. The corrected guard stops the old npm 11 install before Vitest starts. With npm 10, all seven original guards and all thirteen guards from `b2f91312` passed on that tree. On main's lock both installs resolve 2.4.0 and the corrected guard accepts both. The resolution and mismatch results matched on Node 22 and 24.
+
+- [x] Add a permanent nested optional peer regression. Removing the locked workspace peer makes the older hoisted package visible and is refused. Restoring it passes. Fourteen focused cases passed.
+- [ ] For integration, run the actual joined lock and guard before accepting test evidence. Use the verified old npm 10 install when reproducing a historical staged head. The historical npm 11 refusal identifies genuine version drift.
+
 ## Left
 
 - A workspace link is held to its workspace's *package*, not to this checkout's folder. Through a `node_modules` linked from another checkout, npm's relative links (`../../ci`) reach that checkout's workspaces, but no source imports a workspace by its package name, so nothing loads them. Holding the folder would refuse every linked install.

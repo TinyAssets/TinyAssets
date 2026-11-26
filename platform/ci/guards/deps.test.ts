@@ -96,6 +96,17 @@ describe("the install check", () => {
       write("w/node_modules/runtime/package.json", { version: "3" });
       expect(check()).toBeNull();
     });
+    it("requires a nested optional peer when a different hoisted version would load", () => {
+      const parent = "w/node_modules/host";
+      packages[parent] = { version: "1", peerDependencies: { runtime: "3" },
+        peerDependenciesMeta: { runtime: { optional: true } } };
+      write(parent + "/package.json", { name: "host", version: "1" });
+      write(leaf + "/package.json", { name: "runtime", version: "2" });
+      packages["w/node_modules/runtime"] = { version: "3", optional: true, peer: true };
+      expect(check()).toBe("w/node_modules/runtime is missing (locked 3)");
+      write("w/node_modules/runtime/package.json", { name: "runtime", version: "3" });
+      expect(check()).toBeNull();
+    });
     it("accepts a cycle reached only through omitted variants", () => {
       packages[leaf]!.dependencies = { wasm: "1" };
       expect(check()).toBeNull();
