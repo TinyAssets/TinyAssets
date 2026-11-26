@@ -578,6 +578,37 @@ describe("interrupted replacement of an idle sandbox", () => {
     await stub(who).start(next()).catch(() => undefined);
     expect([beforeRestart, hasCopy(await seen())]).toEqual([true, true]);
   });
+
+  it.each([null, "delete-request", "delete-ack"])(
+    "only reports a recovered start on the sandbox with the carry (%s)", async lost => {
+      const who = owner();
+      const old = await idleFromPreviousTemplate(who);
+      const [original] = (await seen()).sandboxes;
+      // E2B can retain a sandbox whose row was lost. Its matching tags do not
+      // establish that it received the current workspace.
+      const stray = await e2b("/stray", {
+        metadata: { ...original!.metadata, ta_template: env.E2B_TEMPLATE },
+      });
+      await e2b("/script", { lost });
+      await stub(who).start(next()).catch(() => undefined);
+      await evictDurableObject(stub(who));
+      const retry = next();
+      const result = await stub(who).start(retry);
+      if (lost === null) {
+        expect(result.started).toBe(true);
+      }
+      const state = await seen();
+      if (result.started) {
+        const launch = state.commands.filter(command =>
+          command.argv[1] === "launch" && command.argv[2] === retry.run).at(-1)?.sandbox;
+        expect(launch).not.toBe(stray.id);
+        expect(launch === old || state.files[`${launch}:carried`] === `carry of ${old}`).toBe(true);
+      } else {
+        expect(state.sandboxes.some(box =>
+          box.id === old || state.files[`${box.id}:carried`] === `carry of ${old}`)).toBe(true);
+      }
+    });
+
 });
 
 describe("the platform's line", () => {

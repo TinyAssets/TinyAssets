@@ -49,3 +49,5 @@ full platform TypeScript.
   The existing vendor deletion accepts both 204 and 404. Design and verify
   cleanup across restart, uncertain creation, and account erasure. A reread
   of two IDs alone does not establish which copy was verified.
+
+- [x] Check which sandbox actually receives a successful retried launch after a Worker eviction. The local provider retains an unrelated paused sandbox with the same owner and template metadata. Each check ties the launch to its run ID and requires either the original sandbox or the one that received its carry. In the no-fault and lost-before-delete controls the PR preserved the right destination. With the delete acknowledgement lost, it reported a successful start on an empty sandbox. The full sandbox Worker and guard suite passed 170 tests on main `d662e63e` with the branch regressions. With the identical regressions on #5857 at `aa40cc0a`, 168 passed and four failed, including this new routing assertion. These checks use local Workerd and a synthetic provider.
