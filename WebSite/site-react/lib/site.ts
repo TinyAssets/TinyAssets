@@ -1,14 +1,17 @@
-import { APP_RESOURCE, MCP_RESOURCE, ORIGIN } from "../../../platform/contract/src/identity";
+import identity from "../../../platform/contract/identity.json";
+import { MCP_RESOURCE, ZONE } from "../../../platform/contract/src/identity";
 import { legal } from "./legal";
 
 /**
  * Canonical public addresses the site links to. One list, so a moved surface
  * is a one-line change and the copy never drifts from the real URLs.
  */
+const siteOrigin = `https://${ZONE}`;
+
 export const SITE = {
-  origin: ORIGIN,
+  origin: siteOrigin,
   /** The web app: sign in, connect a model you already use, talk to your agent. */
-  app: APP_RESOURCE,
+  app: siteOrigin + identity.first_party.resource,
   /** The one public MCP endpoint (Claude.ai / ChatGPT connector URL). */
   mcp: MCP_RESOURCE,
   repo: "https://github.com/TinyAssets/TinyAssets",

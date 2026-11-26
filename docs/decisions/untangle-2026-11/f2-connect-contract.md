@@ -154,3 +154,21 @@ guide's address list and connection instructions before opening Chromium.
   at launch because Playwright Chromium was unavailable.
 - [ ] Recheck the reviewable release head in a browser and verify route
   readiness before the single coordinated release.
+
+### Public site while the doors are on stage (Nov 26)
+
+- [x] Compared this branch at 515324d9 against main d662e63e and its stage
+  decision. With main's identity module and JSON, both actual crawl handlers
+  ran under Node 24. All eight sitemap addresses and the robots sitemap
+  link named the stage. The previous sweep expected the same wrong host.
+- [x] Use the zone for public metadata, crawl links and the website's app
+  link. The MCP link follows the doors host. Carry main's zone field and
+  ZONE export so the ordinary branch builds independently. Preserve main's
+  full identity module, stage configuration and newer catalog on integration.
+  The sweep checks the two origins independently. Replayed the sitemap,
+  robots and guide handlers with the real stage identity and the ordinary
+  apex identity. Both gave eight public entries, the public sitemap and app,
+  and the corresponding doors endpoint.
+- [ ] Repeat the coordinated site release rehearsal on current main with
+  its catalog and route configuration. Browser and live route readiness
+  remain separate checks.

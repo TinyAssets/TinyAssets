@@ -77,19 +77,20 @@ def main() -> int:
         return 2
     identity = json.loads((HERE.parents[2] / "platform/contract/identity.json").read_text())
     origin = f"https://{identity['host']}"
+    site_origin = f"https://{identity['zone']}"
     guide = (OUT / "llms.txt").read_text(encoding="utf-8")
     connection = guide.partition("## Connection\n")[2].split("\n## ", 1)[0]
-    for address in (origin + identity["mcp"], origin + identity["first_party"]["resource"]):
+    for address in (origin + identity["mcp"], site_origin + identity["first_party"]["resource"]):
         if address not in guide.split() or address not in connection:
             print(f"exported llms.txt is missing {address}", file=sys.stderr)
             return 1
     robots = (OUT / "robots.txt").read_text(encoding="utf-8").splitlines()
-    if f"Sitemap: {origin}/sitemap.xml" not in robots:
+    if f"Sitemap: {site_origin}/sitemap.xml" not in robots:
         print("robots.txt points away from the site's sitemap", file=sys.stderr)
         return 1
     sitemap = ET.parse(OUT / "sitemap.xml")
     urls = sitemap.findall(".//{http://www.sitemaps.org/schemas/sitemap/0.9}loc")
-    if not urls or any(urlsplit(loc.text or "")[:2] != ("https", identity["host"]) for loc in urls):
+    if not urls or any(urlsplit(loc.text or "")[:2] != ("https", identity["zone"]) for loc in urls):
         print("sitemap entries must use the site host", file=sys.stderr)
         return 1
     srv = serve()
@@ -131,7 +132,7 @@ def main() -> int:
                         failures.append(f"{label} {route}: expected one H1, got {h1s}")
                     if route == "/legal/":
                         canonical = page.locator('link[rel="canonical"]').get_attribute("href")
-                        if canonical != origin + route:
+                        if canonical != site_origin + route:
                             failures.append(f"{label} {route}: wrong canonical {canonical}")
                     if route == "/connect/":
                         if page.locator("main h1").inner_text() != (

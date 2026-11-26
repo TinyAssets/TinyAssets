@@ -1,4 +1,5 @@
 {
+  "zone": "tinyassets.io",
   "host": "tinyassets.io",
   "egress": "egress.tinyassets.io",
   "routes": ["/mcp*", "/api*", "/app*", "/hooks/inbound/*", "/hooks/e2b/*", "/authorize*",

@@ -11,6 +11,11 @@ import identity from "../identity.json" with { type: "json" };
 
 // Read as text (a template), so this module holds strings alone, never the shared file
 // object (`ci/kit/module-state.ts`).
+/**
+ * Our zone: the Cloudflare zone, the public site's host, and every name under it, the doors'
+ * host and the egress host among them.
+ */
+export const ZONE = `${identity.zone}`;
 /** The one public origin; the Capacitor WebView loads it too. */
 export const ORIGIN = `https://${identity.host}`;
 /** Where the upstream sign-in returns the browser: the `redirect_uri` WorkOS lists. */
