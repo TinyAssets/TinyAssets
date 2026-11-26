@@ -27,9 +27,12 @@
  */
 import { Buffer } from "node:buffer";
 
-import { exported } from "./export";
+import { BACKUP_READ_BATCH, backupRows, exported } from "./export";
 import { CHUNK_BYTES, LOG_BYTES } from "../../contract/src/limits";
 import type { OwnerStorage } from "./gate";
+
+/** The most change-log lines one segment considers, before coalescing by key. */
+const SEGMENT_ROWS = 4096;
 
 /** The capture's one row. */
 export type Capture = {
@@ -110,16 +113,29 @@ export class ChangeLog {
     }
     let b = at.shipped;
     let size = 0;
-    for (const row of this.#sql.exec<{ seq: number; line: string }>(
-           "SELECT seq, line FROM change_log WHERE seq > ? AND seq <= ? ORDER BY seq " +
-             "LIMIT 4096", at.shipped, through)) {
-      // Every line as written, kept or not: the segment keeps at most these.
-      const n = Buffer.byteLength(writtenLine(row.seq, row.line), "utf8") + 1;
-      if (size > 0 && size + n > CHUNK_BYTES) {
+    // The capture already charges every remaining SQL line by its stored byte length.
+    // A short log can use the whole original row window. Draining that statement
+    // transfers at most one part of stored text, even if the encoded lines grew.
+    const batch = at.bytes <= CHUNK_BYTES ? SEGMENT_ROWS : BACKUP_READ_BATCH;
+    let rows = 0;
+    while (rows < SEGMENT_ROWS && b < through) {
+      const limit = Math.min(SEGMENT_ROWS - rows, batch);
+      let read = 0;
+      for (const row of backupRows(this.#sql.exec<{ seq: number; line: string }>(
+             "SELECT seq, line FROM change_log WHERE seq > ? AND seq <= ? ORDER BY seq LIMIT ?",
+             b, through, limit))) {
+        const n = Buffer.byteLength(writtenLine(row.seq, row.line), "utf8") + 1;
+        if (size > 0 && size + n > CHUNK_BYTES) {
+          break;
+        }
+        size += n;
+        b = row.seq;
+        read++;
+      }
+      if (read < limit) {
         break;
       }
-      size += n;
-      b = row.seq;
+      rows += read;
     }
     if (b === at.shipped) {
       return null;

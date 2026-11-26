@@ -87,7 +87,21 @@ import { clock } from "./clock";
  * generation at production sizes") holds a page of three-byte characters to it.
  */
 export const EXPORT_PAGE_BYTES = 1024 * 1024;
-/** Rows read at a time while a page fills (and a page's chunk lines at most). */
+/** Row limit for a backup scan whose remaining stored bytes are unknown. */
+export const BACKUP_READ_BATCH = 16;
+
+/** Consume the SQL statement even when its caller reaches a byte boundary mid-scan. */
+export function* backupRows<T extends Record<string, SqlStorageValue>>(cursor: SqlStorageCursor<T>) {
+  try {
+    yield* cursor;
+  } finally {
+    // A partially consumed Workerd cursor keeps the SQLite statement open.
+    // Drain the bounded remainder one row at a time.
+    for (const _ of cursor.raw()) { /* consume */ }
+  }
+}
+
+/** The most chunk references on one export page, also used for its memory bounds. */
 export const EXPORT_READ_BATCH = 256;
 const READ_BATCH = EXPORT_READ_BATCH;
 /**
@@ -429,9 +443,9 @@ export function readPage(sql: Pick<SqlStorage, "exec">, cursor: Cursor, header: 
     const where = after === null ? "" : `WHERE (${keyed}) > (${key.map(() => "?").join(", ")}) `;
     // Its rows a row at a time from the cursor, never a batch held whole.
     let read = 0;
-    for (const row of sql.exec<Record<string, SqlStorageValue>>(
+    for (const row of backupRows(sql.exec<Record<string, SqlStorageValue>>(
            `SELECT ${[...new Set([...columns, ...key])].join(", ")} FROM ${table} ${where}` +
-             `ORDER BY ${keyed} LIMIT ${READ_BATCH}`, ...(after ?? []))) {
+             `ORDER BY ${keyed} LIMIT ${BACKUP_READ_BATCH}`, ...(after ?? [])))) {
       read++;
       const line = JSON.stringify({ t: "row", table, row: Object.fromEntries(
         columns.map((column) => [column, value(row[column])])) });
@@ -442,7 +456,7 @@ export function readPage(sql: Pick<SqlStorage, "exec">, cursor: Cursor, header: 
         return { lines, chunks: [], next: { section, after } };
       }
     }
-    if (read === READ_BATCH) {
+    if (read === BACKUP_READ_BATCH) {
       continue;
     }
     section++;
