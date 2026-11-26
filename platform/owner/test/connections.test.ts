@@ -5,7 +5,7 @@
  * call), the reseal's compare-and-swap (a blob the gateway resealed, handed back at
  * `egressSettle`), the largest built-in catalog, and the plaintext key never in the object.
  */
-import { evictDurableObject, runDurableObjectAlarm } from "cloudflare:test";
+import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { env } from "cloudflare:workers";
 import { createHash } from "node:crypto";
@@ -25,6 +25,7 @@ import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { MUSE } from "./ledger-support";
 import { failure } from "./support";
 import { egressTokenOf, generationOf } from "../../contract/src/egress";
+import { MIGRATIONS } from "../src/schema";
 import { hashed, ownerRun } from "./runs-support";
 import {
   ANTHROPIC, catalog, type Gated, gated, keySealed, OAUTH, OPENAI, opensRetired, REDIRECT, scopeOf,
@@ -1387,6 +1388,35 @@ describe("the models it reaches now", () => {
                         "ORDER BY model", connection))
       .map(({ record }) => JSON.parse(String(record)))).toEqual(full("a"));
   });
+
+  it("does not offer a previously delisted setup model when the first refresh after migration 35 fails",
+    async () => {
+      const r = await gated();
+      const [setup, served] = await catalog(OPENAI);
+      const connection = await r.connect("sk-good", OPENAI, "OpenRouter", undefined, OPENROUTER);
+      await lanes(r);
+      await read(r);
+      // Replay the two derived tables' transition using the shipped migration SQL. The
+      // setup list and the last successful vendor list legitimately differed before 35.
+      await runInDurableObject(r.stub, (_instance, state) => state.storage.transactionSync(() => {
+        const sql = state.storage.sql;
+        sql.exec("DROP TABLE connection_records");
+        sql.exec("DROP TABLE connection_model_reads");
+        for (const ddl of MIGRATIONS[33]!.slice(1)) sql.exec(ddl); // 34's table and index
+        sql.exec("UPDATE connections SET models = ? WHERE id = ?", JSON.stringify([setup]), connection);
+        sql.exec("INSERT INTO connection_models (connection, models, due) VALUES (?, ?, 0)",
+                 connection, JSON.stringify([[served, 19.5]]));
+        for (const ddl of MIGRATIONS[34]!) sql.exec(ddl);
+      }));
+      // A healthy read at the end distinguishes a discarded cache from a broken fixture.
+      await r.gateway.arm("listing", { answer: { models: [] } });
+      await lanes(r);
+      await read(r);
+      const afterFailedRefresh = await models(r);
+      await again(r, { models: [{ id: served!.id, score: 19.5 }] });
+      expect(await models(r)).toEqual([served!.id]);
+      expect(afterFailedRefresh).not.toContain(setup!.id);
+    });
 
   it("is a connection's committed before migration 35 the records its row kept, until its " +
      "first read", async () => {
