@@ -1883,9 +1883,12 @@ describe("the schema", () => {
     expect(await line.waitRegistration(peer)).toBe(other);
     await line.finishWait(first, initial!);
     expect(await line.turn(first)).toEqual({ turn: true, reserved: 1 });
-    const misses = await runInDurableObject(line, (_instance, state) =>
-      state.storage.sql.exec("SELECT misses FROM waiting WHERE owner = ?", first).one().misses);
-    expect(misses).toBe(2);
+    await runInDurableObject(line, (_instance, state) => {
+      expect(state.storage.sql.exec(
+        "SELECT misses FROM waiting WHERE owner = ?", first).one().misses).toBe(2);
+      expect(() => migrate(state.storage, SLOTS_MIGRATIONS.slice(0, 1)))
+        .toThrow("schema version 2 is newer than this code's 1");
+    });
     await line.finishWait(first, current!);
     expect(await line.turn(peer)).toEqual({ turn: true, reserved: 1 });
     await line.wait(first, CEILING);
