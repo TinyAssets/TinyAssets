@@ -32,3 +32,13 @@
   The standalone sweep advanced past the static regression and stopped
   before navigation because the Playwright Chromium binary was missing.
   Browser acceptance and the coordinated route release remain open.
+
+### November 26 combined browser verification
+
+On this branch's ef837894 with the Connect and developer profile stages
+and main d662e63e, the combined export passed all 41 site tests. Chromium
+read the receipt at 390 and 1280 pixels with JavaScript enabled and
+disabled. In all four cases its only reading was “sign-in required”
+and it displayed no read time. See the combined browser record at
+8f4be08c and the separate site reporting dependency at ff356e0a.
+The coordinated release and its final route verification remain open.
