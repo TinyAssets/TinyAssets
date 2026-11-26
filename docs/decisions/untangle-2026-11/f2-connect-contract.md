@@ -198,3 +198,13 @@ guide's address list and connection instructions before opening Chromium.
   routes passed at both widths and 16 desktop aliases landed. The bundled
   Playwright executable is still unavailable here. Live route readiness
   and the coordinated release remain outstanding.
+- [x] On e67f65a7 both the ordinary export and the site with main's
+  d662e63e contract passed the strengthened sweep. Each run checked
+  nine routes at 390 and 1280 pixels, five clipboard contents per width,
+  and all 16 desktop aliases. External requests were blocked throughout.
+- [x] Rehearsed the site changes from e67f65a7, developer profiles ff77e978
+  and public read status ef837894 with main d662e63e's site changes, mark
+  and contract. All 41 site tests and 31 export steps passed. The combined
+  browser sweep passed both widths and 16 aliases, including the current
+  32 directory, 33 custom and 28 run tool names, the sign-in message before
+  hydration, the two origins, and five exact clipboard contents per width.
