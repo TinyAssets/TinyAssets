@@ -80,3 +80,14 @@ signed-in client checks remain separate steps.
   workflow path filters against relative imports from app, components and
   lib. Both standalone external inputs and all four joined inputs are
   covered. These were local builds. The browser and route gates remain open.
+
+### November 26 combined browser verification
+
+On this branch's ff77e978 with the Connect and read-status stages and main
+d662e63e, the combined export passed all 41 site tests. Chromium opened
+each of the three profile lists with JavaScript enabled and disabled, at
+390 and 1280 pixels. Each list became visible and its complete ordered tool
+names matched the current contract (32 directory, 33 custom, 28 run).
+The combined browser and release record is on the ordinary Connect branch
+at 8f4be08c and ff356e0a. Route activation and final release-head verification
+are still open.
