@@ -29,3 +29,26 @@ Overlapping create/create, create/resume, resume/create and resume/resume
 all delayed the paused peer until a contender released its sandbox.
 Sequential creates or resumes left the place free for the peer. Raising
 the limit from three to four let the peer resume during both overlaps.
+
+One ordinary start can also take the held place without competing with
+another ordinary start. Its turn reports zero holds. While the provider's
+count is in flight, a peer reserves its running sandbox and pauses. The
+count then shows a free place that belongs to the peer. The regression
+requires the contender to wait at a limit of two with one external sandbox.
+At a limit of three the extra place is genuinely free and the start succeeds.
+
+- [x] The first fixture stopped at sign-in. With the synthetic peer signed
+  in, the full ordinary sandbox Worker and guard run passed 171 tests,
+  including the spare-capacity control. The existing two-start regression
+  and the new single-start regression failed. Full Node 24 platform types
+  passed.
+- [x] Four separate Workerd diagnostics on main d662e63e enforced the
+  physical limit for both create and resume. At two, each lone contender
+  took the peer's place, the peer stayed paused and its reservation stayed
+  held until the contender released. At three, the peer resumed while
+  the contender was running. Every case observed zero reservations before
+  the count and one while it was held. All services and owners were local.
+- [ ] The shared placement decision must cover a renewal starting during
+  the count as well as two overlapping placements. Both run and sign-in
+  enter through the same path. Compare the optional move in #5857, which
+  can keep serving from its existing sandbox when no replacement fits.
