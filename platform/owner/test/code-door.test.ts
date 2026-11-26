@@ -316,8 +316,8 @@ describe("the code door", () => {
         : "return 1;";
       const result = await ran(r, { ...r.bind(null), control: original }, { script });
       expect(result).toMatchObject({ ok: true, value: 1, calls: { ok: nested ? 1 : 0 } });
-      const [kept] = await r.sql("SELECT text FROM control_kept");
-      expect(JSON.parse(String(kept.text)).tiers.free.runs).toBe(OPEN.tiers.free.runs);
+      expect(await r.sql("SELECT json_extract(text, '$.tiers.free.runs') AS runs FROM control_kept"))
+        .toEqual([{ runs: OPEN.tiers.free.runs }]);
     });
 
   it("serves the object's gates from its own kept copy while KV can't be read", async () => {

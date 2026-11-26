@@ -17,7 +17,8 @@ import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
 import { apiKeyOrigin } from "../../contract/src/binding";
 import { MUSE, rig, type Rig } from "./ledger-support";
 import {
-  failure, fileCounters, inFiles, laneAt, ownerObject, passEnd, setFiles, starterSeed, text,
+  failure, fileCounters, gateFor, inFiles, laneAt, OPEN_RECORD, openRecord, ownerObject, passEnd,
+  setFiles, spaceOf, starterSeed, text, TIERS,
 } from "./support";
 
 const W = "/workspace";
@@ -58,6 +59,31 @@ async function readAll(r: Rig, path: string): Promise<Uint8Array> {
 }
 
 describe("a file write", () => {
+  it("rechecks the caller after a chunk write without restoring an earlier tier", async () => {
+    const r = await rig();
+    await write(r, W + "/first", new Uint8Array(INLINE_BYTES + 1));
+    const files = gateFor(env.FILES_GATE, await spaceOf(r.stub));
+    const original = { ...r.bind(null), control: openRecord({
+      ...TIERS, free: { ...TIERS.free, runs: TIERS.free.runs + 1 } }) };
+    const current = { ...r.bind(null), control: OPEN_RECORD };
+    const kept = () => r.sql("SELECT text FROM control_kept");
+    await files.arm("putChunks", { hold: "before" });
+    const saving = write(r, W + "/second", new Uint8Array(INLINE_BYTES + 2), null, original);
+    try {
+      await files.held("putChunks");
+      await r.stub.fileStat(current, { path: W });
+      expect(await kept()).toEqual([{ text: current.control }]);
+    } finally {
+      await files.release("putChunks");
+    }
+    expect(entryOf(await saving).path).toBe(W + "/second");
+    expect(await kept()).toEqual([{ text: current.control }]);
+
+    // Another external call is a separate delivery, even when the bytes match an earlier one.
+    await r.stub.fileStat(original, { path: W });
+    expect(await kept()).toEqual([{ text: original.control }]);
+  });
+
   it("creates only with an empty etag and swaps only on the current one", async () => {
     const r = await rig();
     const made = entryOf(await write(r, `${W}/a.txt`, "one", ""));

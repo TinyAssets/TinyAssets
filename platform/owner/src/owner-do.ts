@@ -211,6 +211,12 @@ interface Serves {
   readonly visitors?: boolean;
 }
 
+/** A binding delivered to this object. Its control observation is kept once per external call. */
+interface BindingDelivery {
+  readonly value: unknown;
+  controlPending: boolean;
+}
+
 /** A bound binding the bind step held: its kind, and the binding as that kind's parser read it. */
 type Held = { [K in TakenBy<Binds>]: { readonly kind: K; readonly binding: BindingOf<K> } }[
   TakenBy<Binds>];
@@ -715,11 +721,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
         throw new Error(RESET);
       },
       accountAt: (door: string, binding: Binding) =>
-        this.#within(ownerRow(door), binding, undefined, { live: false },
-                     ({ account }) => account),
+        this.#within(ownerRow(door), { value: binding, controlPending: false }, undefined,
+                     { live: false }, ({ account }) => account),
       invoke: (door: string, binding: Binding, request: unknown) => {
         const row = ownerRow(door);
-        return this.#leased(row, binding, request, handlerOf(row));
+        return this.#leased(row, { value: binding, controlPending: false }, request, handlerOf(row));
       },
     });
     void ctx.blockConcurrencyWhile(async () => {
@@ -913,10 +919,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       Object.defineProperty(this.prototype, row.door, {
         value: row.caller === "none"
           ? function (this: OwnerDO, request: unknown) {
-            return this.#leased(row, undefined, request, handler);
+            return this.#leased(row, { value: undefined, controlPending: false }, request, handler);
           }
           : function (this: OwnerDO, binding: unknown, request: unknown, stop?: unknown) {
-            return this.#leased(row, binding, request, handler, stop);
+            return this.#leased(row, { value: binding, controlPending: true }, request, handler, stop);
           },
       });
     }
@@ -927,7 +933,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    * checked in one unit of that gate, or the door, which its handler checks in each unit it
    * makes. A row that takes no request is handed none, whatever came.
    */
-  #leased(row: OwnerRow, binding: unknown, request: unknown, handler: Handled,
+  #leased(row: OwnerRow, binding: BindingDelivery, request: unknown, handler: Handled,
           stop?: unknown): Promise<unknown> {
     // Each proof the call's steps mint is live while the call runs, and none once it settled.
     const lease: Lease = { live: true };
@@ -962,7 +968,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    * and the sync's commit lands a run's files, whose hold is R5's later hold-on-sync
    * (`tasks.md`; `r5-decide.md` item 3).
    */
-  #call(row: OwnerRow, binding: unknown, request: unknown, handler: Handled,
+  #call(row: OwnerRow, binding: BindingDelivery, request: unknown, handler: Handled,
         lease: Lease, left: AbortSignal | null): Promise<unknown> {
     // The request's type is its handler's, held to the row's fields by the runner's fields
     // step at run time, as `tsc` holds the handler to its row at `HANDLERS`.
@@ -981,7 +987,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    * the row's act (its condition held), the owner's rules on it (`actions.ts`): it returns
    * when the call may go on, and throws when a rule never lets it or holds it for the owner.
    */
-  #decide(row: OwnerRow, act: NonNullable<OwnerRow["act"]>, binding: unknown, request: unknown,
+  #decide(row: OwnerRow, act: NonNullable<OwnerRow["act"]>, binding: BindingDelivery, request: unknown,
           lease: Lease): void {
     const call = this.#checked(row, request, this.#bound(row, binding, request),
                                provedBy(row.caller, lease));
@@ -1005,7 +1011,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    * The door's handler on its call, by its row's gate; a door that takes its caller's stop is
    * handed its leaving (`left`, a units door: `door-steps.ts`).
    */
-  #handled(row: OwnerRow, binding: unknown, asked: never, handler: Handled,
+  #handled(row: OwnerRow, binding: BindingDelivery, asked: never, handler: Handled,
            lease: Lease, left: AbortSignal | null): Promise<unknown> {
     if (row.gate === "units") {
       const within = <T>(inner: (call: Call<never, CallerKind>) => T) =>
@@ -1059,7 +1065,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    * refusal after its account is bound leaves a refusal receipt of what was asked (the
    * row's stand-in for it, where it names one), written once the refused change rolled back.
    */
-  #within<R, T>(row: OwnerRow, binding: unknown, request: R, lease: Lease,
+  #within<R, T>(row: OwnerRow, binding: BindingDelivery, request: R, lease: Lease,
                 act: (call: Call<R, CallerKind>) => T): T {
     if (row.caller !== "session") {
       return act(this.#checked(row, request, this.#bound(row, binding, request),
@@ -1091,7 +1097,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   }
 
   /** The bind and account steps of the row's caller kind (`door-steps.ts`). */
-  #bound(row: OwnerRow, binding: unknown, request: unknown): Bound {
+  #bound(row: OwnerRow, binding: BindingDelivery, request: unknown): Bound {
     const door = row.class as DoorClass;
     const capability = row.capability!;
     switch (row.caller) {
@@ -1160,8 +1166,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       }
       case "erasure": {
         // An owner wiped once its outside record was confirmed: its platform doors answer so.
-        if ((this.#tombstone || this.#erasure.erased) && bindingKind(binding) === "reserved") {
-          const { binding: given } = taken(binding, row.caller, row);
+        if ((this.#tombstone || this.#erasure.erased) && bindingKind(binding.value) === "reserved") {
+          const { binding: given } = taken(binding.value, row.caller, row);
           return { ...bound(given, unaccounted("", PLATFORM_CALLER)), erased: true };
         }
         const { binding: given } = this.#bind(binding, row.caller, row);
@@ -1173,12 +1179,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       case "discard": {
         // The import's discard: a pending owner, or a rehearsal's in any state; an instance
         // that discarded already answers it again (its database is gone, and so its state).
-        const { binding: given } = this.#discarded !== null ? taken(binding, row.caller, row)
+        const { binding: given } = this.#discarded !== null ? taken(binding.value, row.caller, row)
           : this.#bind(binding, row.caller, row);
         return bound(given, unaccounted(given.owner, given.caller));
       }
       case "none":
-        return bound(BINDING_PARSERS.none(binding), unaccounted("", ""));
+        return bound(BINDING_PARSERS.none(binding.value), unaccounted("", ""));
     }
   }
 
@@ -1336,7 +1342,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    * (`require_work`), but at the platform's own doors (class `admission`), which set it. The
    * platform's reserved caller reaches no other door, and no owner is named so.
    */
-  #bind<K extends Binds>(binding: unknown, caller: K, row: Taking): HeldBy<K> {
+  #bind<K extends Binds>(delivery: BindingDelivery, caller: K, row: Taking): HeldBy<K> {
     if (this.#tombstone || this.#erasure.erased) {
       throw new Refusal("owner_erased", OWNER_ERASED);
     }
@@ -1345,11 +1351,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     }
     // The erasure's own platform doors are the one way in while the owner is marked, and
     // only for the platform's reserved caller.
-    if (erasing(this.#storage) && !(caller === "erasure" && bindingKind(binding) === "reserved")) {
+    if (erasing(this.#storage) && !(caller === "erasure" && bindingKind(delivery.value) === "reserved")) {
       this.#erasure.resume(true);
       throw new Refusal("erasing", ERASING);
     }
-    const held = taken(binding, caller, row);
+    const held = taken(delivery.value, caller, row);
     const read: Held = held;
     const given: Binding = read.binding;
     const owner = given.owner;
@@ -1398,8 +1404,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     // the import's bindings carry it): the object's one copy, whose tier numbers the files byte
     // quota and every run read, and whose sign-in switches every sign-in and run, written only
     // when it changed.
-    if (given.control !== undefined) {
+    if (delivery.controlPending && given.control !== undefined) {
       this.#controlKeeper.keepInUnit(given.control, clockMs());
+      delivery.controlPending = false;
     }
     return held;
   }
@@ -1520,7 +1527,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    * this conversation of the owner's; refused alike otherwise (`TICKET_REFUSED`).
    */
   #socketAdmit(binding: unknown, conversation: string, hash: string): SocketState {
-    const held = this.#bind(binding, "account", SOCKET);
+    const held = this.#bind({ value: binding, controlPending: true }, "account", SOCKET);
     const account = this.#account(held);
     if (account.origin !== null || account.run !== null) {
       throw new Refusal("refused", OWNERS_SOCKET);
@@ -1541,7 +1548,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   /** In a unit: whether a socket's attachment still holds, as at its attach; its close. */
   #socketCheck(state: SocketState): CloseKind | null {
     try {
-      this.#account(this.#bind(state.binding, "account", SOCKET));
+      this.#account(this.#bind({ value: state.binding, controlPending: false }, "account", SOCKET));
       return state.expires_at <= clock() ? "expired" : null;
     } catch (error) {
       if (!(error instanceof Refusal)) {
