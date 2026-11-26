@@ -366,6 +366,54 @@ describe("a start", () => {
       expect((await stub(who).meter({ after: 0 })).events.map(event => event.kind)).toEqual(["start"]);
     });
 
+  it("recovers the returned sandbox after its predecessor disappeared", async () => {
+    await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: 1 });
+    await e2b("/script", { signin: { "claude-code": 0 } });
+    const who = owner();
+    expect(await stub(who).start(start())).toEqual({ started: true });
+    const old = (await seen()).sandboxes[0]!.id;
+    await e2b("/gone", { id: old });
+    const run = `run_${hex(32, "4")}`;
+    const next = start({ run, urls: runUrls(run, hex(64, "e")),
+                         lease: { lease_id: hex(32, "9"), epoch: 2 } });
+    await e2b("/script", { down: 1 });
+    expect((await faulted(() => stub(who).start(next))).got).toBe("sandbox_start_failed");
+    const id = (await seen()).sandboxes[0]!.id;
+    expect(id).not.toBe(old);
+    await evictDurableObject(stub(who));
+    expect(await stub(who).start(next)).toEqual({ started: true });
+    const after = await seen();
+    expect(after.sandboxes.map(box => box.id)).toEqual([id]);
+    expect(after.commands.filter(command => command.argv[1] === "launch")
+      .map(command => command.sandbox)).toEqual([old, id]);
+    expect((await stub(who).meter({ after: 0 })).events.map(event => event.kind))
+      .toEqual(["start", "kill", "start"]);
+  });
+
+  it("reaps the returned sandbox when the failed start is never retried", async () => {
+    await e2b("/script", { down: 1, state: { live: 0, quiet: true } });
+    const who = owner();
+    expect((await faulted(() => stub(who).start(start()))).got).toBe("sandbox_start_failed");
+    const id = (await seen()).sandboxes[0]!.id;
+    // Let the ordinary alarm finish its first idle observation before eviction.
+    const until = Date.now() + 5_000;
+    while (!await runInDurableObject(stub(who), (_i, state) => state.storage.sql.exec(
+      "SELECT 1 FROM sandboxes WHERE idle_since IS NOT NULL").toArray().length > 0)) {
+      expect(Date.now(), "automatic idle observation").toBeLessThan(until);
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    await evictDurableObject(stub(who));
+    await runInDurableObject(stub(who), (_i, state) => state.storage.sql.exec(
+      "UPDATE sandboxes SET idle_since = idle_since - 60000"));
+    await runDurableObjectAlarm(stub(who));
+    const after = await seen();
+    expect(after.sandboxes.map(box => [box.id, box.state])).toEqual([[id, "paused"]]);
+    expect(after.commands.map(command => command.argv[1])).not.toContain("launch");
+    expect(await alarmOf(who)).toBeNull();
+    expect((await stub(who).meter({ after: 0 })).events.map(event => event.kind))
+      .toEqual(["start", "pause"]);
+  });
+
   it("prepares a sandbox a fault left running unprepared before the next start launches in " +
      "it, and only that once", async () => {
     await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 0, quiet: true } });
