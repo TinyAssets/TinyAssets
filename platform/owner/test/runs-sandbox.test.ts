@@ -99,7 +99,8 @@ describe("a run the sandbox has no room for", () => {
     expect(await r.stub.sandboxRung()).toEqual({ waiting: 1 });
     await until(async () => {
       await drainDue(r.stub);
-      return (await r.stub.agentStatus(r.bind(), { run_id: second.run_id })).state === "running";
+      const status = await r.stub.agentStatus(r.bind(), { run_id: second.run_id });
+      return "state" in status && status.state === "running";
     }, "the remaining run started");
     expect((await recorder(r.stub)).starts.map(start => start.run))
       .toEqual([first.run_id, second.run_id, second.run_id]);
