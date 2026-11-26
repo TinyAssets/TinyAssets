@@ -11,6 +11,7 @@
  *   pauses that sandbox (zero idle tail).
  */
 import { evictDurableObject } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { until } from "../../ci/workerd";
@@ -19,7 +20,7 @@ import { gated } from "./gateway-support";
 import {
   defineAgent, ownerRun, recorder, runnerBinding, scripted, startOf, whileOut,
 } from "./runs-support";
-import { drainDue, openRecord } from "./support";
+import { drainDue, gateFor, openRecord } from "./support";
 
 const SIGNED_IN = Object.freeze({ engine: "claude-code", credential: "vendor_login_in_sandbox",
                                   scopes: [] });
@@ -94,6 +95,45 @@ describe("a run the sandbox has no room for", () => {
       await drainDue(r.stub);
       expect(await r.stub.agentStatus(r.bind(), { run_id: run.run_id }))
         .toMatchObject({ state: "running", code: null });
+    });
+
+  it.each([0, 1])("remembers a crossed notice for both dispatched runs when reply %i arrives first",
+    async (chosen) => {
+      const r = await gated();
+      await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+      const wait = { started: false, code: SANDBOX_WAITING } as const;
+      await scripted(r.stub, { answer: [wait, wait, { started: true }, wait] });
+      const gate = gateFor(env.SANDBOX_GATE, r.name);
+      await gate.arm("start", { hold: "after" }, 2);
+      const submit = (message: string) => r.stub.agentSubmit(r.bind(), { message, client_send_id: message });
+      const first = submit("first");
+      await gate.held("start");
+      const second = submit("second");
+      const submissions = [first, second] as const;
+      try {
+        await until(async () => (await gate.held("start")).length === 2, "both wait replies held");
+        const replies = await gate.held("start");
+        expect(await r.stub.sandboxRung()).toEqual({ waiting: 0 });
+        expect(await r.stub.sandboxRung()).toEqual({ waiting: 0 });
+        await env.SANDBOX_GATE.release(replies[chosen]!.id);
+        const launched = await submissions[chosen]!;
+        await drainDue(r.stub);
+        expect((await recorder(r.stub)).starts).toHaveLength(3);
+
+        const other = 1 - chosen;
+        await env.SANDBOX_GATE.release(replies[other]!.id);
+        const parked = await submissions[other]!;
+        await drainDue(r.stub);
+        await drainDue(r.stub);
+        const [older, newer] = await Promise.all(submissions);
+        expect((await recorder(r.stub)).starts.map((call) => call.run))
+          .toEqual([older.run_id, newer.run_id, launched.run_id, parked.run_id]);
+        expect(await r.stub.agentStatus(r.bind(), { run_id: parked.run_id }))
+          .toMatchObject({ state: "waiting", code: SANDBOX_WAITING });
+      } finally {
+        await gate.release("start");
+        await Promise.all(submissions);
+      }
     });
 
   it("can start after a ring crosses the sandbox's answer that the run must wait", async () => {

@@ -146,3 +146,51 @@ The original registration remained first, and both runs subsequently
 launched once in queue order. The first trial incorrectly expected sign-in
 to succeed in this last case. Its refusal and retained place were then
 verified together.
+
+## A notification crossing two dispatched runs
+
+The new Owner regression holds two real start replies at the sandbox boundary,
+delivers the same ring twice, then releases the replies in either order. Both
+runs were already dispatched when the ring arrived. Each needs one opportunity
+to retry. The first retry can launch while the other parks again. The existing
+Owner missed the first retry in both orders.
+
+A disposable Owner recorded the ring on each outstanding dispatch, consuming
+it once when that dispatch received its wait answer. Both orders worked.
+Three delayed duplicate deliveries crossing three successive attempts at
+full capacity caused three extra attempts. The run parked after the fourth
+attempt and a further scheduler pass made no call. A generic queue message
+has no placement identity with which to recognize later redelivery.
+
+Two local three-Worker replays also added a disposable placement notification
+at Slots. Delivering only actual queue messages launched both owners once in
+the expected order, whether the earlier wait reply was held or already saved.
+An earlier harness that withheld later real messages timed out in the saved
+case. The corrected harness delivered one placement notification to the
+original owner in each case.
+
+There is a separate obligation at Slots. With the seat already removed, a
+rejected send before enqueue left the placed owner with no notification. A
+send accepted before its acknowledgement was lost left that owner notified.
+After eviction, the peer still received its normal head notification in both
+cases. The two expectations passed and both injected send failures surfaced
+as unhandled rejections. The experiment does not establish reliable delivery.
+Placement recovery, duplicate delivery across attempts, and mixed Worker
+versions remain open.
+
+On `e288ba98` the complete standalone sandbox suite had 167 passes and two
+failures, the ordinary placement and sign-in placement regressions. The joined
+suite had 213 passes and 17 failures, retaining all 15 earlier failures. The
+two additions were sign-in placement and the outstanding reservation count
+during erasure. The erasure test passed in isolation on the same checkout.
+Six additional Owner tests covering erasure, discard and socket entry passed.
+
+On the real Owner with a start reply outstanding, an initial attempt to read
+runtime-private metadata failed. Comparing all 86 readable table contents
+across a ring found that only the jobs table differed. Controls with and
+without the ring then confirmed that every other table retained the same
+rows. This comparison does not identify the cause of a jobs-table change.
+The permanent two-reply regression failed in both orders on the staged
+Owner (two starts observed, three expected at the first retry), passed both
+on the disposable dispatch experiment, and passed the full Node 24 platform
+typecheck with the ordinary source. The experiment has no shipped migration.
