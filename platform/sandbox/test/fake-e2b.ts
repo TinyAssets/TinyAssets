@@ -254,6 +254,9 @@ async function api(request: Request, url: URL): Promise<Response> {
                          { status: 201 });
   }
   if (request.method === "GET" && first === "v2" && second === "sandboxes" && !third) {
+    if (url.searchParams.get("state") === "running" && !url.searchParams.has("metadata")) {
+      await holdNext("running-count");
+    }
     const states = (url.searchParams.get("state") ?? "running,paused").split(",");
     const [key, value] = (url.searchParams.get("metadata") ?? "=").split("=")
       .map(decodeURIComponent);

@@ -1033,6 +1033,43 @@ describe("the look before the runtime ceiling", () => {
     expect(await turn("nobody")).toBe(true);
   });
 
+  it.each([2, 3])("keeps a peer's place when it renews during the provider count at limit %i",
+     async (limit) => {
+    await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: limit });
+    await e2b("/script", { others: 1, state: { live: 1, quiet: true } });
+    const peer = owner();
+    const contender = owner();
+    expect(await stub(peer).start(start())).toEqual({ started: true });
+    const id = (await seen()).sandboxes[0]!.id;
+    try {
+      await e2b("/age", { id, s: CEILING - WINDOW + 5 });
+      await e2b("/script", { hold: "running-count", refuseResume: true });
+      const placement = stub(contender).start(start());
+      await seenOnce(state => state.held.includes("running-count"), "the provider count");
+      const renewal = runDurableObjectAlarm(stub(peer));
+      try {
+        // A coordinated allocator may finish this count before it allows the pause.
+        await Promise.race([renewal, scheduler.wait(500)]);
+      } finally {
+        await e2b("/release", {});
+      }
+      await renewal;
+      const reply = await placement;
+      if (limit === 2) {
+        expect(reply).toMatchObject({ started: false, code: "sandbox_waiting" });
+      } else {
+        expect(reply).toEqual({ started: true });
+      }
+      await e2b("/script", { refuseResume: false });
+      await runDurableObjectAlarm(stub(peer));
+      expect((await seen()).sandboxes.find(box => box.id === id)?.state).toBe("running");
+    } finally {
+      await e2b("/release", {});
+      await stub(contender).unwait();
+      await slots().unreserve(id);
+    }
+  });
+
   it("keeps a renewal's slot when two other owners start together", async () => {
     await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: 3 });
     await e2b("/script", { others: 1, signin: { "claude-code": 0 }, state: { live: 1, quiet: true } });
