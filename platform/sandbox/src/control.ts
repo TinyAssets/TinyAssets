@@ -845,16 +845,20 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
                     // Sealed, so only the doors open it: the route of E2B's lifecycle events.
                     [ROUTE_METADATA]: route },
       });
-      const info = await e2b.info(created.sandboxID);
       const digest = this.#digest;
-      // One E2B no longer has is forgotten as the look forgets it: nothing of it, its window
-      // or its kill, its runs or its held slot, is the new one's.
-      this.#forget(authority);
-      this.#sql.exec("INSERT INTO sandboxes (authority, sandbox_id, lease_id, end_at, runner) " +
-                       "VALUES (?, ?, NULL, ?, ?)", authority, created.sandboxID,
-                     info === null ? Date.now() : Date.parse(info.endAt), digest);
-      this.#log(authority, "start");
+      // A create has taken a slot even if the next info read fails. Keep the
+      // returned ID before any await. Until E2B tells us its end, look at once.
+      this.ctx.storage.transactionSync(() => {
+        this.#forget(authority);
+        this.#sql.exec("INSERT INTO sandboxes (authority, sandbox_id, lease_id, end_at, runner) " +
+                         "VALUES (?, ?, NULL, ?, ?)", authority, created.sandboxID, Date.now(), digest);
+        this.#log(authority, "start");
+      });
       await this.#took();
+      const info = await e2b.info(created.sandboxID);
+      if (info !== null) {
+        this.#ended(info);
+      }
       // The template holds no runner: this Worker's, installed before its first command.
       const box = { ...created, runner: digest };
       await this.#install(box);

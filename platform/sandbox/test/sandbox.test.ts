@@ -18,7 +18,7 @@
  * there, and looks at each sandbox on its own.
  */
 import {
-  createExecutionContext, env, runDurableObjectAlarm, runInDurableObject,
+  createExecutionContext, env, evictDurableObject, runDurableObjectAlarm, runInDurableObject,
 } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -343,6 +343,28 @@ describe("a start", () => {
     expect(state.commands.map((command) => command.argv[1])).not.toContain("launch");
     expect(Object.keys(state.files).filter((path) => path.includes(`${INBOX}/`))).toEqual([]);
   });
+
+  it.each([1, 2])("reuses an acknowledged create after its first info read fails at ceiling %i",
+    async ceiling => {
+      await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: ceiling });
+      await e2b("/script", { down: 1, signin: { "claude-code": 0 } });
+      const who = owner();
+      expect((await faulted(() => stub(who).start(start()))).got).toBe("sandbox_start_failed");
+      const before = await seen();
+      expect(before.sandboxes).toHaveLength(1);
+      const id = before.sandboxes[0]!.id;
+      await evictDurableObject(stub(who));
+      expect(await stub(who).start(start())).toEqual({ started: true });
+      const after = await seen();
+      expect(after.sandboxes.map(box => box.id)).toEqual([id]);
+      const installed = after.commands.findIndex(command => command.argv[1] === "install");
+      expect(installed).toBeGreaterThanOrEqual(0);
+      const commands = after.commands.slice(installed + 1)
+        .filter(command => command.argv[1] === "prepare" || command.argv[1] === "launch");
+      expect(commands.map(command => [command.sandbox, command.argv[1]]))
+        .toEqual([[id, "prepare"], [id, "launch"]]);
+      expect((await stub(who).meter({ after: 0 })).events.map(event => event.kind)).toEqual(["start"]);
+    });
 
   it("prepares a sandbox a fault left running unprepared before the next start launches in " +
      "it, and only that once", async () => {

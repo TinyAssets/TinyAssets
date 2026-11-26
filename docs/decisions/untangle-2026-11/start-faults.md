@@ -126,3 +126,10 @@ must be prepared.
 - [x] `launch.ts` `#whole` and `bodies.ts` `fetch`: a lane's read of an agent file or a placed
   mail body waits on the pool, where a lane takes units only now (`unitsNow`). Research first
   whether the lane's reads take them now and hold on `busy` (`untangle/lane-pool-wait`).
+
+### An acknowledged create followed by a failed status read
+
+The provider can return the new sandbox ID and then fail the first read of its status. On main `d662e63e`, the row was written after that read. Two local Worker tests evicted the control object and retried the original start. With one slot the retry waited on its own sandbox. With two slots it created another and left the first one running.
+
+- [x] Keep the returned ID, its unprepared state and its start meter event together before awaiting another operation. Until a status read supplies the provider's actual deadline, the ordinary look is due immediately. The existing runner installation and preparation path can finish the start after eviction. Both regressions and the existing unprepared and queue-leave controls passed. The initial test counted a missing runner's first prepare request as a completed preparation; the final assertion checks preparation and launch after installation.
+- [ ] Recheck the shared path with #5857. A lost create response supplies no ID. Template-copy promotion and retirement remain separate from remembering an acknowledged create.
