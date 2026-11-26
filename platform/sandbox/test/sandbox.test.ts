@@ -542,6 +542,41 @@ describe("a start", () => {
   });
 });
 
+describe("interrupted replacement of an idle sandbox", () => {
+  const next = () => start({ run: `run_${hex(32, "3")}`, lease: { lease_id: hex(32, "f"), epoch: 2 } });
+
+  async function idleFromPreviousTemplate(who: string): Promise<string> {
+    await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 0, quiet: true } });
+    await stub(who).start(start());
+    await stub(who).release({ lease_id: LEASE.lease_id });
+    const [old] = (await seen()).sandboxes;
+    await e2b("/metadata", { id: old!.id, metadata: { ...old!.metadata, ta_template: "previous" } });
+    return old!.id;
+  }
+
+  it.each(["broken", "lost"])("starts on the existing sandbox if the carry-out reply is %s", async fault => {
+    const who = owner();
+    const old = await idleFromPreviousTemplate(who);
+    await e2b("/script", { [fault]: "carry-out" });
+    expect(await stub(who).start(next())).toEqual({ started: true });
+    const state = await seen();
+    expect(state.sandboxes.map(box => box.id)).toEqual([old]);
+    expect(state.commands.filter(command => command.argv[1] === "launch").at(-1)?.sandbox).toBe(old);
+  });
+
+  it("keeps a copy if deletion succeeded but its acknowledgement was lost", async () => {
+    const who = owner();
+    const old = await idleFromPreviousTemplate(who);
+    await e2b("/script", { lost: "delete-ack" });
+    // The start may be refused while the two sandboxes are reconciled.
+    await Promise.allSettled([stub(who).start(next())]);
+    const state = await seen();
+    const holdsCopy = state.sandboxes.some(box =>
+      box.id === old || state.files[`${box.id}:carried`] === `carry of ${old}`);
+    expect(holdsCopy).toBe(true);
+  });
+});
+
 describe("the platform's line", () => {
   it("makes a run wait, never refused, when E2B runs as many as the record says", async () => {
     await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: 3 });

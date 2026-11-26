@@ -12,3 +12,26 @@ This change is the run's own record: `passed.json` as the run uploaded it (artif
 `passed-json`) and the pin in `sandbox/wrangler.jsonc`. Nothing else changes.
 
 - [ ] live: the dark redeploy runs its pair check on this pin.
+
+### Interrupted sandbox replacement, November 26
+
+The template replacement proposed in #5857 promises to serve an idle owner's
+start from the original sandbox if the transfer fails. Main d662e63e still
+resumes that sandbox. Three ordinary Worker regression tests use a synthetic
+idle sandbox and the existing fake vendor. All three passed on main with the
+tests added. The identical cases failed on PR code aa40cc0a. Both trees passed
+full platform TypeScript.
+
+- [ ] A broken or lost carry-out reply refuses the pending start before the
+  old sandbox launches it. The PR's existing failed carry-in control still
+  serves the start on the old sandbox.
+- [ ] When the vendor deletes the old sandbox and its acknowledgement is lost,
+  the error path also deletes the replacement. An independent diagnostic
+  observed two deletes, zero surviving sandboxes and a refused start.
+  Separate an uncertain deletion from a failed copy. Record which sandbox
+  holds the verified copy across retries and Worker restarts before any
+  subsequent deletion. Preserve a recoverable copy when either acknowledgement
+  is missing.
+- [ ] Passing these control tests also requires preserving each pending file
+  and its original version. [The transfer can omit equal-length edits and
+  executable-only changes](https://github.com/TinyAssets/TinyAssets/commit/acabc5e8ca13906bce6ec9725821a324eba1e829).

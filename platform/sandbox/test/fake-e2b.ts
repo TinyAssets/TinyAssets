@@ -258,6 +258,10 @@ async function api(request: Request, url: URL): Promise<Response> {
   }
   if (request.method === "DELETE") {
     fake.sandboxes.delete(id);
+    if (fake.script.lost === "delete-ack") {
+      fake.script.lost = null;
+      return new Response("reply lost after delete", { status: 502 });
+    }
     return new Response(null, { status: 204 });
   }
   if (action === "pause") {
@@ -410,6 +414,13 @@ export default {
                                  timeout: 60, pauseMode: "full", network: null, metadata,
                                  template: "t", secure: true, runners: new Set() });
         return Response.json({ id });
+      }
+      if (url.pathname === "/metadata") {
+        // A sandbox's metadata set whole: one made from an older pin, or before any was named.
+        const { id, metadata } = await request.json() as { id: string;
+                                                          metadata: Record<string, string> };
+        fake.sandboxes.get(id)!.metadata = metadata;
+        return Response.json({});
       }
       if (url.pathname === "/runners") {
         // A sandbox's installed runners set whole: one born under an older Worker's.
