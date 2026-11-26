@@ -103,8 +103,25 @@ eligible owner launched first. When its tier was missing, the peer launched
 first and reading the restored record restarted the waiting owner without
 another ring or directory write. In both replays each owner launched once.
 
-- [ ] Keep the fresh control record through repeated checks of the same call.
+- [x] Keep the fresh control record through repeated checks of the same call.
   An ordinary code script saw the current free limit of five. Without a tool
   call it kept five. After a collection read, the owner's kept copy instead
   showed six from the original binding. The nested-call regression fails on
-  `a9f8e30c`. Check multi-unit doors and forwarded bindings before fixing it.
+  `a9f8e30c`. On `6027c2fb` an interrupted chunk write also restored the
+  previous free limit when its final unit rechecked the caller.
+
+At `71c8e589` each external Owner call consumes its control observation once.
+Subsequent units and nested tools still recheck their caller. The checked
+binding retains its freshness signal for sign-in. A later independent call
+can hand back the same bytes. The wire format carries no source revision.
+
+The five affected Owner Worker suites passed 153 tests, including sign-in,
+files, code mode, and runs. The binding and control guards passed 101 cases,
+the Owner door and config guards passed 145, and full Node 24 types passed.
+With the other staged sandbox changes, full types and 14 focused Worker
+cases passed. A combined Worker attempt exited 137 before the serial pass.
+The earlier combined tier-only check passed nine cases and full types on
+serial retry. A stronger chunk-write control starts with the old record
+already kept. The baseline still restored that old record after the newer
+read. The fixed write retained the new record and then accepted an
+independent delivery of the old bytes.

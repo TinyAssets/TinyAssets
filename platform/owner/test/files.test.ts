@@ -67,6 +67,8 @@ describe("a file write", () => {
       ...TIERS, free: { ...TIERS.free, runs: TIERS.free.runs + 1 } }) };
     const current = { ...r.bind(null), control: OPEN_RECORD };
     const kept = () => r.sql("SELECT text FROM control_kept");
+    // The first check receives a copy the owner already has.
+    await r.stub.fileStat(original, { path: W });
     await files.arm("putChunks", { hold: "before" });
     const saving = write(r, W + "/second", new Uint8Array(INLINE_BYTES + 2), null, original);
     try {
