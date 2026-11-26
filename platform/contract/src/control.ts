@@ -158,7 +158,7 @@ export interface ControlKeeper {
    * read that found no record or a malformed one, drops the copy, so the gates that read closed
    * stay closed through an outage after it (a kill flip with a typo).
    */
-  keep(text: string | null, at: number): void | Promise<void>;
+  keep(text: string | null, at: number): void | boolean | Promise<void>;
 }
 
 /**
@@ -178,18 +178,20 @@ export class SqlKeeper implements ControlKeeper {
     return row === undefined ? null : { text: row.text, read_at: row.read_at };
   }
 
-  keep(text: string | null, at: number): void {
+  /** Whether this write changed the stored copy. */
+  keep(text: string | null, at: number): boolean {
     // Read first: an owner unit that runs any write is marked changed (`owner/src/gate.ts`).
     if ((this.kept()?.text ?? null) === text) {
-      return;
+      return false;
     }
     if (text === null) {
       this.#sql.exec("DELETE FROM control_kept");
-      return;
+      return true;
     }
     this.#sql.exec("INSERT INTO control_kept (only, text, read_at) VALUES (1, ?, ?) " +
                      "ON CONFLICT (only) DO UPDATE SET text = excluded.text, " +
                      "read_at = excluded.read_at", text, at);
+    return true;
   }
 }
 

@@ -193,7 +193,6 @@ import { Backups } from "./backup";
 import { OpenExports } from "./open-exports";
 import { ChangeLog } from "./changelog";
 import { ControlGate, objectKeeper } from "./control-gate";
-import { SqlKeeper } from "../../contract/src/control";
 import { storageFull, storageFullRefusal } from "./storage-full";
 import { Doorbell, type WakeSender } from "./wakes";
 import { serverUnreached } from "./network";
@@ -454,6 +453,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   readonly #gate: WriteGate;
   /** The storage as the modules see it: the gate's view. */
   readonly #storage: OwnerStorage;
+  readonly #controlKeeper: ReturnType<typeof objectKeeper>;
   /** The owner's admission and tier, and the tier numbers kept (`admission.ts`). */
   readonly #admission: OwnerAdmission;
   readonly #collections: Collections;
@@ -527,6 +527,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     const storage = this.#gate.storage;
     const write = this.#gate.write;
     this.#storage = storage;
+    this.#controlKeeper = objectKeeper(storage, this.#gate.quiet, () => {
+      // Recheck the lanes after the unit that changed their inputs has finished.
+      ctx.waitUntil(Promise.resolve().then(() => this.#schedule.sync()));
+    });
     this.#tombstone = tombstoned(storage.sql);
     const stores = ownerStores(this.#gate, env, ctx.id);
     this.#admission = stores.admission;
@@ -1320,8 +1324,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
 
   /** The platform's gates as this object reads them (`control-gate.ts`), from `CONTROL`. */
   #control(): ControlGate {
-    return new ControlGate(this.env.CONTROL,
-                           objectKeeper(this.#storage, (unit) => this.#quiet(unit)));
+    return new ControlGate(this.env.CONTROL, this.#controlKeeper);
   }
 
   /**
@@ -1396,12 +1399,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     // quota and every run read, and whose sign-in switches every sign-in and run, written only
     // when it changed.
     if (given.control !== undefined) {
-      const unread = this.#admission.tiers() === null;
-      new SqlKeeper(this.#storage.sql).keep(given.control, clockMs());
-      if (unread && this.#admission.tiers() !== null && this.#starter.version() === 0) {
-        // The first numbers a new owner's door hands: its seed, which waited for them, is due.
-        queueMicrotask(() => void this.#schedule.sync());
-      }
+      this.#controlKeeper.keepInUnit(given.control, clockMs());
     }
     return held;
   }

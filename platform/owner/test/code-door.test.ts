@@ -313,7 +313,9 @@ describe("the code door", () => {
     const gates = (stub: DurableObjectStub<OwnerDO>, owner: string) => runInDurableObject(stub,
       async (_instance, state) => {
         const write = new WriteGate(state.storage);
-        const keeper = objectKeeper(write.storage, write.quiet);
+        const keeper = objectKeeper(write.storage, write.quiet, () => {
+          throw new Error("an unreadable store changed the kept copy");
+        });
         return [await new ControlGate(down, keeper).refusal("outside", owner),
                 await new ControlGate(down, keeper).refusal("owner", owner),
                 (await new ControlGate(down, keeper).read()).kind];

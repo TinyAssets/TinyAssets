@@ -1317,6 +1317,39 @@ describe("the admission unit", () => {
       .toEqual([own.run_id]);
   });
 
+  it.each(["binding", "KV refresh", "assignment"] as const)(
+    "resumes a woken run when its tier gains a place through a %s", async (change) => {
+      const r = await gated();
+      if (change === "KV refresh") {
+        const { generation, policy } = await r.stub.policyRead(r.bind());
+        await r.stub.policyWrite(r.session(), { expected_generation: generation,
+          policy: { ...policy, codemode: { on: true } } });
+      }
+      await ownerRun(r.stub, r.bind(), SIGNED_IN);
+      await scripted(r.stub, { answer: [{ started: true }, { started: false, code: SANDBOX_WAITING },
+                                        { started: true }] });
+      const waiting = await r.stub.agentSubmit(r.bind(), { message: "wait", client_send_id: "wait" });
+      expect(waiting).toMatchObject({ state: "waiting", code: SANDBOX_WAITING });
+      const limited = { ...TIERS, free: { ...TIERS.free, runs: 1 } };
+      await r.stub.fileStat(r.bind({ control: openRecord(limited) }), { path: "/workspace" });
+      expect(await r.stub.sandboxRung()).toEqual({ waiting: 1 });
+      await drainDue(r.stub);
+      expect((await recorder(r.stub)).starts).toHaveLength(2);
+
+      if (change === "binding") {
+        await r.stub.fileStat(r.bind(), { path: "/workspace" });
+      } else if (change === "KV refresh") {
+        const result = await r.stub.codeRun(r.bind({ control: openRecord(limited) }),
+          { script: "return 1;" }, new IdentityTransformStream().readable);
+        expect(result).toMatchObject({ ok: true, value: 1 });
+      } else {
+        await tierSet(r, "paid");
+      }
+      await drainDue(r.stub);
+      expect((await recorder(r.stub)).starts.map(start => start.run).slice(1))
+        .toEqual([waiting.run_id, waiting.run_id]);
+    });
+
   it("reads a waiting run's agent file on the lane without waiting on the pool: refused busy " +
      "at once, the lane holds, and the run starts once the pool frees", async () => {
     const r = await gated();

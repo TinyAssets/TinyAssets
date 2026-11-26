@@ -36,9 +36,16 @@ export type Gate = "outside" | "owner";
  * The object's keeper (`SqlKeeper`, its row `control_kept`), its writes quiet units of the
  * write gate (`quiet`): the record is the platform's, nothing an owner's manifest holds.
  */
-export function objectKeeper(storage: OwnerStorage, quiet: Write): ControlKeeper {
+export function objectKeeper(storage: OwnerStorage, quiet: Write, changed: () => void) {
   const kept = new SqlKeeper(storage.sql);
-  return { kept: () => kept.kept(), keep: (text, at) => quiet(() => kept.keep(text, at)) };
+  // Bindings already hold the write gate. KV refreshes enter it through a quiet unit.
+  const keepInUnit = (text: string | null, at: number) => {
+    if (kept.keep(text, at)) {
+      changed();
+    }
+  };
+  return { kept: () => kept.kept(), keepInUnit,
+           keep: (text: string | null, at: number) => quiet(() => keepInUnit(text, at)) };
 }
 
 /** One script's view of the control record, read at most once a `CONTROL_FRESH_MS`. */

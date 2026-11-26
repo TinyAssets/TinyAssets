@@ -205,7 +205,7 @@
     { "door": "socketsEnd", "caller": "owner", "action": "end its app sockets",
       "handler": "relay", "gate": "units" },
     { "door": "tierSet", "caller": "reserved", "action": "tier", "handler": "admission",
-      "gate": "door" },
+      "gate": "synced" },
     { "door": "tierRead", "caller": "owner", "action": "read its tier", "handler": "admission",
       "gate": "door" },
     { "door": "restoreSource", "caller": "reserved", "action": "admission", "handler": "restore",
