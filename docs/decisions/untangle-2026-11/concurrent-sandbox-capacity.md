@@ -52,3 +52,26 @@ At a limit of three the extra place is genuinely free and the start succeeds.
   the count as well as two overlapping placements. Both run and sign-in
   enter through the same path. Compare the optional move in #5857, which
   can keep serving from its existing sandbox when no replacement fits.
+
+A successful launch reply can also precede a stale provider count. At
+[86cb5033](https://github.com/e2b-dev/infra/blob/86cb50338fe3bd73c10b13270aaa576b48f5d582/packages/api/internal/handlers/sandboxes_list.go)
+the running-total header counts the result of the team list before pagination.
+The [team list](https://github.com/e2b-dev/infra/blob/86cb50338fe3bd73c10b13270aaa576b48f5d582/packages/api/internal/orchestrator/team_list_snapshot.go)
+can reuse an earlier snapshot when the team's lag allowance permits it.
+Zero disables reuse. The deployed setting remains unverified.
+
+- [x] Await the first owner's successful launch before starting the next
+  owner. With the same list response served twice, the second owner also
+  started and consumed the renewal's place. A fresh response made it wait.
+  The full offline sandbox suite passed 172 tests. This regression and the
+  two previously recorded races failed. The first run also saw an extra
+  give-back in another fixture. Teardown now erases the synthetic peer
+  through its normal entry point, and that case passed on the rerun.
+- [x] Eight separate main d662e63e Worker replays used a synthetic provider
+  enforcing the physical limit at both create and resume. At three places
+  the cached count delayed the peer with all four sequential combinations
+  of create and resume. The peer recovered after one contender released.
+  Both fresh-count controls and both four-place controls let it resume.
+- [ ] The shared allocation design on this branch must account for an
+  acknowledged placement that a later listing still omits. Serializing
+  platform starts only until the first launch reply leaves this case open.

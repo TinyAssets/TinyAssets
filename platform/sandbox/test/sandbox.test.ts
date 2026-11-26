@@ -1070,6 +1070,32 @@ describe("the look before the runtime ceiling", () => {
     }
   });
 
+  it.each([false, true])("preserves a renewal after an acknowledged start (cached count: %s)",
+    async reuseRunningList => {
+      await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: 3 });
+      await e2b("/script", { others: 1, signin: { "claude-code": 0 }, state: { live: 1, quiet: true } });
+      const peer = owner();
+      const second = owner();
+      expect(await stub(peer).start(start())).toEqual({ started: true });
+      const id = (await seen()).sandboxes[0]!.id;
+      try {
+        await e2b("/age", { id, s: CEILING - WINDOW + 5 });
+        await e2b("/script", { refuseResume: true });
+        await runDurableObjectAlarm(stub(peer));
+        expect(await reserved()).toBe(1);
+        await e2b("/script", { reuseRunningList, refuseResume: false });
+        expect(await stub(owner()).start(start())).toEqual({ started: true });
+        // The first owner has its launch reply before the next owner asks for capacity.
+        expect(await stub(second).start(start())).toMatchObject({ started: false, code: "sandbox_waiting" });
+        await runDurableObjectAlarm(stub(peer));
+        expect((await seen()).sandboxes.find(box => box.id === id)?.state).toBe("running");
+        expect(await reserved()).toBe(0);
+      } finally {
+        await stub(second).unwait();
+        await stub(peer).erase();
+      }
+    });
+
   it("keeps a renewal's slot when two other owners start together", async () => {
     await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: 3 });
     await e2b("/script", { others: 1, signin: { "claude-code": 0 }, state: { live: 1, quiet: true } });

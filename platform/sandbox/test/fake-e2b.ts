@@ -60,6 +60,8 @@ interface Script {
   pauseMode: "full" | "filesystem";
   /** The list answers with no `X-Total-Running`. */
   noCount: boolean;
+  /** Keep serving the first team running-list snapshot across completed placements. */
+  reuseRunningList: boolean;
   /** How many info calls answer 500 (E2B unreachable) before they answer again. */
   down: number;
   /** One refused platform request. A null path selects the next box's first status read. */
@@ -85,6 +87,7 @@ interface Script {
 
 const fake = {
   sandboxes: new Map<string, FakeSandbox>(),
+  runningList: null as { listed: unknown[]; total: number } | null,
   calls: [] as { method: string; path: string; body: unknown; query: string }[],
   files: new Map<string, string>(),
   /** Each upload under the loader's incoming directory: its bytes' digest. */
@@ -104,6 +107,7 @@ const fake = {
 
 function reset(): void {
   fake.sandboxes.clear();
+  fake.runningList = null;
   fake.calls = [];
   fake.files.clear();
   fake.incoming.clear();
@@ -111,7 +115,7 @@ function reset(): void {
   fake.rings = [];
   fake.held = [];
   fake.script = { signin: {}, state: { live: 1, quiet: false }, others: 0, busy: 0,
-                  full: false, pauseMode: "full", noCount: false, down: 0, apiFault: null,
+                  full: false, pauseMode: "full", noCount: false, reuseRunningList: false, down: 0, apiFault: null,
                   refuseResume: false, broken: null, tampered: null,
                   protocol: (env as unknown as { RUNNER_PROTOCOL: number }).RUNNER_PROTOCOL,
                   room: null, lost: null, hold: null };
@@ -262,8 +266,13 @@ async function api(request: Request, url: URL): Promise<Response> {
       .map(decodeURIComponent);
     const listed = [...fake.sandboxes.values()].filter((box) => states.includes(box.state)
       && (key === "" || box.metadata[key!] === value)).map(info);
-    return Response.json(listed, { headers: fake.script.noCount ? {}
-      : { "X-Total-Running": String(running()) } });
+    let snapshot = { listed, total: running() };
+    if (fake.script.reuseRunningList && states.length === 1 && states[0] === "running" && key === "") {
+      fake.runningList ??= snapshot;
+      snapshot = fake.runningList;
+    }
+    return Response.json(snapshot.listed, { headers: fake.script.noCount ? {}
+      : { "X-Total-Running": String(snapshot.total) } });
   }
   const id = first === "v2" ? third! : second!;
   const action = first === "v2" ? fourth : third;
