@@ -306,6 +306,20 @@ describe("the code door", () => {
     expect([closed.code, closed.message]).toEqual(["unavailable", MAINTENANCE]);
   });
 
+  it.each([false, true])("keeps the refreshed tier after a script (nested tool call: %s)",
+    async (nested) => {
+      const r = await onRig();
+      const original = JSON.stringify({ ...OPEN, tiers: {
+        ...OPEN.tiers, free: { ...OPEN.tiers.free, runs: OPEN.tiers.free.runs + 1 } } });
+      const script = nested
+        ? "await tools.collection_get({ collection: 'board', row_id: 'absent' }); return 1;"
+        : "return 1;";
+      const result = await ran(r, { ...r.bind(null), control: original }, { script });
+      expect(result).toMatchObject({ ok: true, value: 1, calls: { ok: nested ? 1 : 0 } });
+      const [kept] = await r.sql("SELECT text FROM control_kept");
+      expect(JSON.parse(String(kept.text)).tiers.free.runs).toBe(OPEN.tiers.free.runs);
+    });
+
   it("serves the object's gates from its own kept copy while KV can't be read", async () => {
     // The object's keeper as the object composes it: its own SQLite row, written in a quiet
     // unit of a write gate over its storage.

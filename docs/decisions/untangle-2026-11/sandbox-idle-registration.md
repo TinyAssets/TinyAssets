@@ -87,3 +87,24 @@ the next turn for an allocation.
 Keep this experimental send out of the candidate. A successful enqueue does not establish
 that Owner had saved the affected wait. The placement design still needs to retain a
 way to wake that run across a delayed reply and eviction while honoring the peer's turn.
+
+## Readmission when local capacity returns
+
+On `a9f8e30c`, a fresh control record from a binding or a KV read wakes the
+Owner schedule when the stored copy changes. Setting the owner's tier uses
+the schedule that already checks local work. The run is still subject to
+its conversation, its tier and the sandbox line.
+
+Both a larger limit and a free-to-paid assignment failed to restart the run
+on `936dd497` in local workerd. The three Owner suites on the staged tree
+passed all 75 cases, including direct KV refresh, and full Node 24 platform
+types passed. Two independent three-Worker replays used two owners. The
+eligible owner launched first. When its tier was missing, the peer launched
+first and reading the restored record restarted the waiting owner without
+another ring or directory write. In both replays each owner launched once.
+
+- [ ] Keep the fresh control record through repeated checks of the same call.
+  An ordinary code script saw the current free limit of five. Without a tool
+  call it kept five. After a collection read, the owner's kept copy instead
+  showed six from the original binding. The nested-call regression fails on
+  `a9f8e30c`. Check multi-unit doors and forwarded bindings before fixing it.
