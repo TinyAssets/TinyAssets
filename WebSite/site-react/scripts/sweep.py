@@ -7,7 +7,8 @@ and phone widths, and asserts:
 - zero console errors and zero console warnings on every route;
 - the nav, the H1 and the footer render;
 - no horizontal overflow at 390 px or 1280 px;
-- every alias lands on its destination.
+- every alias lands on its destination;
+- Connect copies the advertised server, messages and setup code to the clipboard.
 
 Screenshots go to the directory given by --shots (optional).
 
@@ -68,6 +69,16 @@ def serve() -> _Server:
     return srv
 
 
+def check_copy(page, scope, label: str, expected: str) -> None:
+    page.evaluate("() => navigator.clipboard.writeText('')")
+    button = scope.get_by_role("button", name=label, exact=True).element_handle()
+    button.click()
+    page.wait_for_function("el => el.textContent === 'Copied'", arg=button)
+    copied = page.evaluate("() => navigator.clipboard.readText()")
+    if copied != expected:
+        raise AssertionError(f"{label!r} did not copy the advertised text")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--shots", type=Path)
@@ -101,6 +112,7 @@ def main() -> int:
             browser = pw.chromium.launch()
             for label, width in WIDTHS.items():
                 ctx = browser.new_context(viewport={"width": width, "height": 900})
+                ctx.grant_permissions(["clipboard-read", "clipboard-write"], origin=base)
                 page = ctx.new_page()
                 errs: list[str] = []
                 warns: list[str] = []
@@ -144,8 +156,14 @@ def main() -> int:
                         sections = page.locator("main section[id]")
                         if sections.evaluate_all("(items) => items.map(item => item.id)") != ids:
                             failures.append(f"{label} {route}: app sections differ from the contract")
+                        server_address = origin + identity["mcp"]
+                        check_copy(page, page.locator("main"), "Copy server address", server_address)
                         for app in APPS["apps"]:
                             section = page.locator(f'main section[id="{app["id"]}"]')
+                            for field, button in (("say", "Copy message"), ("code", "Copy setup code")):
+                                if field in app["connect"]:
+                                    text = app["connect"][field].replace("{mcp}", server_address)
+                                    check_copy(page, section, button, text)
                             steps = section.locator("ol > li").all_text_contents()
                             expected = [s.replace("{mcp}", origin + identity["mcp"])
                                         for s in app["connect"]["steps"]]

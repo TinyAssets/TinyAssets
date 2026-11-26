@@ -182,3 +182,19 @@ guide's address list and connection instructions before opening Chromium.
   This combines the site with main's contract only. Playwright stopped
   before navigation, its browser download failed and system Chromium
   could not launch. The earlier mark PR #5685 is already merged.
+
+### Clipboard behavior and offline navigation (Nov 26)
+
+- [x] On 7680cdf4 the ordinary browser sweep checked the Connect text
+  but never clicked the buttons. The maintained sweep now clears the
+  loopback clipboard, clicks each advertised copy action, waits for the
+  button to confirm the write, and reads the clipboard back verbatim.
+  Its expected values come from the configured server and app catalog.
+  A disposable built chunk that appended a suffix still showed "Copied".
+  The new check rejected it on the server-address button. An initial
+  asynchronous polling assertion accepted that mutation and was discarded.
+- [x] Ran the existing standalone sweep using Chromium 158.0.8127.0 from
+  an isolated installation, with external requests blocked. All nine
+  routes passed at both widths and 16 desktop aliases landed. The bundled
+  Playwright executable is still unavailable here. Live route readiness
+  and the coordinated release remain outstanding.
