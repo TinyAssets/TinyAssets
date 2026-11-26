@@ -179,10 +179,8 @@ jobs:
           [[ "$number" =~ ^[1-9][0-9]*$ ]]
           # Older proposals: the watcher's own alone (its prefix, its author), never a pull
           # request someone else labelled.
-          older=$(gh pr list --label okf-watch --base main --state open --limit 1000 \
-            --json number,headRefName,author,isCrossRepository --jq \
-            ".[] | select((.headRefName | startswith(\"$PREFIX\")) and .author.login == \"$me\" and
-             .isCrossRepository == false and .number < $number) | .number")
+          older=$(bash scripts/okf_open_proposals.sh "$me" |
+            jq -r --argjson current "$number" 'select(.number < $current) | .number')
           if [[ -n "$proposal" && -n "$older" ]]; then
             echo "Proposal #${number} already exists. Review older open proposals: $older" >&2
             exit 1
@@ -209,6 +207,15 @@ jobs:
             exit 1
           fi
 
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            /.github/CODEOWNERS
+            /scripts/okf_open_proposals.sh
+          sparse-checkout-cone-mode: false
+
+      # The founder is every path's owner (`*`); a CODEOWNERS that names none fails loudly.
       - name: Find the watcher's proposals past their cooldown
         id: due
         env:
@@ -220,9 +227,8 @@ jobs:
           me=$(gh api user --jq .login)
           ready=""
           founder=""
-          proposals=$(gh pr list --label okf-watch --state open \
-                     --json number,createdAt,isDraft,labels,headRefName,author \
-                     --jq ".[] | select(.isDraft and (.headRefName | startswith(\"${PREFIX}\")) and .author.login == \"${me}\") | [.number, .createdAt, ([.labels[].name] | join(\",\"))] | @tsv")
+          proposals=$(bash scripts/okf_open_proposals.sh "$me" |
+            jq -r 'select(.draft) | [.number, .created_at, ([.labels[].name] | join(","))] | @tsv')
           while IFS=$'\t' read -r number created labels; do
             [ -n "$number" ] || continue
             if [ "$(date -u -d "$created" +%s)" -gt "$cutoff" ]; then
@@ -255,14 +261,6 @@ jobs:
             gh pr comment "$number" --body "The cooldown is over: ready for review. Read the spec diff, not the version line; the checks are in the description. It merges only once its review check passes: an APPROVE PR review on its head."
           done
 
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        if: steps.due.outputs.founder != ''
-        with:
-          persist-credentials: false
-          sparse-checkout: .github/CODEOWNERS
-          sparse-checkout-cone-mode: false
-
-      # The founder is every path's owner (`*`); a CODEOWNERS that names none fails loudly.
       - name: Read the founder's login
         id: founder
         if: steps.due.outputs.founder != ''

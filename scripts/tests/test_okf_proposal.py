@@ -23,15 +23,12 @@ git() {
 gh() {
   case "$1 $2" in
     "api user") echo watcher ;;
-    "api repos/example/repo/branches/"*) [[ "$REF" != absent ]] ;;
+    "api --paginate") list_pages "$3" ;;
     "api repos/example/repo/git/commits/abc") echo "$REF" ;;
     "pr list")
       [[ "$FAIL" != lookup ]] || return 71
-      if [[ "$*" == *"--head "* ]]; then
-        jq -r "${!#}" <<< "$HISTORY"
-      else
-        jq -r "${!#}" <<< "$OPEN"
-      fi ;;
+      [[ "$*" == *"--head "* ]] || return 93
+      jq -r "${!#}" <<< "$HISTORY" ;;
     "label create") return 0 ;;
     "pr create") echo create >> "$LOG"; [[ "$FAIL" != create ]] || return 72
       echo "https://example.invalid/pull/12" ;;
@@ -47,6 +44,25 @@ def proposal(number, state="OPEN", author="watcher", fork=False):
             "headRefName": BRANCH, "isCrossRepository": fork}
 
 
+def open_pr(number, *, repository="example/repo", author="watcher", labels=(), draft=True):
+    return {"number": number, "user": {"login": author}, "draft": draft,
+            "head": {"ref": f"okf-watch/{number}", "repo": {"full_name": repository}},
+            "labels": [{"name": label} for label in ("okf-watch", *labels)],
+            "created_at": "2020-01-01T00:00:00Z"}
+
+
+PAGES = r"""
+list_pages() {
+  [[ "$1" == 'repos/example/repo/pulls?state=open&base=main&per_page=100' ]] || return 93
+  [[ "$LISTING" != failed ]] || return 71
+  jq -c '.[:2]' <<< "$OPEN"
+  [[ "$LISTING" != interrupted ]] || return 71
+  jq -c '.[2:]' <<< "$OPEN"
+}
+export -f list_pages gh
+"""
+
+
 @pytest.mark.parametrize("ref,history,fail,rc,actions", [
     ("absent", [], "", 0, ["push", "create", "close 9"]),
     ("tree parent", [], "", 0, ["create", "close 9"]),
@@ -60,22 +76,24 @@ def proposal(number, state="OPEN", author="watcher", fork=False):
     ("tree parent", [proposal(12, author="another")], "", 0, []),
     ("tree parent", [proposal(12, fork=True)], "", 0, ["create", "close 9"]),
     ("absent", [], "lookup", 71, []),
+    ("absent", [], "inventory", 71, ["push", "create"]),
 ])
 def test_proposal(tmp_path, ref, history, fail, rc, actions):
     steps = yaml.safe_load(WORKFLOW.read_text())["jobs"]["watch"]["steps"]
     step = next(s["run"] for s in steps if s.get("name") == "Push and open the draft")
     log = tmp_path / "actions"
     log.touch()
-    opened = [proposal(9), proposal(10, author="another"), proposal(11, fork=True),
-              proposal(12), proposal(13)]
+    opened = [open_pr(9), open_pr(10, author="another"), open_pr(11, repository="other/repo"),
+              open_pr(12), open_pr(13)]
     if fail == "clean":
-        opened = [proposal(12)]
+        opened = [open_pr(12)]
     env = {"PATH": os.defpath, "LOG": str(log), "REF": ref, "FAIL": fail,
+           "LISTING": "interrupted" if fail == "inventory" else "complete",
            "HISTORY": json.dumps(history), "OPEN": json.dumps(opened),
            "GH_REPO": "example/repo", "GH_TOKEN": "offline", "BRANCH": BRANCH,
            "WIDENS": "false", "PREFIX": "okf-watch/", "TITLE": "test",
            "RUNNER_TEMP": str(tmp_path)}
-    run = subprocess.run(["bash", "-c", MOCK + step], env=env, capture_output=True, text=True)
+    run = subprocess.run(["bash", "-c", MOCK + PAGES + step], cwd=REPO, env=env, capture_output=True, text=True)
     assert run.returncode == rc, run.stderr
     assert log.read_text().splitlines() == actions
 
@@ -85,25 +103,17 @@ def test_cooldown_observes_complete_listing(tmp_path, listing):
     steps = yaml.safe_load(WORKFLOW.read_text())["jobs"]["cooldown"]["steps"]
     step = next(s["run"] for s in steps if s.get("id") == "due")
     output = tmp_path / "result"
-    records = [
-        {**proposal(11), "isDraft": True, "createdAt": "2020-01-01T00:00:00Z",
-         "labels": []},
-        {**proposal(12), "isDraft": True, "createdAt": "2020-01-01T00:00:00Z",
-         "labels": [{"name": "needs-founder"}]},
-    ]
-    env = {"PATH": os.defpath, "RECORDS": json.dumps(records), "LISTING": listing,
+    unrelated = open_pr(20)
+    unrelated["labels"] = []
+    records = [open_pr(11), open_pr(14, repository="other/repo"),
+               open_pr(12, labels=["needs-founder"]), open_pr(15, author="another"),
+               open_pr(16, labels=["needs-founder", "founder-asked"]), open_pr(18, draft=False),
+               open_pr(19, repository=None), unrelated]
+    env = {"PATH": os.defpath, "OPEN": json.dumps(records), "LISTING": listing,
            "GH_REPO": "example/repo", "PREFIX": "okf-watch/", "COOLDOWN_DAYS": "7",
            "GITHUB_OUTPUT": str(output)}
-    command = r"""
-gh() {
-  if [[ "$1 $2" == "api user" ]]; then echo watcher; return; fi
-  [[ "$1 $2" == 'pr list' ]] || return 93
-  [[ "$LISTING" != failed ]] || return 71
-  jq -r "${!#}" <<< "$RECORDS"
-  [[ "$LISTING" != interrupted ]] || return 71
-}
-"""
-    run = subprocess.run(["bash", "-c", command + step], env=env, capture_output=True, text=True)
+    run = subprocess.run(["bash", "-c", MOCK + PAGES + step], cwd=REPO, env=env,
+                         capture_output=True, text=True)
     if listing == "complete":
         assert run.returncode == 0, run.stderr
         assert output.read_text().splitlines() == ["ready=11", "founder=12"]
