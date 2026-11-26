@@ -165,6 +165,15 @@ function start(over: Partial<SandboxStart> = {}): SandboxStart {
   };
 }
 
+const SI = `si_${"5".repeat(32)}`;
+const ROUTE = `v1.k1.${"s".repeat(16)}.${"s".repeat(43)}`;
+function signin(over: Record<string, unknown> = {}) {
+  return { id: SI, engine: "codex", mode: "in" as const, authority: "owner",
+           lease: LEASE, tokens: start().tokens, network: NETWORK as never,
+           hosts: ["auth.openai.com", "api.openai.com"], route: ROUTE, urls: signinUrls(SI),
+           ...over };
+}
+
 /** Each owner a test made, so it leaves the line after the test. */
 const made: string[] = [];
 const owner = () => {
@@ -545,14 +554,36 @@ describe("a start", () => {
 describe("interrupted replacement of an idle sandbox", () => {
   const next = () => start({ run: `run_${hex(32, "3")}`, lease: { lease_id: hex(32, "f"), epoch: 2 } });
 
-  async function idleFromPreviousTemplate(who: string): Promise<string> {
+  async function runningFromPreviousTemplate(who: string): Promise<string> {
     await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 0, quiet: true } });
     await stub(who).start(start());
-    await stub(who).release({ lease_id: LEASE.lease_id });
     const [old] = (await seen()).sandboxes;
     await e2b("/metadata", { id: old!.id, metadata: { ...old!.metadata, ta_template: "previous" } });
     return old!.id;
   }
+
+  async function idleFromPreviousTemplate(who: string): Promise<string> {
+    const old = await runningFromPreviousTemplate(who);
+    await stub(who).release({ lease_id: LEASE.lease_id });
+    return old;
+  }
+
+  it.each(["run", "sign-in"])("serves a %s from the running sandbox during a move count outage",
+    async kind => {
+      const who = owner();
+      const old = await runningFromPreviousTemplate(who);
+      const request = next();
+      await e2b("/script", { apiFault: { method: "GET", path: "/v2/sandboxes", status: 502 } });
+      const result = kind === "run"
+        ? await stub(who).start(request)
+        : await stub(who).signin(signin({ lease: request.lease }) as never);
+      expect(result).toEqual({ started: true });
+      const state = await seen();
+      const id = kind === "run" ? request.run : SI;
+      expect(state.commands.filter(command => command.argv[2] === id).at(-1)?.sandbox).toBe(old);
+      expect(state.calls.filter(call => call.method === "POST" && call.path === "/v2/sandboxes"))
+        .toHaveLength(1);
+    });
 
   it.each(["broken", "lost"])("starts on the existing sandbox if the carry-out reply is %s", async fault => {
     const who = owner();
@@ -1689,15 +1720,6 @@ describe("the runner, by digest", () => {
 });
 
 describe("a sign-in", () => {
-  const SI = `si_${"5".repeat(32)}`;
-  const ROUTE = `v1.k1.${"s".repeat(16)}.${"s".repeat(43)}`;
-  function signin(over: Record<string, unknown> = {}) {
-    return { id: SI, engine: "codex", mode: "in" as const, authority: "owner",
-             lease: LEASE, tokens: start().tokens, network: NETWORK as never,
-             hosts: ["auth.openai.com", "api.openai.com"], route: ROUTE, urls: signinUrls(SI),
-             ...over };
-  }
-
   it("starts the record's login in the authority's sandbox, the hosts it hands let out",
      async () => {
     const who = owner();
