@@ -22,17 +22,17 @@ idle sandbox and the existing fake vendor. All three passed on main with the
 tests added. The identical cases failed on PR code aa40cc0a. Both trees passed
 full platform TypeScript.
 
-- [ ] A broken or lost carry-out reply refuses the pending start before the
+- [ ] On #5857, a broken or lost carry-out reply refuses the pending start before the
   old sandbox launches it. The PR's existing failed carry-in control still
   serves the start on the old sandbox.
-- [ ] When the vendor deletes the old sandbox and its acknowledgement is lost,
+- [ ] On #5857, when the vendor deletes the old sandbox and its acknowledgement is lost,
   the error path also deletes the replacement. An independent diagnostic
   observed two deletes, zero surviving sandboxes and a refused start.
   Separate an uncertain deletion from a failed copy. Record which sandbox
   holds the verified copy across retries and Worker restarts before any
   subsequent deletion. Preserve a recoverable copy when either acknowledgement
   is missing.
-- [ ] Passing these control tests also requires preserving each pending file
+- [ ] On #5857, passing these control tests also requires preserving each pending file
   and its original version. [The transfer can omit equal-length edits and
   executable-only changes](https://github.com/TinyAssets/TinyAssets/commit/acabc5e8ca13906bce6ec9725821a324eba1e829).
 - [x] The next control returns the same 502 for a delete request lost before
@@ -43,7 +43,7 @@ full platform TypeScript.
   The full Worker/guard suite with four new tests passed 167 on main; the
   PR passed 166 and failed three. Both platform typechecks passed serially
   after overlapping attempts were killed.
-- [ ] Before promotion, a transfer failure should leave the old sandbox
+- [ ] On #5857, before promotion, a transfer failure should leave the old sandbox
   available. After verifying a complete transfer, record the destination
   as authoritative and the original as pending cleanup before deleting it.
   The existing vendor deletion accepts both 204 and 404. Design and verify
@@ -51,3 +51,6 @@ full platform TypeScript.
   of two IDs alone does not establish which copy was verified.
 
 - [x] Check which sandbox actually receives a successful retried launch after a Worker eviction. The local provider retains an unrelated paused sandbox with the same owner and template metadata. Each check ties the launch to its run ID and requires either the original sandbox or the one that received its carry. In the no-fault and lost-before-delete controls the PR preserved the right destination. With the delete acknowledgement lost, it reported a successful start on an empty sandbox. The full sandbox Worker and guard suite passed 170 tests on main `d662e63e` with the branch regressions. With the identical regressions on #5857 at `aa40cc0a`, 168 passed and four failed, including this new routing assertion. These checks use local Workerd and a synthetic provider.
+
+- [x] Full platform TypeScript passed on both the standalone `511c9391` test tree and its rehearsal on #5857. Keeping the verified destination alive on an uncertain delete made both earlier copy-retention tests pass. The stronger routing test still failed after restart: four of five focused cases passed. Promoting the destination before the delete and ignoring the delete error passed all five, but left the original running when the delete request never arrived.
+- [x] Test the effect on another owner using the real local Worker with a two-sandbox limit. After a successful delete or a lost acknowledgement, the retry used the copied workspace and the peer could start. After the lost request, the retry used the copy but the peer had to wait. In all three cases erasure cleaned the first owner's remaining sandboxes and preserved any running peer. These were three passing diagnostic cases on a disposable early-promotion candidate. A complete repair on #5857 still needs to finish retiring the old sandbox after restart, before erasure. The existing `owed` table also releases slots for running, resumed sandboxes, so its rows alone cannot authorize vendor deletion.
