@@ -37,7 +37,8 @@ import {
 } from "./runs-support";
 import { RANKING } from "../../contract/src/paths";
 import type { ActionRule } from "../../contract/src/policy-document";
-import type { Tiers } from "../../contract/src/control";
+import { RUNS_CEILING, type Tiers } from "../../contract/src/control";
+import { writeControl } from "../../ci/fixtures";
 import { ADMITTED_FILE_BYTES, ownerSlots } from "../src/holds";
 import { secretOf, until } from "../../ci/workerd";
 import { drainDue, failure, gateFor, laneAt, spaceOf } from "./support";
@@ -387,6 +388,44 @@ describe("admission", () => {
     expect((await failure(() => r.stub.agentSubmit(
       r.bind({ control: openRecord({ ...TIERS, free: { runs: 1001, storage_bytes: 1 } }) }),
       { message: "x", client_send_id: "e-2" }))).code).toBe("invalid");
+  });
+
+  it("queues a busy conversation at the live ceiling and starts its input once a place opens",
+     { tags: ["large"] }, async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const r = await gated();
+    const control = openRecord({ ...TIERS, free: { ...TIERS.free, runs: RUNS_CEILING } });
+    await writeControl(env.CONTROL, JSON.parse(control));
+    const binding = r.bind({ control });
+    await defineAgent(r.stub, binding, "main", SIGNED_IN);
+    await scripted(r.stub, { answer: { started: true } });
+    const first = await r.stub.agentSubmit(binding, { message: "first", client_send_id: "first" });
+    for (let i = 1; i < RUNS_CEILING; i++) {
+      await r.stub.agentSubmit(binding, { message: "fill", client_send_id: `fill-${i}` });
+    }
+    expect(await r.sql("SELECT COUNT(*) AS n FROM runs WHERE state = 'running'"))
+      .toEqual([{ n: RUNS_CEILING }]);
+    const another = await failure(() => r.stub.agentSubmit(binding, {
+      message: "another", client_send_id: "another",
+    }));
+    expect(another.code).toBe("tier_runs");
+
+    const input = { message: "next", client_send_id: "next", conversation_id: first.conversation_id };
+    const next = await r.stub.agentSubmit(binding, input);
+    expect(next.state).toBe("waiting");
+    expect((await r.stub.agentSubmit(binding, input)).run_id).toBe(next.run_id);
+    expect(await r.sql("SELECT prompt FROM run_inputs WHERE run = ?", next.run_id))
+      .toEqual([{ prompt: "next" }]);
+    expect(await r.sql("SELECT run FROM run_grants WHERE run = ?", next.run_id)).toEqual([]);
+
+    await r.stub.runEvents(runnerBinding(r, await startOf(r.stub, first.run_id)), {
+      frames: [], end: { exit_code: 0 },
+    });
+    await drainDue(r.stub);
+    const starts = (await recorder(r.stub)).starts.filter((start) => start.run === next.run_id);
+    expect(starts.map((start) => start.prompt)).toEqual(["next"]);
+    expect(await r.sql("SELECT COUNT(*) AS n FROM runs WHERE state = 'running'"))
+      .toEqual([{ n: RUNS_CEILING }]);
   });
 
   it("refuses a run when the control record held no tier numbers", async () => {
