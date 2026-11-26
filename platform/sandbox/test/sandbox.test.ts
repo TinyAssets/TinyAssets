@@ -609,6 +609,34 @@ describe("the platform's line", () => {
     await rung(who);
   });
 
+  it("lets an earlier run join its owner's new sandbox while the next owner waits for a slot",
+     async () => {
+    await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: 1 });
+    await e2b("/script", { full: true, signin: { "claude-code": 0 } });
+    const first = owner();
+    const next = owner();
+    const waiting = { started: false, code: "sandbox_waiting" };
+    expect(await stub(first).start(start())).toEqual(waiting);
+    expect(await stub(next).start(start())).toEqual(waiting);
+
+    await e2b("/script", { full: false });
+    const run = `run_${hex(32, "3")}`;
+    expect(await stub(first).start(start({
+      run, conversation: `cv_${hex(32, "4")}`, urls: runUrls(run, hex(64, "e")),
+    }))).toEqual({ started: true });
+    await rung(next);
+    expect(await stub(next).start(start())).toEqual(waiting);
+    // Retry the earlier run as a join. It needs no new slot and leaves the next owner's turn intact.
+    expect(await stub(first).start(start({ tokens: null, network: null })))
+      .toEqual({ started: true });
+    const state = await seen();
+    expect(state.sandboxes).toHaveLength(1);
+    expect(state.commands.filter((command) => command.argv[1] === "launch")
+      .map((command) => [command.sandbox, command.argv[2]]))
+      .toEqual([[state.sandboxes[0]!.id, run], [state.sandboxes[0]!.id, RUN]]);
+    expect([await turn(next), await turn(first)]).toEqual([true, false]);
+  });
+
   it("starts, its sandbox prepared, though the line refuses its leave after the create",
      async () => {
     await e2b("/script", { full: true, signin: { "claude-code": 0 } });
