@@ -568,6 +568,36 @@ describe("interrupted replacement of an idle sandbox", () => {
     return old;
   }
 
+  it.each([false, true])("keeps a renewing peer's slot during a template move (count absent: %s)",
+    async noCount => {
+      await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: 2 });
+      const who = owner();
+      const old = await runningFromPreviousTemplate(who);
+      const peer = owner();
+      await e2b("/script", { state: { live: 1, quiet: true } });
+      expect(await stub(peer).start(start())).toEqual({ started: true });
+      const peerId = (await seen()).sandboxes.find(box => box.id !== old)!.id;
+      try {
+        await e2b("/age", { id: peerId, s: CEILING - WINDOW + 5 });
+        await e2b("/script", { refuseResume: true });
+        await runDurableObjectAlarm(stub(peer));
+        expect((await seen()).sandboxes.find(box => box.id === peerId)?.state).toBe("paused");
+        expect(await reserved()).toBe(1);
+
+        await e2b("/script", { noCount, refuseResume: false, state: { live: 0, quiet: true } });
+        const request = next();
+        expect(await stub(who).start(request)).toEqual({ started: true });
+        const state = await seen();
+        expect(state.commands.filter(command => command.argv[2] === request.run).at(-1)?.sandbox)
+          .toBe(old);
+        expect(state.calls.filter(call => call.method === "POST" && call.path === "/v2/sandboxes"))
+          .toHaveLength(2);
+        expect(await reserved()).toBe(1);
+      } finally {
+        await slots().unreserve(peerId);
+      }
+    });
+
   it.each(["run", "sign-in"])("serves a %s from the running sandbox during a move count outage",
     async kind => {
       const who = owner();
