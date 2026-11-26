@@ -156,3 +156,8 @@ it by name (`formatStep`), so a rollback meets only that, and takes no forward e
   purged owner history. The receiving sandbox restored old bytes and plain
   mode in the two failing transfer cases. Keep the move held while that
   dependency is open. [Transfer results](https://github.com/TinyAssets/TinyAssets/commit/acabc5e8ca13906bce6ec9725821a324eba1e829).
+- [x] On dae00806 together with aa40cc0a the full Node 22 platform typecheck
+  also passed. The combined sandbox Worker and guard suite passed 165
+  tests. An earlier run passed 150 cases before its workflow guard stopped
+  because the sparse checkout lacked the tracked workflow. Restoring the
+  workflow from the same commit allowed all eight test files to run.
