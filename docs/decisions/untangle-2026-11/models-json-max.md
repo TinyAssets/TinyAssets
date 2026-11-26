@@ -84,8 +84,8 @@ makes it, naming its API):
   of the 10 GB, 351.7 MB under half). Its reason is the owner's, so it
   is checked where a connection's records change: a commit past it is refused, a read past it
   fails and keeps the records as read.
-- **The commit's records, exported** (`connections.models`): only seconds of use (until the
-  lane's first read) and none after a restore, which marks every connection failed and keeps
+- **The commit's records, exported** (`connections.models`): used until the lane's first
+  successful read and none after a restore, which marks every connection failed and keeps
   no blob (`secretsLost`). They go to the same rows; the column stays, as its rebuild is an
   exported table's, whose generations would then need a form to come forward (`FORWARD`):
   left below.
@@ -103,8 +103,10 @@ makes it, naming its API):
    34's was not.
 2. **The commit keeps its records as those rows**, score null, and no longer writes
    `connections.models`. The lane's reads replace them. `modelsOf` reads the rows for every
-   reader; a connection committed before migration 35 has none until its first read, seconds
-   after the deploy, and is read by the records its row kept, as 34's own deploy did.
+   reader; a connection committed before migration 35 has none until a refresh succeeds. During
+   that interval it exposes its original setup records. A failed or over-limit
+   read can prolong the interval by hours, including when the last successful
+   listing on 34 differed. See [the upgrade replay](model-listing-after-upgrade.md).
 3. **Three bounds, each its own reason:** a record's bytes (`MODEL_RECORD_MAX`: three times the
    largest built-in record), a connection's count (`maxModels`: twice the largest built-in
    catalog on all its APIs), the owner's count (`maxModelsKept`: its storage). The test that

@@ -25,3 +25,13 @@ changed, and the first read after upgrade fails.
   listing and one whose listing was discarded can have the same stored
   state. Decide what the picker may offer until a fresh listing succeeds.
   No production owner history was read and there is no affected-owner count.
+
+Two additional Workerd replays ran the original 3143e07d and d662e63e
+Owner constructors on the same stored object across eviction. Its setup
+catalog was A/B/C, and its last successful listing was B/C with scores
+11 and 92. On 34 the picker and an actual submitted run chose C. After
+upgrade both chose A, including after two unsuccessful refreshes. The
+sandbox received A. A healthy read restored the scores and the next run
+launched C. The tests exercised both a returned malformed listing and a
+gateway failure using local services. Full Node 24 platform types passed
+on the staged regression 8579c6a8.
