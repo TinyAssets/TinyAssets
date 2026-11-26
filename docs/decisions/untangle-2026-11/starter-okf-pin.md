@@ -1,0 +1,7 @@
+# Check the OKF reference against its reviewed pin
+
+Main at `d662e63e` approves the upstream revision in the starter manifest. The watcher moves that pin in its reviewable draft and the starter generator copies it into the bundle. A guard separately fixed both the revision and spec blob to the previous release. A valid update therefore failed before testing the next release's actual text.
+
+- [x] Replay the frozen spec and README from #5692 on current main. Both original blob IDs matched. The actual watcher projected starter 11 from 10. The starter and plugin generators preserved all 16 paths and changed one reference. Both plugin versions were 1.0.11. The original ordinary starter suite passed ten and failed the obsolete pin assertion. One size case was outside that run.
+- [x] Compare the bundled pin to the source manifest. Keep the checks on repository identity, commit shape, the Git blob ID of the actual text, the provenance line, license, supported spec version and hidden characters. All eleven ordinary checks passed on both current version 10 and the projected version 11. Four separate changes to the generated data each failed the ordinary provenance test: differing manifest metadata, damaged reference text, lost provenance, and a malformed commit. Restoring the original data passed.
+- [ ] Coordinator reviews the proposed upstream change and release ordering. This branch changes the guard only. The version 11 package was a local rehearsal.

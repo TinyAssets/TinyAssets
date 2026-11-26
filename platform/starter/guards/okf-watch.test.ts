@@ -32,10 +32,11 @@ const bundled = JSON.parse(readFileSync(join(STARTER, "starter.json"), "utf8")) 
 describe("the starter's OKF spec", () => {
   it("vendors the OKF spec byte for byte at the pinned commit, its provenance first", () => {
     const vendored = bundled.files.find((file) => file.path === bundled.okf.vendored)!.text;
-    expect(bundled.okf).toMatchObject({
-      repository: "GoogleCloudPlatform/open-knowledge-format",
-      commit: "ad30107c31c06aec8a7d5636e0d1058118604e6f",
-      spec_blob: "c06e3eede0c910d0ecf12524c34204156f8795ac" });
+    const manifest = JSON.parse(readFileSync(join(STARTER, "manifest.json"), "utf8")) as
+      Pick<Bundled, "okf">;
+    expect(bundled.okf).toEqual(manifest.okf);
+    expect(bundled.okf.repository).toBe("GoogleCloudPlatform/open-knowledge-format");
+    expect(bundled.okf.commit).toMatch(/^[0-9a-f]{40}$/);
     expect(blobId(vendoredSpec(vendored))).toBe(bundled.okf.spec_blob);
     const first = vendored.slice(0, vendored.indexOf("\n"));
     expect(first).toContain(bundled.okf.commit);
