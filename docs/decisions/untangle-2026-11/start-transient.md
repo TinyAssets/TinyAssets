@@ -147,3 +147,26 @@ on main, template move `aa40cc0a`, move retention `2763f6eb`, capacity `1c3aed85
   Keep FIFO, full re-admission, and the existing event-driven wait. Include simultaneous
   starts, a cancelled or lost start, idle-owner cleanup and erasure. A local pending flag
   alone cannot establish the disposition of starts interrupted across an eviction.
+
+Three independent local Workerd comparisons used main `d662e63e`'s actual Owner,
+SandboxControl and SQLite SandboxSlots together. The provider was synthetic. The test
+delivered the recorded platform queue message to Owner's normal ring door. With the
+shared control record carrying both Owner's tiers and sign-ins and Sandbox's ceilings:
+
+| Order observed | Owner and line after capacity returned |
+| --- | --- |
+| The start registered, its wait response was held, then the ring reached Owner | Owner counted zero waiting and removed its place. The late response left the run with `sandbox_wait = 1`. Another free sent no ring. Zero launches. |
+| The wait response reached Owner before the ring | Owner counted one waiting. Full re-admission started the same run once. The run was running and the line was empty. |
+| Idle Owner sent a leave, the leave was held before Sandbox, then a new start registered and its wait response reached Owner | The delayed leave removed the new registration. The subsequent free sent zero rings and the run remained waiting. |
+
+All three observations passed in the corrected rehearsal. The first harness invocation
+stopped at the ordinary suite's timeout-class check. The initial positive control then
+used a sandbox-only record: the ring cleared the wait flag, but Owner lacked its admission
+settings. Those attempts do not count as evidence of successful re-admission.
+
+- [ ] A repair must preserve a start whose wait reply is still in flight **and** prevent an
+  old cleanup from removing a later wait. Re-reading Owner's rows before it sends the leave
+  cannot cover a leave that already crossed that decision. Include a run whose start ends
+  in cancellation, an owner with several starts, and a restart between registration and
+  receipt. Preserve prompt/input, single launch, other owners' FIFO places, and removal of
+  truly idle or erased owners. The queue alarm change cannot wake an owner already removed.
