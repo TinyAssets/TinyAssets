@@ -408,3 +408,28 @@ for the row comparison and lets the ordinary lost-run settlement record
 The checked-in regression from `c66d25e1` now checks those outcomes as well
 as completion. The focused Worker check and full platform typecheck passed
 during development. Replay of an earlier waiting row remains a separate issue.
+
+### Queued snapshots, undo and the live-run ceiling
+
+On `74d7ff92`, the ordinary Owner also produced a generation while its start
+reply was held. Both queued and running snapshots restored and settled as
+unknown after admission. Two local Owner/Files/Sandbox/Slots checks followed
+a wait through a successful start, pin, wipe and restore. Undo kept one launch
+and settled the running snapshot unknown. The earlier pinned generation still
+held a waiting row and launched the same run a second time on the next ring.
+
+A different lawful generation still fails to load. With the tier set to the
+contract's 1,000-run ceiling, an empty Owner accepted 999 starts. Its next
+submission waited for a sandbox and another input waited for its conversation.
+A ring started the older wait. The generation held 1,000 running rows followed
+by one waiting row. Loading it stopped at that last row: the frozen
+`runs_live_full` trigger counts the already-live rows on *every* insert.
+The 999-live-plus-one-wait control reached done. The size regression expects
+the restore to finish with the later input intact and is open.
+
+Compare normal admission and restore before changing this guard. The tier
+bounds simultaneous runs. Transitions from waiting can increase that count,
+and queued-to-running transitions keep it constant. Waiting inputs already
+have their own count and byte bounds. Any migration must keep frozen history
+and preserve previously restorable generations. The current forwarding guard
+flags a predicate change naming an exported table even if it rewrites no rows.

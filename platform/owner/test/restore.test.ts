@@ -11,11 +11,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { sqlIn } from "../../ci/workerd";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
+import { RUNS_CEILING } from "../../contract/src/control";
 import { migrate } from "../../contract/src/migrate";
 import { sha256Hex } from "../../contract/src/digest";
 import { randomHex } from "../../contract/src/ids";
 import { GET_READS, objectPrefix } from "../../contract/src/files";
-import { HELD_WAIT_MS } from "../../ci/fixtures";
+import { HELD_WAIT_MS, writeControl } from "../../ci/fixtures";
 import { DELETE_BATCH, INLINE_BYTES, LOG_BYTES, PLACE_BYTES } from "../../contract/src/limits";
 import { eraseWords, type RestoreAnswer, type RestoreHold } from "../../contract/src/owner";
 import { MANIFEST_UNRESTORABLE, RESTORABLE_LIFE_S } from "../src/backup";
@@ -35,7 +36,7 @@ import {
   standing, writtenAt,
 } from "./generation-support";
 import { MUSE, registerOn, signedIn, dm } from "./ledger-support";
-import { defineAgent, scripted } from "./runs-support";
+import { defineAgent, scripted, whileOut } from "./runs-support";
 import {
   drainDue, EVERY_SIGNIN_RECORD, failure, gateFor, laneAt, laneJobs, OPEN_RECORD, ownerObject, storesOn,
 } from "./support";
@@ -242,17 +243,23 @@ async function source(): Promise<{ o: Owner; gen: Generated; ns: string; rows: s
 }
 
 describe("a restore", () => {
-  it("loads a generation saved while a sandbox run was running", async () => {
+  it.each(["queued", "running"])("loads a generation saved while a sandbox run was %s", async (state) => {
     const o = await owner();
     const binding = o.bind(null, { control: EVERY_SIGNIN_RECORD });
     await defineAgent(o.stub, binding, "main", {
       engine: "claude-code", credential: "vendor_login_in_sandbox", scopes: [],
     });
     await scripted(o.stub, { answer: { started: true } });
-    const run = await o.stub.agentSubmit(binding, { message: "hello", client_send_id: "active" });
+    const submit = () => o.stub.agentSubmit(binding, { message: "hello", client_send_id: "active" });
+    let queued: Generated | undefined;
+    const run = state === "running" ? await submit() : await whileOut(o.name, "start", submit,
+      async () => {
+        expect(await sqlIn(o.stub, "SELECT state FROM runs")).toEqual([{ state: "queued" }]);
+        queued = await generate(o.stub);
+      });
     expect(run.state).toBe("running");
     const [prior] = await sqlIn(o.stub, "SELECT lease_id FROM runs WHERE id = ?", run.run_id);
-    const gen = await generate(o.stub);
+    const gen = queued ?? await generate(o.stub);
     const [space] = await sqlIn(o.stub, "SELECT ns FROM file_space");
     const stub = await lose(o);
     await stub.restoreBegin(platform(o.name), { namespace: space!.ns as string, gen: gen.gen });
@@ -267,6 +274,47 @@ describe("a restore", () => {
     expect(await sqlIn(stub, "SELECT state, code FROM runs WHERE id = ?", run.run_id))
       .toEqual([{ state: "unknown", code: "lost" }]);
     expect(await sqlIn(stub, "SELECT run FROM run_inputs WHERE run = ?", run.run_id)).toEqual([]);
+  });
+
+  it("restores a later waiting input when the earlier runs fill the live ceiling",
+     { tags: ["large"] }, async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const o = await owner();
+    const record = JSON.parse(EVERY_SIGNIN_RECORD);
+    record.tiers.free.runs = RUNS_CEILING;
+    await writeControl(env.CONTROL, record);
+    const binding = o.bind(null, { control: JSON.stringify(record) });
+    await defineAgent(o.stub, binding, "main", {
+      engine: "claude-code", credential: "vendor_login_in_sandbox", scopes: [],
+    });
+    await scripted(o.stub, { answer: { started: true } });
+    const first = await o.stub.agentSubmit(binding, { message: "first", client_send_id: "first" });
+    expect(first.state).toBe("running");
+    for (let i = 2; i < RUNS_CEILING; i++) {
+      expect((await o.stub.agentSubmit(binding, { message: "fill", client_send_id: `run-${i}` })).state)
+        .toBe("running");
+    }
+    await scripted(o.stub, { answer: { started: false, code: "sandbox_waiting" } });
+    const older = await o.stub.agentSubmit(binding, { message: "older", client_send_id: "older" });
+    const later = await o.stub.agentSubmit(binding, {
+      message: "later", client_send_id: "later", conversation_id: first.conversation_id,
+    });
+    expect([older.state, older.code, later.state]).toEqual(["waiting", "sandbox_waiting", "waiting"]);
+    await scripted(o.stub, { answer: { started: true } });
+    expect(await o.stub.sandboxRung()).toEqual({ waiting: 1 });
+    await drainDue(o.stub);
+    expect(await sqlIn(o.stub, "SELECT state, COUNT(*) AS n, MAX(seq) AS last FROM runs " +
+      "GROUP BY state ORDER BY state")).toEqual([
+      { state: "running", n: RUNS_CEILING, last: RUNS_CEILING },
+      { state: "waiting", n: 1, last: RUNS_CEILING + 1 },
+    ]);
+    const gen = await generate(o.stub);
+    const [space] = await sqlIn(o.stub, "SELECT ns FROM file_space");
+    const stub = await lose(o);
+    await stub.restoreBegin(platform(o.name), { namespace: space!.ns as string, gen: gen.gen });
+    expect((await stepped(stub, o.name)).at(-1)).toMatchObject({ step: "done" });
+    expect(await sqlIn(stub, "SELECT prompt FROM run_inputs WHERE run = ?", later.run_id))
+      .toEqual([{ prompt: "later" }]);
   });
 
   it("reads a production-shaped owner back into its own object, every table and counter as " +
