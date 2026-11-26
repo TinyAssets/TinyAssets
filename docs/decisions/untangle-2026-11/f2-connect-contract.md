@@ -222,3 +222,12 @@ guide's address list and connection instructions before opening Chromium.
   The offline static server returned 501 to the POST. Verify the intended
   disposition with the site and cutover owners while retaining the React
   fallback and existing privacy controls. Live behavior was not exercised.
+- [x] At aa322d23 the unchanged standalone and combined exports passed the
+  stronger browser check. On the combined export, independent Chromium
+  navigation observed exactly one page-load POST from each of the nine
+  routes. The static server answered 501 each time. Separately, on main
+  d662e63e, the configured route matcher and actual servePage entry returned
+  404 for GET and POST to that path, 405 for POST to the app, and 200 for
+  the app and its script. Only the two 200s read files. The configured stage
+  host and public website zone are distinct. The exact live host and route
+  activation belong to the coordinated release.
