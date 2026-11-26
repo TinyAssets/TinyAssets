@@ -136,6 +136,40 @@ describe("the runner's on-disk format", () => {
     }
   });
 
+  it("can replace its own fields after a later writer adds nullable metadata", () => {
+    const path = join(temp(), "mirror.db");
+    const row = { version: 3, size: 5, mtime_ms: 1, sha256: "0".repeat(64), unread: false };
+    const original = openMirror(path);
+    original.put("/workspace/a", row);
+    original.put("/workspace/b", row);
+    original.setCursor(7);
+    original.close();
+
+    const later = new DatabaseSync(path);
+    later.exec("ALTER TABLE files ADD COLUMN extra INTEGER; UPDATE files SET extra = 1");
+    later.close();
+
+    const older = openMirror(path);
+    try {
+      expect(older.cursor()).toBe(7);
+      expect(older.get("/workspace/b")).toEqual(row);
+      const unread = { ...row, version: null, unread: true };
+      older.put("/workspace/a", unread);
+      expect(older.get("/workspace/a")).toEqual(unread);
+    } finally {
+      older.close();
+    }
+
+    const reopened = new DatabaseSync(path);
+    try {
+      expect(reopened.prepare("SELECT path, extra FROM files ORDER BY path").all()).toEqual([
+        { path: "/workspace/a", extra: null }, { path: "/workspace/b", extra: 1 },
+      ]);
+    } finally {
+      reopened.close();
+    }
+  });
+
   it("checks a shape field by field", () => {
     const shape = { pid: "number", cli_pid: "number|null" };
     expect(shapeProblems({ pid: 1, cli_pid: null }, shape)).toEqual([]);

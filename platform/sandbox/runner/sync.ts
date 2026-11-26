@@ -356,7 +356,8 @@ export function openMirror(path: string): Mirror {
           "(only = 1), cursor INTEGER NOT NULL); INSERT OR IGNORE INTO meta VALUES (1, 0);");
   const get = db.prepare("SELECT version, size, mtime_ms, sha256, unread FROM files " +
                          "WHERE path = ?");
-  const put = db.prepare("INSERT OR REPLACE INTO files VALUES (?, ?, ?, ?, ?, ?)");
+  const put = db.prepare("INSERT OR REPLACE INTO files " +
+                         "(path, version, size, mtime_ms, sha256, unread) VALUES (?, ?, ?, ?, ?, ?)");
   const drop = db.prepare("DELETE FROM files WHERE path = ?");
   const under = db.prepare("DELETE FROM files WHERE path = ? OR (path > ? AND path < ?)");
   const knows = db.prepare("SELECT 1 FROM files WHERE path = ? OR (path > ? AND path < ?) " +

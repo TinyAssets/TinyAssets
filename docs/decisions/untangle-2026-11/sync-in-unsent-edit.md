@@ -136,3 +136,23 @@ it by name (`formatStep`), so a rollback meets only that, and takes no forward e
   sandbox holds the other kind is taken by the same rule (the sandbox's unsent files sent
   beside, then the owner's kind), never a sync-in that fails every time. Done in
   `untangle/sync-resume-took` (`sync-resume-took.md`).
+
+### Format 2 writer and later optional metadata, November 26
+
+- [x] At d662e63e the current runner reads six named fields but writes by
+  column count. The ordinary state-format regression adds one nullable
+  field to an actual mirror. Opening it on main then failed with SQLite's
+  “7 columns but 6 values” error. The format 2 writer now names its six
+  fields. A replacement clears the untouched-by-this-writer field to NULL
+  on the replaced row, while the other row keeps its value. The cursor,
+  nullable base and unread flag survive. The current on-disk schema stays
+  at format 2. This is a writer prerequisite, not a new format admission.
+- [x] Node 24 ran both complete non-size runner files (sync and state-format):
+  53 passed, 7 skipped. Full platform TypeScript passed. Rehearsed the same
+  diff on template-move PR #5857 at aa40cc0a: both files on Node 22 also
+  passed 53, with 7 skipped. Native SQLite controls passed on both versions.
+- [ ] Workspace edit detection still needs the original executable bit and
+  reliable byte identity. The prior mode cannot always be recovered from a
+  purged owner history. The receiving sandbox restored old bytes and plain
+  mode in the two failing transfer cases. Keep the move held while that
+  dependency is open. [Transfer results](https://github.com/TinyAssets/TinyAssets/commit/acabc5e8ca13906bce6ec9725821a324eba1e829).
