@@ -35,3 +35,19 @@ sandbox received A. A healthy read restored the scores and the next run
 launched C. The tests exercised both a returned malformed listing and a
 gateway failure using local services. Full Node 24 platform types passed
 on the staged regression 8579c6a8.
+
+Across the complete connections test file on 8579c6a8, all 74 existing
+cases passed, including both size cases. The new failed-refresh upgrade
+case was the only failure. The full invocation and the first subdivision
+were killed. Smaller Node 22 and 24 Workerd runs completed all 75 distinct
+test names. Both size cases ran separately on Node 22.
+
+A supported pre-upgrade backup cannot generally recover the lost listing.
+On 3143e07d, two synthetic owners with identical setup and no runs served
+different models, prices and scores. On both Node 22 and 24 their listing
+updates produced zero export change-log entries. The normal row exporter
+traversed all 41 exported tables in three pages. With identical generation
+metadata, the serialized header, four rows and end record matched byte for
+byte. The setup catalog survived. A recorded run can still identify an
+individual past choice. This comparison exercised the logical export and
+change log with local SQLite, without reading any production backup.
