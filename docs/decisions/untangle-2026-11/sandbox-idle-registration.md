@@ -125,3 +125,24 @@ serial retry. A stronger chunk-write control starts with the old record
 already kept. The baseline still restored that old record after the newer
 read. The fixed write retained the new record and then accepted an
 independent delivery of the old bytes.
+
+## Sign-in can also place the sandbox
+
+The same placement path serves a run and an interactive engine sign-in. In
+the ordinary sandbox regression the sign-in made a box, the peer kept the
+next allocation, and a direct retry of the earlier run joined the existing
+box. Only the peer received a notification. The existing run-sharing control
+passed. A disposable extra send made both tests pass. The crossed-reply
+case above still rules out treating that send alone as a fix.
+
+Four local Owner, Sandbox and Slots replays used a fake provider. With the
+earlier wait saved, a successful sign-in stranded that run whether the two
+calls used the same authority or different authorities. The peer launched,
+a capacity release produced no further notification, and an explicit ring
+started the original run. With the wait reply held and distinct authorities,
+the same sequence stranded the run after the reply arrived. With the reply
+held under the same authority, sign-in instead returned `sandbox_lost`.
+The original registration remained first, and both runs subsequently
+launched once in queue order. The first trial incorrectly expected sign-in
+to succeed in this last case. Its refusal and retained place were then
+verified together.

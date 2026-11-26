@@ -1672,6 +1672,24 @@ describe("a sign-in", () => {
              ...over };
   }
 
+  it("notifies an earlier run when sign-in makes a box it can share, with the peer next", async () => {
+    await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: 1 });
+    await e2b("/script", { full: true, signin: { "claude-code": 0 } });
+    const first = owner();
+    const peer = owner();
+    const waiting = { started: false, code: "sandbox_waiting" };
+    expect(await stub(first).start(start())).toEqual(waiting);
+    expect(await stub(peer).start(start())).toEqual(waiting);
+
+    await e2b("/script", { full: false });
+    expect(await stub(first).signin(signin() as never)).toEqual({ started: true });
+    await rung(peer);
+    expect([await turn(peer), await turn(first)]).toEqual([true, false]);
+    expect(await stub(first).start(start({ tokens: null, network: null }))).toEqual({ started: true });
+    expect((await seen()).sandboxes).toHaveLength(1);
+    await expect.poll(async () => (await seen()).rings.map(ring => ring.owner)).toContain(first);
+  });
+
   it("starts the record's login in the authority's sandbox, the hosts it hands let out",
      async () => {
     const who = owner();
