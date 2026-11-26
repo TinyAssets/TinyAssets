@@ -283,6 +283,42 @@ describe("a restore", () => {
     expect(await sqlIn(stub, "SELECT run FROM run_inputs WHERE run = ?", run.run_id)).toEqual([]);
   });
 
+  it("keeps a settled conversation turn from launching twice after a pinned restore", async () => {
+    const o = await owner();
+    const binding = o.bind(null, { control: EVERY_SIGNIN_RECORD });
+    await defineAgent(o.stub, binding, "main", {
+      engine: "claude-code", credential: "vendor_login_in_sandbox", scopes: [],
+    });
+    await scripted(o.stub, { answer: { started: true } });
+    const first = await o.stub.agentSubmit(binding, { message: "first", client_send_id: "first" });
+    const next = await o.stub.agentSubmit(binding, {
+      message: "next", client_send_id: "next", conversation_id: first.conversation_id,
+    });
+    expect(next.state).toBe("waiting");
+    expect(await sqlIn(o.stub, "SELECT sandbox_wait FROM runs WHERE id = ?", next.run_id))
+      .toEqual([{ sandbox_wait: 0 }]);
+    const gen = await generate(o.stub);
+    const [space] = await sqlIn(o.stub, "SELECT ns FROM file_space");
+    const runner = async (id: string) => runnerBinding({
+      bind: (extra) => ({ owner: o.name, caller: o.name, origin: null, ...extra }),
+    }, await startOf(o.stub, id));
+    await o.stub.runEvents(await runner(first.run_id), { frames: [], end: { exit_code: 0 } });
+    await drainDue(o.stub);
+    await o.stub.runEvents(await runner(next.run_id), { frames: [], end: { exit_code: 0 } });
+    expect(await sqlIn(o.stub, "SELECT state FROM runs WHERE id = ?", next.run_id))
+      .toEqual([{ state: "succeeded" }]);
+    const hold = await pinnedTo(o.stub, o.name, gen.gen);
+    const stub = await wipedWith(o.stub, o.name, hold.confirm!);
+    await stub.restoreBegin(platform(o.name), { namespace: space!.ns as string, gen: gen.gen });
+    expect((await stepped(stub, o.name)).at(-1)?.step).toBe("done");
+    await stub.admissionSet(platform(o.name), { admit: true });
+    await drainDue(stub);
+    expect(await sqlIn(stub, "SELECT state, code FROM runs WHERE id = ?", first.run_id))
+      .toEqual([{ state: "unknown", code: "lost" }]);
+    const starts = (await recorder(stub)).starts.filter((start) => start.run === next.run_id);
+    expect(starts.map((start) => start.prompt)).toEqual(["next"]);
+  });
+
   it("restores a later waiting input when the earlier runs fill the live ceiling",
      { tags: ["large"] }, async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
