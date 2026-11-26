@@ -328,3 +328,37 @@ These models have not established a mixed-version protocol. Older Doors drops
 a ring with an extra field and older Owner cannot acknowledge a new placement.
 Recovery after a lost provider response, interrupted runner recovery, restored
 waits and retry of the notification itself remain distinct integration cases.
+
+## A restored wait can reach an existing runner
+
+At `c325ee55`, the recording Sandbox received the same run ID twice with
+distinct lease IDs, the same epoch, and a new opener request both times.
+A local Worker replay then exercised the real Owner, Files, Sandbox and Slots
+with a fake provider. The first start waited at capacity. After backup,
+each of two restores of that one generation stayed waiting through admission,
+a tier read and draining due work. Ringing the Owner after each restore
+sent launch for that run to the same sandbox twice. No ring delivery failure
+was needed. The fake provider recorded commands and did not run an engine.
+
+Three isolated Sandbox Worker controls exercised a still-live box, a box
+released before eviction, and a fresh box. The live and released boxes each
+received a second launch for the same run on a fresh lease. The fresh box
+received one launch. All three passed standalone and combined, with both a
+repeated epoch and an incremented epoch.
+
+With the shipped launch and cancel commands and a synthetic detached child,
+four OS controls on both Node 22 and 24 distinguished what cancellation
+reached. Replaying a live run left two children and one state file. Cancel
+returned success and the first child still lived. After a settled run, the
+second launch started a new child and cancel stopped it. Distinct run IDs
+kept separate state files and cancelling one left only the other running.
+A fresh run started once and cancel stopped it.
+
+The runner suite now includes a case that keeps a fake CLI active, uploads
+the same run under a fresh lease, repeats launch, cancels and checks the
+original runner process. The ordinary privileged entry stopped at its root
+preflight on this host (exit 2). The native synthetic-child result establishes
+the spawn and signal behavior independently. It does not establish a vendor
+effect. Before relying on replay, reconcile the restored Owner's dispatch
+with the surviving execution and verify cancellation in the privileged suite.
+Both full platform typechecks passed with the new runner case.

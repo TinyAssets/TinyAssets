@@ -2587,6 +2587,30 @@ describe("prepare, on a host like GitHub's runner", () => {
 });
 
 describe("cancel and the runner's state", () => {
+
+  it("can still cancel the original live job after a second launch of its run ID", async () => {
+    const release = "/release-replayed-run";
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, holdUntil: release });
+    const start = startDoc(doors, "claude-code", { config: config("claude-code") });
+    box.start(start);
+    expect(box.runner("launch", start.run).code).toBe(0);
+    await waitFor(() => box.ran("claude-code").length > 0);
+    const { pid } = JSON.parse(readFileSync(
+      box.path(`/var/lib/ta/runs/${start.run}/state.json`), "utf8")) as { pid: number };
+    const command = () => box.exec(["cat", `/proc/${pid}/cmdline`]).stdout;
+    const original = command();
+    expect(original.split("\0")).toContain(start.run);
+
+    try {
+      // Restoring a saved wait can dispatch the same run with a fresh lease.
+      box.start({ ...start, lease: { ...start.lease, lease_id: "e".repeat(32) } });
+      box.runner("launch", start.run);
+      box.runner("cancel", start.run);
+      await waitFor(() => command() !== original);
+    } finally {
+      box.write(release, "");
+    }
+  });
   it("sends the CLI SIGTERM, and its end goes to the object", async () => {
     box.cli("claude-code", { lines: [{ type: "system", subtype: "init", session_id: "s" }],
                              sleepMs: 20_000 });
