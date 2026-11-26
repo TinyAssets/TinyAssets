@@ -557,26 +557,35 @@ describe("the platform's line", () => {
     expect(await turn("nobody")).toBe(true);
   });
 
-  it.each([
-    ["count", "/v2/sandboxes", 429, 0],
-    ["count", "/v2/sandboxes", 503, 0],
-    ["first status", "/sandboxes/", 429, 1],
-    ["first status", "/sandboxes/", 503, 1],
-  ] as const)("keeps an unavailable %s read (%s %i) out of the line", async (_read, prefix,
-                                                                            status, boxes) => {
+  it.each([429, 503])("keeps a failed team-count read (%i) out of the line", async status => {
     const who = owner();
-    await e2b("/script", { apiFault: { method: "GET", prefix, status } });
+    await e2b("/script", { apiFault: { method: "GET", path: "/v2/sandboxes", status } });
     expect((await faulted(() => stub(who).start(start()))).got).toBe("sandbox_start_failed");
     expect(await turn("nobody")).toBe(true);
-    const after = await seen();
-    expect(after.sandboxes).toHaveLength(boxes);
-    expect(after.commands.map(command => command.argv[1])).not.toContain("launch");
+    expect((await seen()).sandboxes).toHaveLength(0);
   });
+
+  it.each([429, 503])("keeps the new sandbox's failed status read (%i) out of the line",
+    async status => {
+      await e2b("/script", { signin: { "claude-code": 0 } });
+      const existing = owner();
+      expect(await stub(existing).start(start())).toEqual({ started: true });
+      await e2b("/script", { apiFault: { method: "GET", path: null, status } });
+      // An independent look can read another box while the new start is in flight.
+      await runDurableObjectAlarm(stub(existing));
+      const who = owner();
+      expect((await faulted(() => stub(who).start(start()))).got).toBe("sandbox_start_failed");
+      expect(await turn("nobody")).toBe(true);
+      const after = await seen();
+      expect(after.sandboxes).toHaveLength(2);
+      expect(after.commands.filter(command => command.argv[1] === "launch")
+        .map(command => command.sandbox)).toEqual([after.sandboxes[0]!.id]);
+    });
 
   it.each([[503, undefined], [409, "sandbox_capacity_unavailable"]] as const)(
     "keeps an actual create refusal (%i) in the capacity line", async (status, code) => {
       const who = owner();
-      await e2b("/script", { apiFault: { method: "POST", prefix: "/v2/sandboxes", status, code } });
+      await e2b("/script", { apiFault: { method: "POST", path: "/v2/sandboxes", status, code } });
       expect(await stub(who).start(start())).toEqual({ started: false, code: "sandbox_waiting" });
       expect(await turn("nobody")).toBe(false);
       expect((await seen()).sandboxes).toHaveLength(0);

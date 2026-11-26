@@ -62,8 +62,8 @@ interface Script {
   noCount: boolean;
   /** How many info calls answer 500 (E2B unreachable) before they answer again. */
   down: number;
-  /** One refused platform request, consumed when the matching call arrives. */
-  apiFault: { method: string; prefix: string; status: number; code?: string } | null;
+  /** One refused platform request. A null path selects the next box's first status read. */
+  apiFault: { method: string; path: string | null; status: number; code?: string } | null;
   /** A resume of a paused sandbox answered 429, creates still taken. */
   refuseResume: boolean;
   /** A runner command whose process start envd answers 502 (the sandbox went away). */
@@ -219,7 +219,7 @@ async function api(request: Request, url: URL): Promise<Response> {
   const body: unknown = text === "" ? null : JSON.parse(text);
   fake.calls.push({ method: request.method, path: url.pathname, body, query: url.search });
   const fault = fake.script.apiFault;
-  if (fault !== null && request.method === fault.method && url.pathname.startsWith(fault.prefix)) {
+  if (fault !== null && request.method === fault.method && url.pathname === fault.path) {
     fake.script.apiFault = null;
     return Response.json({ error_code: fault.code }, { status: fault.status });
   }
@@ -236,6 +236,7 @@ async function api(request: Request, url: URL): Promise<Response> {
                                metadata: b.metadata, template: b.templateID,
                                secure: b.secure === true, runners: new Set() };
     fake.sandboxes.set(id, box);
+    if (fault?.path === null) fault.path = `/sandboxes/${id}`;
     return Response.json({ templateID: b.templateID, sandboxID: id, clientID: "x",
                            envdVersion: "0.10.0",
                            ...(box.secure ? { envdAccessToken: box.token } : {}) },
