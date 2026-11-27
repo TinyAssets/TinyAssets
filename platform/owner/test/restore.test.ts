@@ -335,6 +335,42 @@ describe("a restore", () => {
       }
     });
 
+  it.each(["pinned", "undo"] as const)(
+    "counts starts of an already fired one-time schedule after restoring %s", async (which) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const o = await owner();
+      const binding = o.bind(null, { control: EVERY_SIGNIN_RECORD });
+      await defineAgent(o.stub, binding, "main", {
+        engine: "claude-code", credential: "vendor_login_in_sandbox", scopes: [],
+      });
+      await scripted(o.stub, { answer: { started: true } });
+      const due = Math.ceil(Date.now() / 1000) + 120;
+      await o.stub.agentRun(binding, { agent: "main", at: due, input: "scheduled once" });
+      const gen = await generate(o.stub);
+      const [space] = await sqlIn(o.stub, "SELECT ns FROM file_space");
+      vi.setSystemTime((due + 1) * 1000);
+      await drainDue(o.stub);
+      const starts = async (stub: Stub) => (await recorder(stub)).starts
+        .filter((entry) => entry.prompt === "scheduled once").map((entry) => entry.run);
+      const before = await starts(o.stub);
+      expect(before).toHaveLength(1);
+      const runner = runnerBinding({
+        bind: (extra) => ({ owner: o.name, caller: o.name, origin: null, ...extra }),
+      }, await startOf(o.stub, before[0]!));
+      await o.stub.runEvents(runner, { frames: [], end: { exit_code: 0 } });
+      expect(await sqlIn(o.stub, "SELECT id FROM run_schedules")).toEqual([]);
+      const pin = await pinnedTo(o.stub, o.name, gen.gen);
+      const stub = await wipedWith(o.stub, o.name, pin.confirm!);
+      const restore = which === "pinned" ? gen.gen : pin.fresh!;
+      await stub.restoreBegin(platform(o.name), { namespace: String(space!.ns), gen: restore });
+      expect((await stepped(stub, o.name)).at(-1)?.step).toBe("done");
+      expect(await starts(stub)).toEqual(before);
+      await stub.admissionSet(platform(o.name), { admit: true });
+      await drainDue(stub);
+      const after = await starts(stub);
+      expect(after).toEqual(before);
+    });
+
   it("keeps a settled conversation turn from launching twice after a pinned restore", async () => {
     const o = await owner();
     const binding = o.bind(null, { control: EVERY_SIGNIN_RECORD });
