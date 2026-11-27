@@ -5,7 +5,7 @@
  * rooms for a client's schedule; and a run's run tools held to its agent's `run_graph`.
  */
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { LEDGER_LIMITS } from "../src/ledger";
 import { MODEL_CHOSEN, VENDOR_HELD } from "../src/runs";
@@ -14,7 +14,7 @@ import { RUN_STARTS_NONE } from "../src/owner-do";
 import { gated, type Gated } from "./gateway-support";
 import { MCP, MUSE, rig, signedIn, dm } from "./ledger-support";
 import {
-  ALL_SCOPES, defineAgent, OPEN_RECORD, ownerRun, recorder, runBinding, runnerBinding, startOf,
+  ALL_SCOPES, defineAgent, OPEN_RECORD, ownerRun, recorder, runBinding, runnerBinding, scripted, startOf,
   whileOut,
 } from "./runs-support";
 import { drainDue, failure } from "./support";
@@ -102,6 +102,50 @@ describe("a run's own schedules (the founder, 2026-11-03)", () => {
       expect(await r.sql("SELECT client FROM run_schedules")).toEqual([{ client: MUSE.client }]);
     }
   });
+});
+
+describe("a recurring schedule's last run", () => {
+  it.each(["cancel", "finish"] as const)(
+    "keeps the admitted run ID across a sandbox wait and %s", async (outcome) => {
+      const r = await gated();
+      await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+      await scripted(r.stub, { answer: { started: false, code: "sandbox_waiting" } });
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        const made = await r.stub.agentRun(r.bind(), {
+          agent: "main", cron: "* * * * *", input: "recurring brief",
+        }) as { schedule_id: string; next_at: number };
+        vi.setSystemTime((made.next_at + 1) * 1000);
+        await drainDue(r.stub);
+        const starts = async () => (await recorder(r.stub)).starts.map((start) => start.run);
+        const attempts = await starts();
+        expect(attempts).toHaveLength(1);
+        const run = attempts[0]!;
+        const status = () => r.stub.agentStatus(r.bind(), { schedule_id: made.schedule_id });
+        const waiting = await status();
+        expect(waiting).toMatchObject({ last_run: run, next_at: made.next_at + 60 });
+        expect(await r.stub.agentStatus(r.bind(), { run_id: run }))
+          .toMatchObject({ state: "waiting", code: "sandbox_waiting" });
+        if (outcome === "cancel") {
+          await r.stub.agentCancel(r.bind(), { run_id: run });
+          expect(await starts()).toEqual([run]);
+        } else {
+          await scripted(r.stub, { answer: { started: true } });
+          await r.stub.sandboxRung();
+          await drainDue(r.stub);
+          expect(await starts()).toEqual([run, run]);
+          expect(await status()).toEqual(waiting);
+          const start = (await recorder(r.stub)).starts.at(-1)!;
+          await r.stub.runEvents(runnerBinding(r, start), { frames: [], end: { exit_code: 0 } });
+        }
+        expect(await r.stub.agentStatus(r.bind(), { run_id: run }))
+          .toMatchObject(outcome === "cancel" ? { state: "failed", code: "cancelled" }
+                                             : { state: "succeeded" });
+        expect(await status()).toEqual(waiting);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
 });
 
 describe("a scheduled run's result", () => {
