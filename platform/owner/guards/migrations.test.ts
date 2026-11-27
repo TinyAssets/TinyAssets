@@ -95,16 +95,22 @@ describe("no REPLACE against an exported table (review L5-2)", () => {
 const EXPORT_SHAPE = { schema: 35, sha256:
   "c33e3a62020f259faf5a52aeadf081843c5e60fd6af8f5c55e69c8d9b9ae9449" };
 
-/** A dropped trigger or index can name only itself while changing the table it belongs to. */
-function removedSchemaObjectTables(migrations: readonly Migration[], forward: readonly (string | null)[]):
-    Set<string>[] {
+/** SQLite owns the table names for triggers and indexes, including drops that name only the object. */
+function migrationObjects(migrations: readonly Migration[], forward: readonly (string | null)[]) {
   const db = new DatabaseSync(":memory:");
   try {
     const read = db.prepare("SELECT type, name, tbl_name, sql FROM sqlite_schema " +
                             "WHERE type IN ('trigger', 'index') AND sql IS NOT NULL");
-    const objects = () => new Map(read.all().map((row) =>
-      [`${row.type}:${row.name}`, { table: String(row.tbl_name), sql: row.sql }]));
-    return migrations.map((migration, index) => {
+    const triggers = new Map<string, string>();
+    const objects = () => new Map(read.all().map((row) => {
+      const table = String(row.tbl_name).toLowerCase();
+      const sql = String(row.sql);
+      if (row.type === "trigger") {
+        triggers.set(sql, table);
+      }
+      return [`${row.type}:${row.name}`, { table, sql }] as const;
+    }));
+    const removedTables = migrations.map((migration, index) => {
       const removed = new Set<string>();
       if (forward[index] !== null) {
         for (const sql of migration) {
@@ -135,6 +141,7 @@ function removedSchemaObjectTables(migrations: readonly Migration[], forward: re
       }
       return removed;
     });
+    return { removedTables, triggers };
   } finally {
     db.close();
   }
@@ -145,13 +152,14 @@ function forwardChanges(migrations: readonly Migration[], forward: readonly (str
   const tables = [...exportedTables, ...Object.keys(NOT_EXPORTED)];
   // Each table's triggers' writes, from every trigger a migration made: a write to a table
   // reaches what they write, as `file_scope_chunks_removed` reaches `file_chunks`.
+  const { removedTables, triggers } = migrationObjects(migrations, forward);
   const writes = new Map<string, string[]>();
-  for (const sql of migrations.flat()) {
-    const on = /^CREATE TRIGGER \w+ [^;]*? ON (\w+)/.exec(sql)?.[1];
-    if (on !== undefined) {
-      writes.set(on, [...writes.get(on) ?? [], ...[...sql.slice(sql.indexOf(" BEGIN "))
-        .matchAll(/\b(?:UPDATE|INTO|DELETE FROM)\s+(\w+)/g)].map((write) => write[1]!)]);
-    }
+  for (const [trigger, table] of triggers) {
+    // The body can quote a table name and use any case for keywords or identifiers.
+    const body = trigger.slice(trigger.search(/\bbegin\b/i));
+    const targets = body.matchAll(/\b(?:update|into|delete\s+from)\s+["`\[]?(\w+)/gi);
+    const names = Array.from(targets, (write) => write[1]!.toLowerCase());
+    writes.set(table, [...writes.get(table) ?? [], ...names]);
   }
   const reached = (from: string[]): Set<string> => {
     const seen = new Set(from);
@@ -160,10 +168,9 @@ function forwardChanges(migrations: readonly Migration[], forward: readonly (str
     }
     return seen;
   };
-  const removed = removedSchemaObjectTables(migrations, forward);
   return migrations.flatMap((migration, at) => forward[at] !== null ? []
-    : [...reached(tables.filter((table) => removed[at]!.has(table) || migration.some((sql) =>
-        new RegExp(`\\b${table}\\b`).test(sql))))].filter((table) => exportedTables.has(table))
+    : [...reached(tables.filter((table) => removedTables[at]!.has(table) || migration.some((sql) =>
+        new RegExp(`\\b${table}\\b`, "i").test(sql))))].filter((table) => exportedTables.has(table))
       .map((table) => `migration ${at + 1} names or reaches ${table}`));
 }
 
@@ -183,6 +190,23 @@ describe("every migration says how a generation from before it is brought forwar
     expect(changed).toContain("migration 2 names or reaches file_chunks");
   });
 
+  it("checks SQLite table names independently of spelling in a predicate or a write", () => {
+    const before = MIGRATIONS[0]!;
+    const version = (sql: string) =>
+      forwardChanges([before, [sql]], [FORWARD[0]!, null]);
+    expect(version('CREATE TRIGGER owner_size BEFORE INSERT ON "Object_Owner" ' +
+      "WHEN length(NEW.owner) > 4 BEGIN SELECT RAISE(ABORT, 'size'); END"))
+      .toContain("migration 2 names or reaches object_owner");
+    expect(version('update "ObJeCt_OwNeR" set owner = upper(owner)'))
+      .toContain("migration 2 names or reaches object_owner");
+    const changesOwner = 'create trigger indirect after update on "Log_Capture" begin ' +
+      'update [Object_Owner] set owner = upper(owner); end';
+    expect(forwardChanges([[...before, changesOwner], ["update LOG_CAPTURE set capturing = 0"]],
+      [FORWARD[0]!, null])).toContain("migration 2 names or reaches object_owner");
+    expect(forwardChanges([[...before, changesOwner], ["drop trigger indirect"]],
+      [FORWARD[0]!, null])).toContain("migration 2 names or reaches object_owner");
+  });
+
   it("identifies the exported table of a removed request constraint or read index", () => {
     const drop = ['DROP INDEX main."runs_by_request"', 'DROP INDEX collection_changes'];
     const changed = forwardChanges([...MIGRATIONS, drop], [...FORWARD, null]);
@@ -195,7 +219,7 @@ describe("every migration says how a generation from before it is brought forwar
       sql.startsWith("CREATE TRIGGER object_owner_logged_insert "))!;
     const drop = 'DROP TRIGGER "object_owner_logged_insert"';
     const migrations = [MIGRATIONS[0]!, [drop + "; " + create + "; -- restored before commit"]];
-    expect([...removedSchemaObjectTables(migrations, [FORWARD[0]!, null])[1]!]).toEqual(["object_owner"]);
+    expect([...migrationObjects(migrations, [FORWARD[0]!, null]).removedTables[1]!]).toEqual(["object_owner"]);
   });
 
   it("brings a generation forward from schema 31 on (migration 31 keys each private row " +
