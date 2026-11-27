@@ -95,83 +95,111 @@ describe("no REPLACE against an exported table (review L5-2)", () => {
 const EXPORT_SHAPE = { schema: 35, sha256:
   "c33e3a62020f259faf5a52aeadf081843c5e60fd6af8f5c55e69c8d9b9ae9449" };
 
-/** SQLite owns the table names for triggers and indexes, including drops that name only the object. */
+/**
+ * Prepare, without executing, every kind of row change. Updating all writable columns
+ * includes UPDATE OF triggers. SQLite compiles the nested trigger programs too.
+ * OpenWrite names the b-tree in P2 and the DELETE truncate optimization (Clear) in P1.
+ * An index's root belongs to its table, including the primary index of a WITHOUT ROWID table.
+ */
+function triggerWrites(db: DatabaseSync, table: string): Set<string> {
+  const roots = new Map(db.prepare("SELECT rootpage, tbl_name FROM sqlite_schema WHERE rootpage > 0")
+    .all().map((row) => [Number(row.rootpage), String(row.tbl_name).toLowerCase()]));
+  const quote = (name: string) => '"' + name.replaceAll('"', '""') + '"';
+  const name = quote(table);
+  const columns = db.prepare("SELECT name FROM pragma_table_xinfo(?) WHERE hidden = 0")
+    .all(table).map((column) => quote(String(column.name)));
+  const changes = [
+    "INSERT INTO " + name + " DEFAULT VALUES",
+    "UPDATE " + name + " SET " + columns.map((column) => column + " = " + column).join(", "),
+    "DELETE FROM " + name,
+  ];
+  const targets = new Set<string>();
+  for (const change of changes) {
+    const touched = new Set<string>();
+    for (const instruction of db.prepare("EXPLAIN " + change).iterate()) {
+      if (instruction.opcode === "OpenWrite" || instruction.opcode === "Clear") {
+        const root = instruction.opcode === "OpenWrite" ? instruction.p2 : instruction.p1;
+        const target = roots.get(Number(root));
+        if (target === undefined) throw new Error("unknown SQLite write root in " + change);
+        touched.add(target);
+      }
+    }
+    if (!touched.has(table)) throw new Error("SQLite did not identify the write to " + table);
+    for (const target of touched) targets.add(target);
+  }
+  return targets;
+}
+
+/**
+ * Prepare changes against the catalog immediately before and after each migration statement.
+ * Dropping a trigger can remove its only route to an exported table. Adding a column named
+ * by an existing UPDATE OF trigger can make a previously unreachable write possible.
+ */
 function migrationObjects(migrations: readonly Migration[], forward: readonly (string | null)[]) {
-  const db = new DatabaseSync(":memory:");
+  const before = new DatabaseSync(":memory:");
+  const after = new DatabaseSync(":memory:");
+  const exportedTables = new Set(Object.keys(exported()));
+  const tables = [...exportedTables, ...Object.keys(NOT_EXPORTED)];
+  const catalog = (db: DatabaseSync) => new Map(db.prepare(
+    "SELECT type, name, tbl_name, sql FROM sqlite_schema " +
+    "WHERE type IN ('trigger', 'index') AND sql IS NOT NULL",
+  ).all().map((row) => [`${row.type}:${row.name}`, {
+    table: String(row.tbl_name).toLowerCase(), sql: String(row.sql),
+  }] as const));
   try {
-    const read = db.prepare("SELECT type, name, tbl_name, sql FROM sqlite_schema " +
-                            "WHERE type IN ('trigger', 'index') AND sql IS NOT NULL");
-    const triggers = new Map<string, string>();
-    const objects = () => new Map(read.all().map((row) => {
-      const table = String(row.tbl_name).toLowerCase();
-      const sql = String(row.sql);
-      if (row.type === "trigger") {
-        triggers.set(sql, table);
-      }
-      return [`${row.type}:${row.name}`, { table, sql }] as const;
-    }));
-    const removedTables = migrations.map((migration, index) => {
+    const removedTables: Set<string>[] = [];
+    const problems: string[] = [];
+    migrations.forEach((migration, index) => {
       const removed = new Set<string>();
-      if (forward[index] !== null) {
-        for (const sql of migration) {
-          db.exec(sql);
-        }
-        return removed;
-      }
-      let before = objects();
+      removedTables.push(removed);
+      const reached = new Set<string>();
       for (const sql of migration) {
-        // SQLite splits the statements, including a trigger body with internal semicolons.
-        // A trailing SELECT gives whitespace and comments a final harmless statement.
+        if (forward[index] !== null) {
+          before.exec(sql);
+          after.exec(sql);
+          continue;
+        }
+        // Let SQLite split the statements, including trigger bodies and trailing comments.
         let remaining = sql + "\n;SELECT 1";
         for (;;) {
-          const statement = db.prepare(remaining).sourceSQL;
+          const statement = after.prepare(remaining).sourceSQL;
           remaining = remaining.slice(statement.length);
-          if (remaining.length === 0) {
-            break;
-          }
-          db.exec(statement);
-          const after = objects();
-          for (const [name, object] of before) {
-            if (after.get(name)?.sql !== object.sql) {
+          if (remaining.length === 0) break;
+          const old = catalog(before);
+          after.exec(statement);
+          const current = catalog(after);
+          const named = new Set(tables.filter((table) => new RegExp(`\\b${table}\\b`, "i").test(statement)));
+          for (const [key, object] of old) {
+            if (current.get(key)?.sql !== object.sql) {
               removed.add(object.table);
+              named.add(object.table);
             }
           }
-          before = after;
+          for (const table of named) {
+            reached.add(table);
+            for (const db of [before, after]) {
+              if (db.prepare("SELECT 1 FROM sqlite_schema WHERE type='trigger' AND tbl_name=? COLLATE NOCASE")
+                .get(table)) {
+                for (const target of triggerWrites(db, table)) reached.add(target);
+              }
+            }
+          }
+          before.exec(statement);
         }
       }
-      return removed;
+      for (const table of reached) {
+        if (exportedTables.has(table)) problems.push(`migration ${index + 1} names or reaches ${table}`);
+      }
     });
-    return { removedTables, triggers };
+    return { removedTables, problems };
   } finally {
-    db.close();
+    before.close();
+    after.close();
   }
 }
 
 function forwardChanges(migrations: readonly Migration[], forward: readonly (string | null)[]): string[] {
-  const exportedTables = new Set(Object.keys(exported()));
-  const tables = [...exportedTables, ...Object.keys(NOT_EXPORTED)];
-  // Each table's triggers' writes, from every trigger a migration made: a write to a table
-  // reaches what they write, as `file_scope_chunks_removed` reaches `file_chunks`.
-  const { removedTables, triggers } = migrationObjects(migrations, forward);
-  const writes = new Map<string, string[]>();
-  for (const [trigger, table] of triggers) {
-    // The body can quote a table name and use any case for keywords or identifiers.
-    const body = trigger.slice(trigger.search(/\bbegin\b/i));
-    const targets = body.matchAll(/\b(?:update|into|delete\s+from)\s+["`\[]?(\w+)/gi);
-    const names = Array.from(targets, (write) => write[1]!.toLowerCase());
-    writes.set(table, [...writes.get(table) ?? [], ...names]);
-  }
-  const reached = (from: string[]): Set<string> => {
-    const seen = new Set(from);
-    for (const table of seen) {
-      (writes.get(table) ?? []).forEach((write) => seen.add(write));
-    }
-    return seen;
-  };
-  return migrations.flatMap((migration, at) => forward[at] !== null ? []
-    : [...reached(tables.filter((table) => removedTables[at]!.has(table) || migration.some((sql) =>
-        new RegExp(`\\b${table}\\b`, "i").test(sql))))].filter((table) => exportedTables.has(table))
-      .map((table) => `migration ${at + 1} names or reaches ${table}`));
+  return migrationObjects(migrations, forward).problems;
 }
 
 describe("every migration says how a generation from before it is brought forward", () => {
@@ -217,6 +245,25 @@ describe("every migration says how a generation from before it is brought forwar
     expect(changes("SELECT owner FROM object_owner")).toEqual([]);
     expect(changes("UPDATE log_capture SET gen = gen")).toEqual([]);
     expect(changes("UPDATE OR IGNORE object_owner SET owner = upper(owner)"))
+      .toContain("migration 2 names or reaches object_owner");
+  });
+
+  it("follows a nested insert and delete through a dropped trigger", () => {
+    const indirect = "CREATE TRIGGER capture_removed AFTER DELETE ON log_capture BEGIN " +
+      "INSERT INTO ledger_marker VALUES (1); END";
+    const marker = "CREATE TABLE ledger_marker (value INTEGER)";
+    const clear = "CREATE TRIGGER marker_added AFTER INSERT ON ledger_marker BEGIN " +
+      "DELETE FROM file_entries; END";
+    const before = [...MIGRATIONS[0]!, marker, indirect, clear];
+    expect(forwardChanges([before, ["DROP TRIGGER capture_removed"]], [FORWARD[0]!, null]))
+      .toContain("migration 2 names or reaches file_entries");
+  });
+
+  it("sees an installed UPDATE OF trigger when a later migration adds its column", () => {
+    const later = "CREATE TRIGGER future_capture AFTER UPDATE OF future ON log_capture " +
+      "BEGIN UPDATE object_owner SET owner = upper(owner); END";
+    const migrations = [[...MIGRATIONS[0]!, later], ["ALTER TABLE log_capture ADD COLUMN future INTEGER"]];
+    expect(forwardChanges(migrations, [FORWARD[0]!, null]))
       .toContain("migration 2 names or reaches object_owner");
   });
 
