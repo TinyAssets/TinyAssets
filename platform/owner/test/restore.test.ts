@@ -370,6 +370,65 @@ describe("a restore", () => {
       expect(after).toEqual(before);
     });
 
+  it.each([
+    ["pinned", "cancel"], ["undo", "cancel"], ["pinned", "complete"], ["undo", "complete"],
+  ] as const)(
+    "does not restart a saved recurring wait after %s restore following %s", async (which, outcome) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const o = await owner();
+      const binding = o.bind(null, { control: EVERY_SIGNIN_RECORD });
+      await defineAgent(o.stub, binding, "main", {
+        engine: "claude-code", credential: "vendor_login_in_sandbox", scopes: [],
+      });
+      await scripted(o.stub, { answer: { started: false, code: "sandbox_waiting" } });
+      const made = await o.stub.agentRun(binding, {
+        agent: "main", cron: "* * * * *", input: "recurring wait",
+      }) as { schedule_id: string; next_at: number };
+      vi.setSystemTime((made.next_at + 1) * 1000);
+      await drainDue(o.stub);
+      const attempts = async (stub: Stub) => (await recorder(stub)).starts
+        .filter((entry) => entry.prompt === "recurring wait");
+      const before = await attempts(o.stub);
+      expect(before).toHaveLength(1);
+      const run = before[0]!.run;
+      const state = (stub: Stub) => stub.agentStatus(binding, { run_id: run });
+      const schedule = (stub: Stub) => stub.agentStatus(binding, { schedule_id: made.schedule_id });
+      const waiting = await schedule(o.stub);
+      expect(waiting).toMatchObject({ last_run: run, next_at: made.next_at + 60 });
+      expect(await state(o.stub)).toMatchObject({ state: "waiting", code: "sandbox_waiting" });
+      const gen = await generate(o.stub);
+      const [space] = await sqlIn(o.stub, "SELECT ns FROM file_space");
+      await scripted(o.stub, { answer: { started: true } });
+      if (outcome === "complete") {
+        await o.stub.sandboxRung();
+        await drainDue(o.stub);
+        const accepted = (await attempts(o.stub)).at(-1)!;
+        await o.stub.runEvents(runnerBinding({
+          bind: (extra) => ({ owner: o.name, caller: o.name, origin: null, ...extra }),
+        }, accepted), { frames: [], end: { exit_code: 0 } });
+      } else {
+        await o.stub.agentCancel(binding, { run_id: run });
+      }
+      const terminal = outcome === "complete" ? "succeeded" : "failed";
+      expect(await state(o.stub)).toMatchObject({ state: terminal });
+      const count = (await attempts(o.stub)).length;
+      expect(count).toBe(outcome === "complete" ? 2 : 1);
+      const hold = await pinnedTo(o.stub, o.name, gen.gen);
+      const stub = await wipedWith(o.stub, o.name, hold.confirm!);
+      await stub.restoreBegin(platform(o.name), {
+        namespace: String(space!.ns), gen: which === "pinned" ? gen.gen : hold.fresh!,
+      });
+      expect((await stepped(stub, o.name)).at(-1)?.step).toBe("done");
+      await drainDue(stub);
+      expect(await schedule(stub)).toEqual(waiting);
+      expect((await attempts(stub)).length).toBe(count);
+      await stub.sandboxRung();
+      await drainDue(stub);
+      const after = await attempts(stub);
+      expect(after.map((start) => start.run)).toEqual(Array(count).fill(run));
+      expect(await schedule(stub)).toEqual(waiting);
+    });
+
   it("keeps a settled conversation turn from launching twice after a pinned restore", async () => {
     const o = await owner();
     const binding = o.bind(null, { control: EVERY_SIGNIN_RECORD });
