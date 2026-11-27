@@ -207,6 +207,19 @@ describe("every migration says how a generation from before it is brought forwar
       [FORWARD[0]!, null])).toContain("migration 2 names or reaches object_owner");
   });
 
+  it("follows a write with a conflict policy from an internal table to an exported one", () => {
+    const before = MIGRATIONS[0]!;
+    const migration = ["UPDATE log_capture SET capturing = 0"];
+    const changes = (body: string) => forwardChanges([
+      [...before, "CREATE TRIGGER on_capture AFTER UPDATE OF capturing ON log_capture BEGIN " +
+        body + "; END"], migration,
+    ], [FORWARD[0]!, null]);
+    expect(changes("SELECT owner FROM object_owner")).toEqual([]);
+    expect(changes("UPDATE log_capture SET gen = gen")).toEqual([]);
+    expect(changes("UPDATE OR IGNORE object_owner SET owner = upper(owner)"))
+      .toContain("migration 2 names or reaches object_owner");
+  });
+
   it("identifies the exported table of a removed request constraint or read index", () => {
     const drop = ['DROP INDEX main."runs_by_request"', 'DROP INDEX collection_changes'];
     const changed = forwardChanges([...MIGRATIONS, drop], [...FORWARD, null]);
