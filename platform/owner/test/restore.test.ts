@@ -363,9 +363,8 @@ describe("a restore", () => {
       const stub = await wipedWith(o.stub, o.name, pin.confirm!);
       const restore = which === "pinned" ? gen.gen : pin.fresh!;
       await stub.restoreBegin(platform(o.name), { namespace: String(space!.ns), gen: restore });
-      expect((await stepped(stub, o.name)).at(-1)?.step).toBe("done");
-      expect(await starts(stub)).toEqual(before);
-      await stub.admissionSet(platform(o.name), { admit: true });
+      // Finishing restores the Owner's admitted state and arms its due jobs.
+      expect((await stepped(stub, o.name)).at(-1)).toMatchObject({ step: "done", state: "admitted" });
       await drainDue(stub);
       const after = await starts(stub);
       expect(after).toEqual(before);
