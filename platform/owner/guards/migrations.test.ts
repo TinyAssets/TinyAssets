@@ -95,14 +95,15 @@ describe("no REPLACE against an exported table (review L5-2)", () => {
 const EXPORT_SHAPE = { schema: 35, sha256:
   "c33e3a62020f259faf5a52aeadf081843c5e60fd6af8f5c55e69c8d9b9ae9449" };
 
-/** A DROP names the trigger, which need not name the table whose writes it observed. */
-function removedTriggerTables(migrations: readonly Migration[], forward: readonly (string | null)[]):
+/** A dropped trigger or index can name only itself while changing the table it belongs to. */
+function removedSchemaObjectTables(migrations: readonly Migration[], forward: readonly (string | null)[]):
     Set<string>[] {
   const db = new DatabaseSync(":memory:");
   try {
-    const read = db.prepare("SELECT name, tbl_name, sql FROM sqlite_schema WHERE type = 'trigger'");
-    const triggers = () => new Map(read.all().map((row) =>
-      [String(row.name), { table: String(row.tbl_name), sql: row.sql }]));
+    const read = db.prepare("SELECT type, name, tbl_name, sql FROM sqlite_schema " +
+                            "WHERE type IN ('trigger', 'index') AND sql IS NOT NULL");
+    const objects = () => new Map(read.all().map((row) =>
+      [`${row.type}:${row.name}`, { table: String(row.tbl_name), sql: row.sql }]));
     return migrations.map((migration, index) => {
       const removed = new Set<string>();
       if (forward[index] !== null) {
@@ -111,7 +112,7 @@ function removedTriggerTables(migrations: readonly Migration[], forward: readonl
         }
         return removed;
       }
-      let before = triggers();
+      let before = objects();
       for (const sql of migration) {
         // SQLite splits the statements, including a trigger body with internal semicolons.
         // A trailing SELECT gives whitespace and comments a final harmless statement.
@@ -123,10 +124,10 @@ function removedTriggerTables(migrations: readonly Migration[], forward: readonl
             break;
           }
           db.exec(statement);
-          const after = triggers();
-          for (const [name, trigger] of before) {
-            if (after.get(name)?.sql !== trigger.sql) {
-              removed.add(trigger.table);
+          const after = objects();
+          for (const [name, object] of before) {
+            if (after.get(name)?.sql !== object.sql) {
+              removed.add(object.table);
             }
           }
           before = after;
@@ -159,7 +160,7 @@ function forwardChanges(migrations: readonly Migration[], forward: readonly (str
     }
     return seen;
   };
-  const removed = removedTriggerTables(migrations, forward);
+  const removed = removedSchemaObjectTables(migrations, forward);
   return migrations.flatMap((migration, at) => forward[at] !== null ? []
     : [...reached(tables.filter((table) => removed[at]!.has(table) || migration.some((sql) =>
         new RegExp(`\\b${table}\\b`).test(sql))))].filter((table) => exportedTables.has(table))
@@ -182,12 +183,19 @@ describe("every migration says how a generation from before it is brought forwar
     expect(changed).toContain("migration 2 names or reaches file_chunks");
   });
 
+  it("identifies the exported table of a removed request constraint or read index", () => {
+    const drop = ['DROP INDEX main."runs_by_request"', 'DROP INDEX collection_changes'];
+    const changed = forwardChanges([...MIGRATIONS, drop], [...FORWARD, null]);
+    expect(changed).toContain(`migration ${MIGRATIONS.length + 1} names or reaches runs`);
+    expect(changed).toContain(`migration ${MIGRATIONS.length + 1} names or reaches collection_rows`);
+  });
+
   it("finds the table of a dropped trigger even when the same migration reinstalls it", () => {
     const create = MIGRATIONS[0]!.find((sql) =>
       sql.startsWith("CREATE TRIGGER object_owner_logged_insert "))!;
     const drop = 'DROP TRIGGER "object_owner_logged_insert"';
     const migrations = [MIGRATIONS[0]!, [drop + "; " + create + "; -- restored before commit"]];
-    expect([...removedTriggerTables(migrations, [FORWARD[0]!, null])[1]!]).toEqual(["object_owner"]);
+    expect([...removedSchemaObjectTables(migrations, [FORWARD[0]!, null])[1]!]).toEqual(["object_owner"]);
   });
 
   it("brings a generation forward from schema 31 on (migration 31 keys each private row " +
