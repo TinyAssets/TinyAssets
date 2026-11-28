@@ -49,9 +49,9 @@ skills, `review_checks.py`, `check_shapes.py`, `check_context_budget.py`,
 
 ## Pins
 
-The skills aggregate pays for the steward skill (4,129 B) with the untangle
-skill's removed lines (1,209 B); the rest is a raise from 34,467 to 37,382
-(2,915 B), inside the aggregate total, as #5508, #5593 and #5605 did.
+The skills aggregate pays for the steward skill (4,127 B) with the untangle
+skill's removed lines (1,209 B); the rest is a raise from 34,467 to 37,380
+(2,913 B), inside the aggregate total, as #5508, #5593 and #5605 did.
 `REVIEW.md` gets its own aggregate pin, 4,319 B, also inside the total: unpinned,
 it would be the offload hole the aggregates exist to close. Neither total
 moves.

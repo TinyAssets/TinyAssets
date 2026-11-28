@@ -33,7 +33,7 @@ its "How this project uses it" says. Claude Ship's PR Steward is the model
   deploy, ruleset or repo setting change, and no touching live E2B sandboxes
   or stage data.
 - Touch the old stack (`tinyassets/**`, root `deploy/**`, `pyproject.toml`,
-  `scripts/mcp_public_canary.py`) unless your lane is a fix there.
+  the public MCP canary script) unless your lane is a fix there.
 - Approve or merge a PR, change a status or check run, delete a branch or
   push a tag. Ship's service refuses these; here only you can.
 
