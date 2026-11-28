@@ -2632,5 +2632,275 @@
       "upload_ms": 73,
       "install_ms": 150
     }
+  },
+  {
+    "tag": "sb31f0bce0edffd2a",
+    "runner": "cc7f076ae8fa068bd4288c948b3a0056db72c014b23bc39df758d951a48df5c8",
+    "probes": "c465685975aef5a5bbcb4c20cc77e51dca7d00967cae8158527b49874b5aa4fb",
+    "passed_at": "2026-11-28T05:33:12Z",
+    "logins": [
+      {
+        "engine": "claude-code",
+        "ok": true,
+        "host": "claude.com"
+      },
+      {
+        "engine": "codex",
+        "ok": true,
+        "host": "auth.openai.com"
+      },
+      {
+        "engine": "gemini",
+        "ok": true,
+        "host": "accounts.google.com"
+      }
+    ],
+    "routes": [
+      {
+        "engine": "claude-code",
+        "provider": "anthropic",
+        "api": "anthropic-messages",
+        "model": "claude-fable-5-2",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "codex",
+        "provider": "openai",
+        "api": "openai-responses",
+        "model": "gpt-6.1-sol",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": true
+      },
+      {
+        "engine": "gemini",
+        "provider": "google",
+        "api": "google-generative-ai",
+        "model": "gemini-4-neon",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "anthropic",
+        "api": "anthropic-messages",
+        "model": "claude-fable-5-2",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "cerebras",
+        "api": "openai-completions",
+        "model": "qwen-3.8-27b",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "google",
+        "api": "google-generative-ai",
+        "model": "gemini-4-neon",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "groq",
+        "api": "openai-completions",
+        "model": "qwen/qwen3.8-27b",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "mistral",
+        "api": "mistral-conversations",
+        "model": "mistral-large-4-0-8",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "openai",
+        "api": "openai-responses",
+        "model": "gpt-6.1-sol",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "openrouter",
+        "api": "openai-completions",
+        "model": "openai/gpt-6.1-sol-pro",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "openrouter",
+        "api": "anthropic-messages",
+        "model": "anthropic/claude-fable-5.2",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "xai",
+        "api": "openai-responses",
+        "model": "grok-4.7",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      }
+    ],
+    "install": {
+      "bytes": 436666,
+      "upload_ms": 260,
+      "install_ms": 591
+    }
   }
 ]
