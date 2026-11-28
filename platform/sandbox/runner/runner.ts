@@ -106,8 +106,8 @@ import {
   syncOut, type SyncReport, tookSessions,
 } from "./sync";
 import { sha256Hex } from "../../contract/src/digest";
-import { CODE_SUFFIX, type Command, COMMAND, COMMAND_MS, EXIT, type HookCommand, hookProgram,
-         inboxCode, inboxDoc, JOB_FILES, type JobKind, JOBS, INBOX, LEASE_FILE,
+import { CARRY_FILE, CODE_SUFFIX, type Command, COMMAND, COMMAND_MS, EXIT, type HookCommand,
+         hookProgram, inboxCode, inboxDoc, JOB_FILES, type JobKind, JOBS, INBOX, LEASE_FILE,
          type LeaseFile, PROTOCOL, type QuietAnswer, RUNNERS, type SigninDoc, type StartDoc,
          type StateAnswer, STATE_DIR } from "./protocol";
 import { type Bounded, dropHome, engineEnv, homeOf, keepHome, KILLED_BY_TERM, loginFiles,
@@ -546,6 +546,9 @@ function prepare(servers: readonly string[]): number {
   checkFormat(STATE, CACHES);
   dropOtherRunners();
   keepReserve(RESERVE);
+  // A move's archive is never left at rest past its move: one a move that went no further
+  // left goes at the sandbox's next boot or resume.
+  remove(CARRY_FILE);
   // A pasted code is never left at rest: one a pause or a failed hand-over left
   // in the inbox goes at every boot and resume, before anything else reads it.
   const inbox = INBOX;

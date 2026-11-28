@@ -37,8 +37,8 @@ import { dispatch } from "./hooks";
 import { HEARTBEAT_MS, lineEvent } from "./frames";
 import { fromSchema, outsideConnects, reply, routeVerdict, underPrefix } from "./route";
 import { SCRATCH_ENV } from "./scratch";
-import { COMMAND, HOOK_COMMANDS, hookProgram, inboxCode, JOB_FILES, LOADER, PROTOCOL, RUNNERS,
-         type StartDoc } from "./protocol";
+import { CARRY_FILE, COMMAND, HOOK_COMMANDS, hookProgram, inboxCode, JOB_FILES, LOADER,
+         PROTOCOL, RUNNERS, type StartDoc } from "./protocol";
 import { READS, STATE_FORMAT } from "./state-format";
 import { Doors, POOL_GIDS, POOL_UIDS, probesBundle, runnerBundle, Sandbox, simulated, startDoc,
          SYNC_UID, TA_GID } from "./test/harness";
@@ -2527,6 +2527,7 @@ describe("prepare, at the sandbox's real paths", () => {
     const other = "a".repeat(64);
     box.write(`${RUNNERS}/${other}/runner.mjs`, "// another runner");
     box.write(inboxCode("si_x"), "left at rest");
+    box.write(CARRY_FILE, "a move's archive, left");
     const prepared = box.runner("prepare", "8.8.8.8", "1.1.1.1");
     expect(prepared.code, prepared.why).toBe(0);
     expect(readFileSync(box.path("/etc/resolv.conf"), "utf8"))
@@ -2549,6 +2550,7 @@ describe("prepare, at the sandbox's real paths", () => {
     expect(readFileSync(box.path("/var/lib/ta/format"), "utf8")).toBe(`${STATE_FORMAT}\n`);
     expect(readdirSync(box.path(RUNNERS))).toEqual([box.digest]);
     expect(existsSync(box.path(inboxCode("si_x")))).toBe(false);
+    expect(existsSync(box.path(CARRY_FILE))).toBe(false);
     // The host's own are untouched: its sudoers, and its /proc.
     expect(readFileSync("/etc/sudoers", "utf8")).toBe(hostSudoers);
     expect(readFileSync("/proc/mounts", "utf8")).not.toMatch(/ \/proc proc [^ ]*hidepid/);

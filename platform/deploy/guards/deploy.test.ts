@@ -2859,14 +2859,24 @@ describe("the rollout record and mode rollback", () => {
     const protocols = JSON.parse(readFileSync(join(REPO, PROTOCOL_JSON), "utf8")) as
       Record<string, object>;
     // A protocol newer than any this tree records (a rollback's): its record is the serving
-    // version's alone, since a protocol this tree records is held by its own frozen record.
+    // version's alone, since a protocol this tree speaks is held by its own frozen record.
+    // The serving Worker speaks this tree's protocols too, so only its newer one's reads stop.
     const newer = String(Math.max(...Object.keys(protocols).map(Number)) + 1);
+    const treeSpeaks = JSON.parse(readFileSync(join(REPO, SPEAKS_JSON), "utf8")) as number[];
     await stops(world({ held: true, before: {
-      [SPEAKS_JSON]: `[${newer}]`, [PROTOCOL_JSON]: JSON.stringify({ ...protocols,
+      [SPEAKS_JSON]: JSON.stringify([...treeSpeaks, Number(newer)]),
+      [PROTOCOL_JSON]: JSON.stringify({ ...protocols,
         [newer]: { relayed: {
           tierRead: { required: { plan: { type: "string" } }, optional: {} } } } }) } }),
                 "so nothing is changed: tierRead no longer answers plan, which protocol " +
                 `${newer}'s runner reads`);
+    // A runner protocol the serving Worker does not speak yet: its expand step deploys first.
+    const runnerSpeaks = JSON.parse(readFileSync(
+      join(REPO, "platform/sandbox/runner/runner-speaks.json"), "utf8")) as number;
+    await stops(world({ held: true, before: {
+      [SPEAKS_JSON]: JSON.stringify(treeSpeaks.filter((n) => n !== runnerSpeaks)) } }),
+                `so nothing is changed: this tree's runner speaks protocol ${runnerSpeaks}, ` +
+                "which the sandbox's version before does not speak");
     // A commit with no handed.json, a version no tag names a commit of, and a commit this
     // checkout lacks, are unknown.
     await stops(world({ held: true, before: { [HANDED]: null } }),
