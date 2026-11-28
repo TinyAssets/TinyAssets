@@ -787,7 +787,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     and admission by sandboxes, a run past them waiting (it absorbs
     `untangle/runs-wait-message`), and
     `Runs.#place` named `sourceLabel`; `limits-audit.md`'s tier row and the site's plans copy
-    in the same words (`untangle/place-shapes`).
+    in the same words; the owner policy document's `places` table (its check keeping
+    `sandbox` last in any order) and `agent.json`'s `credential` and `connection` retired,
+    refused `agent_file_invalid` with the owner's pin named, the starter naming neither and
+    the importer mapping none (`untangle/place-shapes`).
   - [ ] PL2, the rule: `contract/placement.json`; the owner policy document's `places`
     table (`order`, each agent's `places`, the `sources` pins and the `metered` fallbacks,
     written only in the owner's session); `agent.json` `needs`; each wake record's `can`, and
@@ -795,7 +798,14 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     place)` for the main agents and the sandbox, every subscription before any metered
     source, a key only by the owner's policy (a fallback when no plan can, a pin, or one
     "Move to…"), and an agent's move to a newly connected subscription announced; `due`; a
-    limit reached waits or moves to another subscription;
+    limit reached waits or moves to another subscription; an agent's entries cleared when
+    its folder is deleted or renamed. Its tests drive the owner object as a user would:
+    an agent.json naming `pi` with a Claude plan connected and a fallback on runs on the plan;
+    a run that writes its own agent.json never makes a key run; a key's model named with no
+    policy waits with the offer; a policy order with the sandbox not last is refused, and one
+    without it accepted; a fallback agent moves to a new subscription with its notice, and a
+    pinned one stays; a kill switch with no fallback waits, and with one takes the key; a
+    deleted agent's pin and fallback are gone for a new agent of its name;
     `preview` and the notices name the place; the starter's instructions per place, with the
     steer of ADR-040 decision 5. It merges `untangle/strongest-ranking` (call 4: the same
     function and ranking file), after `untangle/main-agent-definition` (`untangle/place-rule`).

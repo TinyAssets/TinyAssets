@@ -90,7 +90,9 @@ those ADRs' bodies are not edited: only their Status lines point here.
      - **"Move to…" one run:** that run, once.
      - **A fallback:** `metered.fallback` for every agent, or `metered.fallback_agents` for
        one. A key is then acceptable for that agent only when no subscription source can take
-       the run at any place, now. Whenever one can, the subscription runs.
+       the run at any place, now. Whenever one can, the subscription runs. "Can take the
+       run" is judged against the work's real `needs` (decision 4), never against an engine
+       or model the agent's definition names.
      - **A pin:** `sources[agent]`, the owner choosing one source for that agent on purpose.
        A pinned agent runs on that source, a key included, whatever else is connected.
 
@@ -139,19 +141,33 @@ those ADRs' bodies are not edited: only their Status lines point here.
    - **The owner's own settings are owner policy**, in the owner policy document's `places`
      table (`contract/src/policy-document.ts`, `owner/src/policy.ts`). It is written only by
      the owner, in the owner's own session, and enforced outside the sandbox (ADR-039
-     decision 2.13). Each part can spend, or can move work onto our sandbox, so none of it is
-     in a file a run or an outside client may write:
-     - `order`: the owner's own orders and `warm_first`, replacing the platform's whole;
-     - `agents[agent].places`: the places one agent may use;
-     - `sources[agent]`: a pin (decision 2);
+     decision 2.13). Each part either spends the user's money or overrides the platform's
+     orders, so none of it is in a file a run or an outside client may write:
+     - `order`: the owner's own orders and `warm_first`, replacing the platform's. The
+       table's check refuses an order in which `sandbox` is anywhere but last, so the sandbox
+       stays the last place in every order (decision 5). The owner may leave the sandbox out
+       of an order, or reorder the others.
+     - `agents[agent].places`: the places one agent may use, under the same check;
+     - `sources[agent]`: a pin (decision 2), naming the source, and for a key its connection;
      - `metered`: `fallback` and `fallback_agents` (decision 2), both off by default (Fact 15).
 
      The default document leaves the table out, so every default above holds. An agent asks
      for a change with `policy_propose`, which the owner answers as a card.
-   - **What an agent's files hold.** `agent.json` declares what its work `needs`
-     (decision 4), and may name the model or engine its definition is written for. Neither
-     spends: a model that only a key reaches still runs only by the policy's choice. A
-     `needs` that only the sandbox meets stays within the tier.
+   - **Keyed by agent, cleared with it.** An agent's entries are keyed by its folder name.
+     They are cleared, as a narrowing that needs no owner session, when that folder is
+     deleted or renamed. So a new agent of the same name starts with none.
+   - **What an agent's files hold, and what they cannot do.**
+     - `agent.json` keeps `needs` (decision 4), and the `engine` and `model` its definition
+       is written for.
+     - An engine or model it names is a preference. It ranks only among the sources the
+       owner's policy already makes acceptable. It never makes a metered source acceptable,
+       and it never makes "no subscription can take the run" true. So a run that writes
+       `"engine": "pi"`, which runs only on a key, gets the strongest subscription that meets
+       the work's `needs`, or waits.
+     - `agent.json`'s `credential` and `connection` are retired, in `untangle/place-shapes`.
+       Their job, a pin to one source or one key, is the owner's `sources[agent]`.
+     - `needs` can send work to the sandbox only as the platform's own order does: last, and
+       within the tier's sandboxes. It names no place, and it spends no money of the user's.
    - **What no file holds.**
      - The group order of decision 2 is the founder's rule, not a setting.
      - A place that can take nothing waits, and is never refused (ADR-039 decision 6).
