@@ -1621,7 +1621,8 @@ describe("the runner, by digest", () => {
 });
 
 describe("a template move", () => {
-  const OLD = "tinyassets-sandbox:s0000000000000000";
+  // Any pin but the one this Worker is configured with.
+  const OLD = "an-older-template:t1";
   const NEXT_LEASE = { lease_id: hex(32, "f"), epoch: 2 };
   const NEXT_RUN = `run_${hex(32, "3")}`;
 
