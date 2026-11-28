@@ -59,8 +59,8 @@ departure (item 4).
    BLOCK would reopen case 3 across a force-push: `APPROVE@H1'` t1, then a late `BLOCK@H1`
    t2, H1' the same change pushed again, would pass with the finding unfixed. Voiding never
    jams a PR: the check waits, and any verdict posted after the BLOCK counts. The design's
-   step 3 and its lane-0 test (8) still say "ignored, so the check waits", which holds for an
-   APPROVE and for a BLOCK alone.
+   step 3 and its lane-0 test (8) in `claude-ship.md`, merged with #5856 while this was
+   built, are corrected here to say so, and its owed line for this lane is ticked.
 5. **An intended narrowing:** a rebased or force-pushed head no longer carries a verdict
    (`carries`' docstring loses "a rebase … carries"); it waits for a review. `carries` itself
    is unchanged and still carries a prose delta until `process/ship-rules` drops it.
@@ -88,4 +88,3 @@ departure (item 4).
    history; a missing head read as no history; the group passing whatever its PR's decision.
 
 - [ ] live: the first PR reviewed after this merges reads its `review` run's title as before (`APPROVE: reviewed at this head (...)`), and the first one with two reviewed heads names the standing verdict
-- [ ] #5856's § Target pipeline step 3 and lane 0's test (8) say a writer's BLOCK on a commit force-pushed away voids the verdicts before it (item 4): #5856

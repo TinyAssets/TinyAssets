@@ -184,8 +184,10 @@ since 2026-11-24 (`brief_lane.md`'s "Ship's separation of duties"), which
    verdict governs. Counted verdicts are those `latest_verdict` counts today
    (by an account that can push, not voided by a dismissal, after the last
    base change) on a commit in the head's history (`git merge-base
-   --is-ancestor` on the objects `review.yml` already fetches); a verdict on a
-   commit outside it, force-pushed away, is ignored, so the check waits. A
+   --is-ancestor` on the objects `review.yml` already fetches); an `APPROVE` on
+   a commit outside it, force-pushed away, is ignored, and a writer's `BLOCK`
+   there voids the verdicts before it, as a dismissal does, so the check waits
+   (`verdict-order.md` item 4). A
    `BLOCK` stands until a counted verdict is submitted after it on the same
    commit or a descendant. `review` passes only when no `BLOCK` stands and the
    latest counted verdict on the most descendant reviewed commit is `APPROVE`
@@ -252,7 +254,7 @@ with decision 5; the separate steward lane folds into `process/ship-rules`,
 since the steward's procedure is skill text and the coordinator already starts
 one per PR.
 
-- [ ] The live verdict-order bug (Fact 17), its own small PR first: `fix/verdict-order`
+- [x] The live verdict-order bug (Fact 17), its own small PR first: `fix/verdict-order` Done (`fix/verdict-order`, `verdict-order.md`).
 - [ ] Rules into the repo, the steward procedure, the prose carry and the delta-only ask gone: `process/ship-rules`
 - [ ] The reviewer's procedure and poster, the coordinator's founder step, the land step gone: `process/ship-code-review`
 - [ ] No force-push or deletion of `main`, one source for it: `process/ship-main-guard`
@@ -270,7 +272,8 @@ one per PR.
    only, H2 the same change: pass; (6) on H2, `APPROVE` t1 then `BLOCK` t2:
    fail, and `BLOCK` t1 then `APPROVE` t2: pass; (7) a dismissed review at t2
    voids the verdicts at or before it; (8) H1 force-pushed away to H1': its
-   verdict is ignored and the check waits; (9) cases 1 to 6 with
+   `APPROVE` is ignored and the check waits, and a late `BLOCK@H1` voids
+   H1''s earlier `APPROVE`; (9) cases 1 to 6 with
    `--group-sha`, the group following its PR. Gates: those tests, the existing
    `test_review_check.py` and `test_review_writers.py`, actionlint and
    `ci_structural_guards.py` if `review.yml` changes, `--untangle-check`.
