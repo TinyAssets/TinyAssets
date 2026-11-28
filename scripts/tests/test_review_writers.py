@@ -94,19 +94,40 @@ def test_a_verdict_by_an_account_that_cannot_push_is_an_ordinary_comment(monkeyp
     assert _check(monkeypatch, blocked, answers).conclusion == "failure"
 
 
+_UNREAD = subprocess.CalledProcessError(1, ["gh"], stderr="gh: Server Error (HTTP 502)\n")
+
+
 @pytest.mark.parametrize("reviews", [
     [_review("APPROVE", "unknown", ident=1)],
     # The unread author may be a writer whose BLOCK decides: the older APPROVE stays void.
     [_review("APPROVE", "writer", ident=1), _review("BLOCK", "unknown", ident=2)],
 ])
 def test_a_permission_that_cannot_be_read_is_no_verdict_and_says_why(monkeypatch, reviews):
-    state = _check(monkeypatch, reviews, {"writer": {"permission": "write"}})
+    state = _check(monkeypatch, reviews, {"writer": {"permission": "write"},
+                                          "unknown": _UNREAD})
     assert state.conclusion is None
     assert state.title == "no verdict counts: could not read unknown's permission: " \
-        "gh: Not Found (HTTP 404)"
+        "gh: Server Error (HTTP 502)"
     assert "can push" in state.summary and "Rerun review.yml" in state.summary
     group = gate.group_check(state, number=1, head=A)
     assert group.conclusion == "failure" and "unknown's permission" in group.title
+
+
+def test_a_verdict_by_an_author_github_does_not_find_is_no_writers(monkeypatch):
+    """A 404 (a bot such as github-actions[bot], a deleted account) is no writer, on the
+    verdict path as on the edit path, and the one read is asked once a login."""
+    gh_json, asked = _github({"writer": {"permission": "write"}})
+    monkeypatch.setattr(gate, "_gh_json", gh_json)
+    approve = _review("APPROVE", "writer", ident=1)
+    reviews = [approve, _review("BLOCK", "github-actions[bot]", ident=2)]
+    standing = gate.standing_verdicts(
+        reviews, head=A, in_line=lambda older, newer: True, can_push=gate.push_reader("o/r"),
+        edits=[("github-actions[bot]", "2026-11-17T13:00:00Z")])
+    assert standing == [gate.Verdict("APPROVE", A, approve["html_url"])]
+    assert asked == ["repos/o/r/collaborators/github-actions[bot]/permission",
+                     "repos/o/r/collaborators/writer/permission"]
+    alone = _check(monkeypatch, [_review("APPROVE", "github-actions[bot]", ident=1)], {})
+    assert alone.conclusion is None and alone.title == f"waiting for review of {A}"
 
 
 @pytest.mark.parametrize(("answer", "standing"), [

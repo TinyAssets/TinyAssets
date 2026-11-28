@@ -45,8 +45,9 @@ Untangle the code a change touches, or a whole area, and finish the job.
 - **Parallel by default:** every PR sharing no file with open work starts now,
   from `main`, never stacked; one blocked on some files starts now without
   them, naming its part 2.
-- An agent runs git only in worktrees it made; a reviewer checks the PR out
-  in its own detached one. On a shared host, heavy runs (`test:root`,
+- An agent runs git only in worktrees it made; a reviewer reads the PR as git
+  objects from its own worktree of `origin/main` and never runs its code (the
+  peer-agents skill's reviewer procedure). On a shared host, heavy runs (`test:root`,
   `test:sizes`, `test:memory`, the deploy harness) take the host's run lock;
   a timeout under load is rerun under it, never a finding. When done, delete
   only what you wrote outside the repo, and your `node_modules`.

@@ -13,8 +13,9 @@ name: review
 # submitted after the PR's last base change count: a retarget changes what was read.
 # Only a review by an account that can push counts (write, maintain or admin, from
 # any grant), read with this run's own token from GitHub's permission endpoint. It
-# needs only Metadata read, for which `permissions:` has no key. A read that fails is
-# no verdict, its reason in the run's title, never a pass (`push_reader`).
+# needs only Metadata read, for which `permissions:` has no key. A 404 (a bot, an
+# account GitHub no longer finds) is no writer; any other read that fails is no
+# verdict, its reason in the run's title, never a pass (`push_reader`).
 #
 # WHO MAY POST IT. Any workflow job's own check run reports as the GitHub Actions
 # app, so a PR adding a job named `review` would satisfy a context pinned to it. The
