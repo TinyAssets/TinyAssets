@@ -48,31 +48,70 @@ def test_a_reviewer_loads_no_other_source_of_rules_tools_hooks_or_memory():
     (`--restricted`); no skill, whose `allowed-tools` would widen it; no MCP server;
     no hook; and no auto memory, one directory every worktree's sessions load."""
     cmd = _cmd("--review", DIR)
-    assert {"--restricted", "--disable-slash-commands", "--strict-mcp-config"} <= set(cmd)
+    assert {"--safe-mode", "--restricted", "--disable-slash-commands",
+            "--strict-mcp-config"} <= set(cmd)
     assert "--setting-sources" not in cmd and "--plugin-dir" not in cmd
     settings = json.loads(_values(cmd, "--settings")[0])
-    assert (settings["autoMemoryEnabled"], settings["disableAllHooks"],
-            settings["disableClaudeAiConnectors"]) == (False, True, True)
+    assert {key: settings[key] for key in (
+        "autoMemoryEnabled", "disableAllHooks", "disableClaudeAiConnectors", "enableArtifact",
+        "syncClaudeAiPlugins")} == {
+        "autoMemoryEnabled": False, "disableAllHooks": True, "disableClaudeAiConnectors": True,
+        "enableArtifact": False, "syncClaudeAiPlugins": False}
     assert f"Edit(/{DIR}/.claude/**)" in _values(cmd, "--disallowedTools")
     assert peer_agent.review_env({})["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1"
 
 
-@pytest.mark.parametrize(("content", "widens"), [
-    ("{}", None), ('{"permissions": {"deny": ["Bash"]}}', None),
+@pytest.fixture
+def managed(tmp_path, monkeypatch):
+    """An /etc/claude-code and a server-managed cache of the test's own."""
+    etc, home = tmp_path / "etc", tmp_path / "home"
+    etc.mkdir()
+    (home / ".claude").mkdir(parents=True)
+    monkeypatch.setattr(peer_agent, "_MANAGED_DIR", etc)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(peer_agent.sys, "platform", "linux")
+    return etc, home / ".claude" / "remote-settings.json"
+
+
+@pytest.mark.parametrize(("content", "refused"), [
+    ("{}", None),
+    ('{"permissions": {"deny": ["Bash"], "ask": []}, "disableAllHooks": true,'
+     ' "allowManagedPermissionRulesOnly": true, "enableArtifact": false}', None),
     ('{"permissions": {"allow": ["Bash(*)"]}}', "permissions.allow"),
-    ('{"permissions": {"defaultMode": "bypassPermissions"}}', "permissions.defaultMode"),
-    ('{"hooks": {"PreToolUse": []}, "enabledPlugins": {"x": true}}', "hooks, enabledPlugins"),
+    ('{"permissions": {"defaultMode": "acceptEdits"}}', "permissions.defaultMode"),
+    ('{"policyHelper": {"path": "/usr/local/bin/policy"}}', "policyHelper"),
+    ('{"sandbox": {"enabled": true, "autoAllowBashIfSandboxed": true}}', "sandbox"),
+    ('{"env": {"CLAUDE_CODE_SYNC_PLUGINS": "1"}}', "env"),
+    ('{"otelHeadersHelper": "/bin/x"}', "otelHeadersHelper"),
+    ('{"aKeyNobodyListedYet": 1}', "aKeyNobodyListedYet"),
+    ('{"autoMemoryEnabled": true}', "autoMemoryEnabled to True"),
     ("not json", "cannot be read"),
 ])
-def test_managed_settings_that_would_widen_a_reviewer_refuse_the_dispatch(
-        tmp_path, monkeypatch, content, widens):
-    """Managed settings apply even under --restricted, so they are read, not trusted."""
-    (tmp_path / "managed.d").mkdir()
-    (tmp_path / "managed.d" / "10.json").write_text(content)
-    monkeypatch.setattr(peer_agent, "_MANAGED_SETTINGS",
-                        (str(tmp_path / "absent.json"), str(tmp_path / "managed.d")))
+@pytest.mark.parametrize("where", ["managed-settings.json", "managed-settings.d/10.json",
+                                   "cache"])
+def test_managed_settings_pass_only_what_narrows(managed, content, refused, where):
+    """An allowlist, so a widening key nobody has listed refuses too."""
+    etc, cache = managed
+    path = cache if where == "cache" else etc / where
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
     problem = peer_agent.managed_settings_problem()
-    assert problem is None if widens is None else widens in problem
+    assert problem is None if refused is None else refused in problem
+
+
+@pytest.mark.parametrize("extra", ["CLAUDE.md", "managed-mcp.json", ".claude/agents/fixer.md",
+                                   "managed-settings.d/nested/x.json"])
+def test_any_other_managed_source_refuses(managed, extra):
+    etc, _ = managed
+    (etc / extra).parent.mkdir(parents=True, exist_ok=True)
+    (etc / extra).write_text("{}")
+    assert "managed source a reviewer could load" in peer_agent.managed_settings_problem()
+
+
+@pytest.mark.parametrize("platform", ["darwin", "win32"])
+def test_a_platform_whose_managed_sources_are_not_read_refuses(managed, monkeypatch, platform):
+    monkeypatch.setattr(peer_agent.sys, "platform", platform)
+    assert "Linux only" in peer_agent.managed_settings_problem()
 
 
 def test_a_reviewers_directory_is_new_and_empty(tmp_path):
