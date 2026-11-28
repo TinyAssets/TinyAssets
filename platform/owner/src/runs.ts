@@ -459,10 +459,11 @@ function authorityOf(origin: { readonly client: string } | null): string {
 
 /**
  * A session id the conversations keep: 1 to 256 printable ASCII characters, no space (the
- * `conversations.session_id` CHECK). The VM is untrusted, so any other the engine names is
- * refused here, never handed to SQLite to fail the runner's whole post.
+ * `conversations.session_id` CHECK), never a leading `-`, which a resume would hand its CLI
+ * as a flag. The VM is untrusted, so any other the engine names is refused here, never
+ * handed to SQLite to fail the runner's whole post.
  */
-const SESSION_ID = /^[!-~]{1,256}$/;
+const SESSION_ID = /^(?!-)[!-~]{1,256}$/;
 /** The run's error when its engine named a session id outside that shape: a fixed code. */
 export const SESSION_REFUSED = "session_id_refused: the engine named a session id outside " +
   "its shape, so this conversation does not resume";

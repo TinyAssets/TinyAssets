@@ -482,7 +482,6 @@ async function probeRoute(rec: Served, provider: string, api: string, model: str
     mcp: [`/r/${run}/${secret}/mcp`, `/r/${run}/mcp`],
     secretInHeader: engine.secret_header !== undefined }) ?? failed;
   return { engine: rec.id, provider, api, model, ok: reason === null, reason,
-           // A failed turn carries its stderr's tail, whatever the verdict names first.
            turns: turns.map((each) => ({ exit: each.exit, answered: each.answered,
                                          resumed: each.resumed,
                                          ...(each.exit === 0 && each.answered ? {}

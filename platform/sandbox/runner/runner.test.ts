@@ -286,11 +286,22 @@ describe("the invocation", () => {
     // check of run 45307631080): the record's form is what runs, never rewritten.
     const call = (model: string) => invocation(served().get("pi")!, pureStart("pi", { model }),
                                                {}, { home: "/h", system: "/s", skills: [] });
-    expect(call("model-1").argv.slice(1, 5))
-      .toEqual(["--provider", "openai", "--model", "model-1"]);
+    const { argv } = call("model-1");
+    const after = (flag: string) => argv[argv.indexOf(flag) + 1];
+    expect([after("--provider"), after("--model")]).toEqual(["openai", "model-1"]);
+    expect(argv.filter((arg) => /^--(?:provider|model)=/.test(arg))).toEqual([]);
     expect(() => call("-weird-model"))
       .toThrow("a value that reads as a flag is never a bare argument");
   });
+
+  it.each(["claude-code", "codex", "gemini", "pi"])(
+    "resumes %s by its session id, and refuses one that would read as a flag", (engine) => {
+      const call = (session_id: string) => invocation(served().get(engine)!,
+        pureStart(engine, { session_id }), {}, { home: "/h", system: "/s", skills: [] });
+      expect(call("s-1").argv).toContain("s-1");
+      expect(() => call("--dangerously-skip-permissions"))
+        .toThrow("a value that reads as a flag is never a bare argument");
+    });
 
   it("gives Gemini its system settings in a root-owned run directory outside its home, " +
      "with folder trust", async () => {
@@ -1803,7 +1814,10 @@ describe("the route probe", () => {
       .toMatch(/first turn did not complete/);
     expect(lines.find((line) => line.engine === "codex")!.reason)
       .toMatch(/no compaction request/);
-    for (const line of lines.filter((each) => each.engine === "pi")) {
+    const pi = lines.filter((each) => each.engine === "pi");
+    expect(pi.length).toBe(ROUTE_STEPS.filter((step) => step[1] === "pi").length);
+    expect(pi.length).toBeGreaterThan(0);
+    for (const line of pi) {
       expect([line.reason, line.turns], line.provider).toEqual([
         "no model request reached the door",
         [{ exit: 1, answered: false, resumed: false, stderr: refusal }]]);

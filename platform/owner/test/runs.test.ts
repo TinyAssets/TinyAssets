@@ -564,13 +564,16 @@ describe("a run's settle", () => {
     const stored = JSON.stringify(await r.sql("SELECT * FROM runs"));
     expect(stored).toContain("\"result\":\"done\"");
     expect(stored).not.toContain("assistant");
-    const bad = await ownerRun(r.stub, r.bind());
-    await r.stub.runEvents(runnerBinding(r, bad.start), {
-      frames: frames(INIT("has a space"), RESULT("done")), end: { exit_code: 0 } });
-    expect(await r.stub.agentStatus(r.bind(), { run_id: bad.run.run_id }))
-      .toMatchObject({ error: SESSION_REFUSED });
-    expect(await r.sql("SELECT session_id FROM conversations WHERE id = ?",
-                       bad.run.conversation_id)).toEqual([{ session_id: null }]);
+    // A space, or a leading `-` that a resume would hand its CLI as a flag.
+    for (const id of ["has a space", "--dangerously-skip-permissions"]) {
+      const bad = await ownerRun(r.stub, r.bind());
+      await r.stub.runEvents(runnerBinding(r, bad.start), {
+        frames: frames(INIT(id), RESULT("done")), end: { exit_code: 0 } });
+      expect(await r.stub.agentStatus(r.bind(), { run_id: bad.run.run_id }), id)
+        .toMatchObject({ error: SESSION_REFUSED });
+      expect(await r.sql("SELECT session_id FROM conversations WHERE id = ?",
+                         bad.run.conversation_id), id).toEqual([{ session_id: null }]);
+    }
   });
 
   it("is unknown when the sandbox's start never answered, failed when it answered out of " +
