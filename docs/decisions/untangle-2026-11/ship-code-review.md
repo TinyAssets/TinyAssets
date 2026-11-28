@@ -42,7 +42,8 @@ landing step goes.
    Important as fixed, withdrawn with its reason, or standing. It refuses a
    verdict its findings contradict either way, a founder question under
    `APPROVE`, an earlier Important left out or listed twice, a withdrawal with
-   no reason, past five Nits, a summary line opening with a marker, and a
+   no reason, past five Nits, a summary, finding or note line opening with a
+   marker (a later read would take it for a finding of its own), and a
    missing, partial or writer-less writers file. It then resolves the threads
    of the inline findings it lists as fixed, by the session's route.
 3. The peer-agents skill: the dispatch section holds the denied-permission

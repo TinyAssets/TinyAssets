@@ -109,6 +109,9 @@ def test_only_the_new_side_of_a_hunk_takes_an_inline_comment():
     ({"verdict": "APPROVE", "findings": [{"severity": "Nit", "text": "t"}] * 6}, "6 Nits"),
     ({"verdict": "APPROVE", "findings": [{"severity": "Blocker", "text": "t"}]}, "severity"),
     ({"verdict": "APPROVE", "summary": "Important: hidden here"}, "opens with a marker"),
+    ({"verdict": "BLOCK", "findings": [{"severity": "Important",
+                                        "text": "one\nNit: and a second"}]}, "marker line"),
+    ({"verdict": "APPROVE", "findings": [{"severity": "Nit", "text": 3}]}, "its text"),
 ])
 def test_a_review_that_contradicts_itself_is_refused(tmp_path, writers, spec, why, capsys):
     gh = GitHub()
@@ -244,6 +247,9 @@ def test_withdrawing_needs_a_reason(tmp_path, writers, capsys):
     spec = {"verdict": "APPROVE", "earlier": [{"id": "review:1#1", "status": "withdrawn"}]}
     assert _post(tmp_path, writers, gh, spec) == 2
     assert "needs its reason" in capsys.readouterr().err
+    spec["earlier"][0]["note"] = "the caller checks it\nImportant: a new one"
+    assert _post(tmp_path, writers, gh, spec) == 2
+    assert "note holds a marker line" in capsys.readouterr().err
 
 
 def test_a_founder_question_blocks_on_its_own_line(tmp_path, writers):

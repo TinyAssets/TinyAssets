@@ -222,6 +222,12 @@ def commentable(files: list[object]) -> dict[str, set[int]]:
     return lines
 
 
+def _marked(text: str) -> bool:
+    """Whether a line of `text` opens with a marker, which a later read would
+    take for a finding of its own."""
+    return any(_MARKER_RE.match(line) for line in text.splitlines())
+
+
 @dataclass(frozen=True)
 class Review:
     body: str
@@ -242,7 +248,7 @@ def build_review(spec: object, *, earlier: list[Earlier],
     question = spec.get("founder_question") or ""
     if not (isinstance(summary, str) and isinstance(question, str)):
         raise Refused("summary and founder_question are text")
-    if any(_MARKER_RE.match(line) for line in summary.splitlines()):
+    if _marked(summary):
         problems.append("a summary line opens with a marker: put it in findings")
     if "\n" in question.strip():
         problems.append("the founder question is one line")
@@ -254,9 +260,13 @@ def build_review(spec: object, *, earlier: list[Earlier],
     severities: list[str] = []
     for n, finding in enumerate(findings, 1):
         severity = finding.get("severity") if isinstance(finding, dict) else None
-        text = (finding.get("text") or "").strip() if isinstance(finding, dict) else ""
-        if severity not in MARKERS or not isinstance(text, str) or not text:
+        text = finding.get("text") if isinstance(finding, dict) else None
+        if severity not in MARKERS or not isinstance(text, str) or not text.strip():
             problems.append(f"finding {n} needs a severity in {MARKERS} and its text")
+            continue
+        text = text.strip()
+        if _marked(text):
+            problems.append(f"finding {n}'s text holds a marker line: one finding each")
             continue
         severities.append(severity)
         path, line = finding.get("path"), finding.get("line")
@@ -282,6 +292,8 @@ def build_review(spec: object, *, earlier: list[Earlier],
             problems.append(f"earlier {ident} is listed twice")
         elif status == "withdrawn" and not str(entry.get("note") or "").strip():
             problems.append(f"withdrawing earlier {ident} needs its reason in note")
+        elif _marked(str(entry.get("note") or "")):
+            problems.append(f"earlier {ident}'s note holds a marker line")
         else:
             accounted[ident] = entry
     known = {f.id: f for f in earlier}
