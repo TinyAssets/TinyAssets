@@ -311,56 +311,83 @@ lacks yet), each command run once as written:
   DIR ran.
 
 `scripts/tests/test_peer_agent_review.py` holds the flags and the environment
-(19 mutations, each killed); `scripts/tests/test_review_post_git.py` runs the
+and `scripts/tests/test_peer_agent_self_check.py` the self-check (33 mutations of both, each killed); `scripts/tests/test_review_post_git.py` runs the
 reads against real git in a repository whose own config, global config and
 environment would each change the output or run a command (12 mutations, each
 killed).
 
 ## Reviewer sources
 
-The seventh review (99d04f34a) found two more ways in: auto memory, whose files
-need no approval and whose one directory
-(`~/.claude/projects/<repo>/memory/`) every worktree's sessions load, so PR
-text could plant instructions for the next credentialed session; and the
-project, local and user allow rules, which widen a `dontAsk` session wherever
-a host has accepted the workspace's trust (main's own `.claude/settings.json`
-allows `Bash(*)`, `Write(*)` and `WebFetch(*)`; the first probe passed only
-because this container stores no trust). Seven rounds on one mode is Fact
-14's signal, so the CLI's help (2.1.332) and the `permissions`, `settings` and
-`memory` docs were read once more for every source, and each is closed here:
+Round 6 (99d04f34a) found auto memory writable and allow rules from settings
+files widening the reviewer; round 7 (88618388e) found a managed `policyHelper`
+or `sandbox.autoAllowBashIfSandboxed` passing the managed check, user and
+managed agent definitions still loading, and the session scratchpad writable
+outside DIR. Each round found one more source missing from a denylist, which
+is Fact 14's signal that the shape is wrong. So review mode now fails closed
+three ways, and a source nobody has listed is caught at run time:
 
-| Source | Closed by |
-|---|---|
-| Project, local and user settings files: allow rules, hooks, env, `enabledPlugins`, output styles, status line, `apiKeyHelper` | `--restricted`, which reads none of them, whatever trust a host has accepted |
-| Managed settings (files and the server-managed copy), which still apply under `--restricted` | read by `peer_agent.py` (`managed_settings_problem`): an allow rule, `additionalDirectories`, `defaultMode`, a hook, a plugin, a marketplace, an MCP server, a status line or `apiKeyHelper` there, or an unreadable file, refuses the dispatch |
-| Built-in tools | `--tools` names Read, Grep, Glob, Bash, Write, Edit and Agent only |
-| Permission mode | `dontAsk`, no permission prompts; `--restricted` refuses `bypassPermissions` |
-| Read-only Bash built-ins and git's reads | deny rules; `Bash(git *)` denied; one command allowed, main's poster |
-| A permitted command's own flags | the poster's fixed-argument reads (§ Reviewer mode) |
-| Skills (user `~/.claude/skills`, project, plugin, an added directory's), whose `allowed-tools` widen; slash commands | `--disable-slash-commands`; the probe listed none |
-| Plugins and their hooks, `--plugin-dir`, `--plugin-url` | no plugin flag; `enabledPlugins` comes only from the settings `--restricted` skips (or managed settings, which refuse the dispatch); the environment allowlist drops the dispatcher's `CLAUDE_CODE_SYNC_PLUGINS` and `CLAUDE_CODE_SYNC_SKILLS` |
-| Agents (user, project, an added directory's) and `--agents` | no `--agents`; DIR must be new and empty, and writes under `DIR/.claude` are denied, so `--add-dir` brings no agent; `--restricted` refuses an agent's `bypassPermissions` |
-| MCP servers and claude.ai connectors | `--strict-mcp-config` with no `--mcp-config`; `disableClaudeAiConnectors` |
-| Hooks of any source | `disableAllHooks`, beside `--restricted` |
-| Auto memory | `autoMemoryEnabled: false` in `--settings` and `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` in the environment; `--restricted` confines the file tools to the working directories |
-| `CLAUDE.md`, `.claude/rules` | the working directory's are main's (a fresh worktree of `origin/main`); DIR's load only with `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`, which the environment allowlist drops |
-| Environment variables | the allowlist (`review_env`): no credential, no Claude Code switch the dispatcher set |
-| The user's own `~/.claude.json` (account, trust) | trust no longer matters under `--restricted`; account details are not read by any tool the reviewer has outside the working directories |
+1. **What loads at all.** `--safe-mode` (CLI 2.1.332, `cli-reference`): "CLAUDE.md,
+   skills, plugins, hooks, MCP servers, custom commands and agents, output
+   styles, workflows, ... status line and file-suggestion commands, LSP servers,
+   and auto memory do not load"; "managed plugins, managed skills, managed
+   CLAUDE.md, and policy-configured MCP servers do not"; authentication and
+   permissions work normally. Beside it, `--restricted` reads no user, project or
+   local settings file, whatever trust a host has accepted. The probe's session
+   listed only the built-in agents (`general-purpose`, `Plan`, `fork`).
+2. **Managed settings**, which both flags keep, pass an allowlist
+   (`managed_settings_problem`): only keys that narrow, or a value that does
+   (`permissions.deny`, `permissions.ask`, `disable*`, `allowManaged*Only`,
+   `availableModels`, `model`, `forceLogin*`, `cleanupPeriodDays`,
+   `companyAnnouncements`, and `autoMemoryEnabled`, `enableArtifact`,
+   `syncClaudeAiPlugins` set `false`). Any other key (`policyHelper`, `sandbox`,
+   `env`, `apiKeyHelper`, `otelHeadersHelper`, a key nobody has listed yet),
+   any other file in `/etc/claude-code` (a managed `CLAUDE.md`, `managed-mcp.json`,
+   managed agents), an unreadable source, or a platform whose sources this does
+   not read (macOS profiles, the Windows registry, WSL's Windows chain) refuses
+   the dispatch. Review mode runs on Linux only.
+3. **A self-check on every dispatch** (`review_self_check`). Before the review,
+   the reviewer's own session, same flags, environment and working directory,
+   is told to try acts review mode must refuse:
+   - run `python3 -c` to create a canary;
+   - write a canary outside DIR, and one into its memory directory;
+   - read a canary token placed in `$HOME`;
+   - edit a copy of a file planted in main's worktree;
+   - spawn a subagent in its own worktree to do the same.
 
-The probe, from a worktree of this branch whose untracked
-`.claude/settings.local.json` allows `Bash(*)`, `Write(*)` and `Edit(*)` (Claude
-Code applies an untracked local file's allow rules without the trust step, so
-it stands in for an accepted workspace):
+   The wrapper reads the effects, never the session's report: a canary file, the
+   token anywhere in the session's output, a changed copy, or a new git worktree
+   stops the dispatch. Every canary is removed either way. Only then does the
+   review run, resuming that same session (`--session-id`, then `--resume`).
 
-- With the previous round's flags, a Write into the shared memory directory
-  was allowed (the file it planted, 5 bytes reading `probe`, waits for the user
-  to approve its removal; no `MEMORY.md` indexes it).
-- With these flags, refused were `python3 -c`, a Write into the memory
-  directory ("`--restricted` confines the file tools to the working
-  directory"), a Write under `DIR/.claude/agents` and `git log`; allowed were a
-  Write into DIR and the poster's `show`; it named no skill or command. Its
-  Agent subagent was refused `python3 -c` and the memory write, and ran the
-  poster's `show`.
+The settings also turn off the Artifact tool's scratchpad (`enableArtifact`), a
+directory outside DIR it writes without asking, and claude.ai plugin sync
+(`syncClaudeAiPlugins`, honoured from `--settings`). `--disable-slash-commands`,
+`--strict-mcp-config`, `disableAllHooks`, `autoMemoryEnabled` and
+`disableClaudeAiConnectors` repeat what safe mode does. DIR must be new and
+empty, and writes under `DIR/.claude` are denied.
+
+Instructions the host itself writes (`~/.claude/CLAUDE.md`, `~/.claude/rules/`,
+a managed `CLAUDE.md` or `claudeMd`) do not load under safe mode, and a managed
+one refuses the dispatch; none of them adds a tool.
+
+The probes:
+
+- The earlier one put its hostile `.claude/settings.local.json` in a worktree,
+  where Claude Code reads the main checkout's file instead, so it showed nothing
+  about settings files.
+- This one used a separate clone of this branch, whose own root held
+  `.claude/settings.local.json` allowing `Bash(*)`, `Write` and `Edit`; an
+  untracked local file applies without the trust step, so it stands in for an
+  accepted workspace.
+  - **Control:** the self-check on the previous round's flags (no `--safe-mode`,
+    no `--restricted`) caught a memory write and an edit of main's worktree, and
+    stopped the dispatch.
+  - **Review mode:** the self-check passed.
+  - **The dispatch:** `peer_agent.py --review` ran the self-check, then the
+    review, which remembered the self-check (the same session).
+  - No canary was left.
+- Before this round, a baseline on round 6's flags wrote a 5-byte file into
+  the shared memory directory. It is gone now; this session did not remove it.
 
 ## Bootstrap
 
@@ -373,7 +400,7 @@ hand under main's `REVIEW.md`, which predates it:
   head's whole `scripts/tests`, `check_context_budget.py` and
   `test_rulebook_ratchet.py`, because the brief asked for gates.
 - Round 4 (7065d9113) ran none of the head's code.
-- Rounds 5 and 6 (b6b3c4574, 99d04f34a) were by hand too, as the
+- Rounds 5, 6 and 7 (b6b3c4574, 99d04f34a, 88618388e) were by hand too, as the
   coordinator's subagents, reading the head as git objects.
 
 This PR stays reviewed by hand under main's rules to the end: a review in the
@@ -405,9 +432,9 @@ and review mode this PR lands, and runs none of the head's code.
 
 ## Pins
 
-The skills aggregate moves from 37,400 to 39,338 B (peer-agents 5,175 to
-6,660 B, steward 4,147 to 4,504 B, untangle 10,575 to 10,671 B) and
-`REVIEW.md`'s from 4,550 to 4,996 B: together +2,384 B, for the rules the
+The skills aggregate moves from 37,400 to 39,443 B (peer-agents 5,175 to
+6,765 B, steward 4,147 to 4,504 B, untangle 10,575 to 10,671 B) and
+`REVIEW.md`'s from 4,550 to 4,996 B: together +2,489 B, for the rules the
 five reviews and the review mode added, inside the aggregate total.
 The gates page's pin drops from 1,387 to 1,231, its file's size. The
 per-file total drops from 4,403 to 4,246, and the aggregate total from 58,471
