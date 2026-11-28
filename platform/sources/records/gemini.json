@@ -131,8 +131,7 @@
       ],
       "stdin": "{prompt}",
       "model_argv": [
-        "--model",
-        "{model}"
+        "--model={model}"
       ],
       "events": {
         "format": "jsonl",

@@ -181,7 +181,7 @@ export const LAYERS: readonly Layer[] = Object.freeze([
     may: ["platform/deploy/**", "!platform/deploy/guards/**", ...CONTRACT, ...SOURCES,
           "platform/sandbox/e2b/**", "platform/sandbox/template/pair.ts",
           "platform/ci/{paths,wrangler,history}.ts", "platform/ci/kit/locks.ts",
-          "platform/<worker>/*.json", "platform/sandbox/runner/{protocol,speaks}.json",
+          "platform/<worker>/*.json", "platform/sandbox/runner/{protocol,speaks,runner-speaks}.json",
           ...NOT_TESTS],
   },
   {
