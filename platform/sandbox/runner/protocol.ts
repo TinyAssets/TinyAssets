@@ -29,10 +29,14 @@
  */
 import { LEASE_TTL_S } from "../../contract/src/limits";
 
+import runnerSpeaks from "./runner-speaks.json" with { type: "json" };
 import speaks from "./speaks.json" with { type: "json" };
 
-/** The protocol this runner speaks. */
-export const PROTOCOL = 6;
+/**
+ * The protocol this runner speaks; data (`runner-speaks.json`), so the deploy kit holds it to
+ * the protocols the serving sandbox Worker speaks (`deploy/handed.ts`).
+ */
+export const PROTOCOL: number = runnerSpeaks;
 /**
  * The runner protocols the Worker speaks: its runner's, and at most the ones either side; data
  * (`speaks.json`), so the deploy kit reads a serving commit's.

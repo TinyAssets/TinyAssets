@@ -129,8 +129,10 @@ that cannot finish leaves the old sandbox serving the run, untouched.**
    went no further). They are protocol 6: protocol 5 plus the three, no document, answer of 5
    or read of the owner's changed. It ships in the rule's two deploys: #5860
    (`untangle/template-move-protocol`) records 6 and has the Worker speak 5 and 6 with its
-   runner on 5, and deploys first; this change moves the runner to 6 and adds the move, so its
-   rollback lands on a Worker that speaks 6.
+   runner on 5, and deploys first; this change moves the runner to 6 (`runner-speaks.json`)
+   and adds the move, so its rollback lands on a Worker that speaks 6. #5860's deploy hold
+   refuses this tree until the serving sandbox Worker speaks 6, and its runner's `prepare`
+   drops an archive a runner of 6 left, after a rollback.
 5. **The Worker's steps** (`#moved` and `#move`, on the serial chain, inside the start), each
    one's state kept before the next: the room for one more sandbox, by the line's own rule
    (`roomForOne`, a renewal's held slot counted, shared with a start's create); `carry-out`;
