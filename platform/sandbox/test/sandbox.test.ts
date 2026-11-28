@@ -1739,15 +1739,18 @@ describe("a template move", () => {
     expect(state.held).toEqual(["carry-out"]);  // the run started while the move still waits
     expect(state.commands.filter((command) => command.argv[1] === "launch").at(-1)!.sandbox)
       .toBe(old);
-    // Let go: a job launched in the old one since the move began, so the move gives way.
+    // The run ends and its lease is given back (its pause not landing yet) before the carry
+    // is let go: a job launched in the old one since the move began, so the move gives way
+    // (the carry predates what that run left unsent).
+    await e2b("/script", { busy: 1 });
+    await stub(who).release({ lease_id: opened.toString(16).padStart(32, "0") });
     await e2b("/release", {});
     await moving;
     state = await seen();
     expect(state.sandboxes.map((box) => box.id)).toEqual([old]);
     expect(state.files[`${old}:${CARRY_FILE}`]).toBeUndefined();
     expect(await rowOf(who)).toMatchObject({ sandbox_id: old, move_to: null });
-    // Once the run is over and its back-off passed, the next look moves it.
-    await stub(who).release({ lease_id: opened.toString(16).padStart(32, "0") });
+    // Once its back-off passed, the next look reaps it and then moves it.
     await setRow(who, "move_after = 0");
     await look(who);
     state = await seen();
