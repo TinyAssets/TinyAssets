@@ -43,16 +43,18 @@ def test_a_reviewer_denies_what_no_rule_allows_and_skips_no_permission():
     assert "WebFetch" not in _values(cmd, "--tools")[0].split(",")
 
 
-def test_a_reviewer_may_read_git_run_mains_poster_and_write_only_its_review():
+def test_a_reviewers_one_command_is_mains_poster_and_it_writes_only_its_review():
+    """git's own flags (--no-index, --output, -c) reach past Claude Code's checks of
+    its file tools, so git runs only inside the poster, with its arguments fixed."""
     allow = _values(_cmd("--review", DIR), "--allowedTools")
     assert f"Edit(/{DIR}/**)" in allow
-    assert f"Bash(python3 -I {MAIN}/scripts/review_post.py *)" in allow
-    assert not any(rule.startswith(("Bash(gh", "Bash(python3 -c", "Bash(*"))
-                   or rule in {"Bash", "Edit", "Write"} for rule in allow)
+    assert [rule for rule in allow if rule.startswith("Bash")] == [
+        f"Bash(python3 -I {MAIN}/scripts/review_post.py *)"]
+    assert not any(rule in {"Edit", "Write"} for rule in allow)
 
 
-@pytest.mark.parametrize("denied", ["Bash(gh *)", "Bash(curl *)", "Bash(env*)",
-                                    "Bash(printenv*)", "Bash(git push *)"])
+@pytest.mark.parametrize("denied", ["Bash(git *)", "Bash(gh *)", "Bash(curl *)",
+                                    "Bash(env*)", "Bash(printenv*)"])
 def test_a_reviewer_is_refused_what_claude_code_could_run_unasked(denied):
     assert denied in _values(_cmd("--review", DIR), "--disallowedTools")
 

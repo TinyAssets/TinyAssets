@@ -339,12 +339,12 @@ def test_a_gh_inside_a_checkout_is_refused(tmp_path, monkeypatch, writers, capsy
     (tmp_path / "head" / ".git").write_text("gitdir: elsewhere\n")
     monkeypatch.setenv("PATH", str(planted.parent))
     with pytest.raises(rp.Refused, match="inside the checkout"):
-        rp.resolve_gh()
+        rp.resolve_tool("gh")
     assert rp.run(["read", "--repo", REPO, "--pr", str(PR), "--writers", str(writers)]) == 2
     assert "inside the checkout" in capsys.readouterr().err
     real = gh_in(tmp_path / "tools")
     monkeypatch.setenv("PATH", str(real.parent))
-    assert rp.resolve_gh() == str(real)
+    assert rp.resolve_tool("gh") == str(real)
 
 
 def test_every_earlier_important_is_accounted_for_and_fixed_threads_resolved(

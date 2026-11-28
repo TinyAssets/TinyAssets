@@ -103,11 +103,13 @@ def load_writers(path: Path | None) -> frozenset[str]:
         more = page.get("nextPage") not in (None, 0)
         if more != (number < len(pages)):
             raise Refused("the writers file is not every page of the list, in order")
-        for item in items:
+        for n, item in enumerate(items, 1):
             login = item.get("login") if isinstance(item, dict) else None
             role = item.get("role_name") if isinstance(item, dict) else None
             if not (isinstance(login, str) and login and isinstance(role, str)):
-                raise Refused(f"the writers file holds {item!r}, not a collaborator")
+                # Never the item itself: a refusal must not repeat a file's content.
+                raise Refused(f"the writers file's page {number} item {n} is not a "
+                              "collaborator")
             if role in _WRITER_ROLES:
                 writers.add(login)
     if not writers:
@@ -131,18 +133,94 @@ def _edited(comment: dict) -> bool:
     return checks.is_edited(made, updated)
 
 
-def resolve_gh() -> str:
-    """`gh`'s absolute path, refused when it lives inside a git checkout: a PR's
-    tree could put its own `gh` first on `PATH`. Read from the files, not from
-    `git`, which `PATH` could replace too."""
-    found = shutil.which("gh")
+def resolve_tool(name: str) -> str:
+    """`name`'s (`gh`'s, `git`'s) absolute path, refused when it lives inside a git
+    checkout: a PR's tree could put its own first on `PATH`. Read from the files,
+    not from `git`, which `PATH` could replace too."""
+    found = shutil.which(name)
     if found is None:
-        raise Refused("no gh on PATH")
+        raise Refused(f"no {name} on PATH")
     real = Path(os.path.realpath(found))
     inside = next((d for d in real.parents if (d / ".git").exists()), None)
     if inside is not None:
-        raise Refused(f"gh resolves to {real}, inside the checkout {inside}")
+        raise Refused(f"{name} resolves to {real}, inside the checkout {inside}")
     return str(real)
+
+
+# Where the reviewer's git reads run: this script's own checkout, main's worktree.
+_CHECKOUT = Path(__file__).resolve().parents[1]
+
+
+def git_reader(git: str) -> Callable[..., str]:
+    """`git` with fixed arguments only, in `_CHECKOUT`, so a reviewer that may run
+    nothing but this script reads the head and nothing else: no system or global
+    config, no inherited `GIT_*` variable, no pager, no external diff or textconv
+    driver. Each caller builds every argument itself and puts paths after `--`.
+    Raises ValueError on a git failure; `ok` names the other exit codes that answer
+    (`git grep`'s 1, no match)."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_PAGER="cat",
+               GIT_TERMINAL_PROMPT="0")
+
+    def run_git(*args: str, ok: tuple[int, ...] = ()) -> str:
+        done = subprocess.run([git, "-C", str(_CHECKOUT), "-c", "core.pager=cat",
+                               "-c", "core.fsmonitor=false", *args], capture_output=True,
+                              text=True, env=env, timeout=120)
+        if done.returncode != 0 and done.returncode not in ok:
+            raise ValueError(f"git {args[0]} failed: {done.stderr.strip()[:300]}")
+        return done.stdout
+
+    return run_git
+
+
+def checked_path(path: object) -> str:
+    """A repository path a reviewer may name: relative, no `..` or empty part, no
+    leading `-`, no control character. Refused otherwise."""
+    if not (isinstance(path, str) and path) or path.startswith(("/", "-")) \
+            or any(part in ("", ".", "..") for part in path.split("/")) \
+            or any(ch in path for ch in "\\\0\n\r"):
+        raise Refused(f"{path!r} is not a relative path inside the repository")
+    return path
+
+
+def checked_commit(run_git: Callable[..., str], commit: object, head: str) -> str:
+    """`commit` when it is 40-hex and the PR's head or one of its ancestors, here."""
+    if not (isinstance(commit, str) and _SHA_RE.fullmatch(commit)):
+        raise Refused("--commit is a 40-character sha")
+    try:
+        run_git("cat-file", "-e", f"{head}^{{commit}}")
+    except ValueError as exc:
+        raise Refused(f"the PR's head {head} is not fetched here: fetch it first") from exc
+    try:
+        run_git("merge-base", "--is-ancestor", commit, head)
+    except ValueError as exc:
+        raise Refused(f"{commit} is not in PR's history (head {head})") from exc
+    return commit
+
+
+def git_read(run_git: Callable[..., str], command: str, commit: str, *,
+             path: str | None = None, pattern: str | None = None) -> str:
+    """The reviewer's reads of the head, as git objects: `show` a path at `commit`,
+    the PR's `diff` (origin/main...commit), `grep` a pattern at `commit`, the PR's
+    `log` (origin/main..commit). `commit` and `path` come checked."""
+    where = ["--", path] if path else []
+    if command == "show":
+        if not path:
+            raise Refused("show needs --path")
+        return run_git("show", "--no-ext-diff", "--no-textconv", "--no-color",
+                       f"{commit}:{path}")
+    if command == "diff":
+        return run_git("diff", "--no-ext-diff", "--no-textconv", "--no-color",
+                       f"origin/main...{commit}", *where)
+    if command == "grep":
+        if not pattern or "\n" in pattern:
+            raise Refused("grep needs one line of --pattern")
+        return run_git("grep", "-n", "-I", "--no-color", "--no-textconv", "-e", pattern,
+                       commit, *where, ok=(1,))
+    if command == "log":
+        return run_git("log", "--no-color", "--no-ext-diff", "--format=%H %an %ad %s",
+                       f"origin/main..{commit}", *where)
+    raise Refused(f"no git read {command}")
 
 
 def _text(first: str, rest: list[str]) -> str:
@@ -326,7 +404,7 @@ def build_review(spec: object, *, earlier: list[Earlier], lines: dict[str, set[i
     problems: list[str] = []
     verdict = spec.get("verdict")
     if verdict not in VERDICTS:
-        problems.append(f"the verdict is {verdict!r}, not one of {list(VERDICTS)}")
+        problems.append(f"the verdict is not one of {list(VERDICTS)}")
     summary = spec.get("summary") or ""
     question = spec.get("founder_question") or ""
     if not (isinstance(summary, str) and isinstance(question, str)):
@@ -366,12 +444,12 @@ def build_review(spec: object, *, earlier: list[Earlier], lines: dict[str, set[i
         problems.append(f"{severities.count('Nit')} Nits, past REVIEW.md's {_NITS}")
     known = {f.id: f for f in earlier}
     accounted: dict[str, dict] = {}
-    for entry in spec.get("earlier") or []:
+    for n, entry in enumerate(spec.get("earlier") or [], 1):
         ident = entry.get("id") if isinstance(entry, dict) else None
         status = entry.get("status") if isinstance(entry, dict) else None
         note = str(entry.get("note") or "") if isinstance(entry, dict) else ""
         if not isinstance(ident, str) or ident not in known:
-            problems.append(f"earlier {ident!r} is not an earlier entry `read` lists")
+            problems.append(f"earlier entry {n} is not an earlier entry `read` lists")
         elif ident in accounted:
             problems.append(f"earlier {ident} is listed twice")
         elif status not in _STATUSES[known[ident].kind]:
@@ -425,7 +503,7 @@ Post = Callable[[str, dict | None], object]
 
 
 def gh_client(gh: str) -> tuple[Get, Post]:
-    """The reads and the write, through `gh` at its absolute path (`resolve_gh`).
+    """The reads and the write, through `gh` at its absolute path (`resolve_tool`).
 
     A read takes every page (`--paginate --slurp`) of a list; a failure fails the
     run, and the reviewer runs it again. A write is made once: a retried POST can
@@ -504,18 +582,45 @@ def _show(state: PullState, writers: frozenset[str]) -> str:
     return "\n".join(out)
 
 
-def run(argv: list[str], *, get: Get | None = None, post: Post | None = None) -> int:
-    """The command line; `get` and `post` are GitHub's, through `resolve_gh`'s `gh`
-    unless given."""
+_GIT_READS = ("show", "diff", "grep", "log")
+
+
+def run(argv: list[str], *, get: Get | None = None, post: Post | None = None,
+        git: Callable[..., str] | None = None) -> int:
+    """The command line; `get` and `post` are GitHub's, through `resolve_tool`'s `gh`,
+    and `git` the reads' (`git_reader`), unless given."""
     parser = argparse.ArgumentParser(prog="review_post.py")
-    parser.add_argument("command", choices=("read", "post"))
+    parser.add_argument("command", choices=("read", "post", *_GIT_READS))
     parser.add_argument("--repo", required=True, help="owner/name")
     parser.add_argument("--pr", type=int, required=True)
     parser.add_argument("--writers", type=Path,
                         help="list_repository_collaborators' answer, saved as JSON")
-    parser.add_argument("--commit", help="post: the commit you read")
+    parser.add_argument("--commit", help="post and the git reads: the commit you read")
     parser.add_argument("--review", type=Path, help="post: the review, as JSON")
+    parser.add_argument("--path", help="show, diff, grep, log: one repository path")
+    parser.add_argument("--pattern", help="grep: the pattern")
     args = parser.parse_args(argv)
+    if args.command in _GIT_READS:
+        try:
+            path = checked_path(args.path) if args.path is not None else None
+            if get is None:
+                get, _ = gh_client(resolve_tool("gh"))
+            run_git = git or git_reader(resolve_tool("git"))
+            pull = get(f"repos/{args.repo}/pulls/{args.pr}")
+            head = pull.get("head", {}).get("sha") if isinstance(pull, dict) else None
+            if not (isinstance(head, str) and _SHA_RE.fullmatch(head)):
+                raise ValueError(f"PR {args.pr} has no head commit")
+            commit = checked_commit(run_git, args.commit, head)
+            sys.stdout.write(git_read(run_git, args.command, commit, path=path,
+                                      pattern=args.pattern))
+            return 0
+        except Refused as exc:
+            print(f"review_post: refused: {exc}", file=sys.stderr)
+            return 2
+        except (subprocess.SubprocessError, OSError, ValueError) as exc:
+            print(f"review_post: cannot read: {getattr(exc, 'stderr', '') or exc}",
+                  file=sys.stderr)
+            return 1
     try:
         writers = load_writers(args.writers)
         spec = None
@@ -527,7 +632,7 @@ def run(argv: list[str], *, get: Get | None = None, post: Post | None = None) ->
             except (OSError, ValueError) as exc:
                 raise Refused(f"the review file cannot be read: {exc}") from exc
         if get is None or post is None:
-            get, post = gh_client(resolve_gh())
+            get, post = gh_client(resolve_tool("gh"))
     except Refused as exc:
         print(f"review_post: refused: {exc}", file=sys.stderr)
         return 2

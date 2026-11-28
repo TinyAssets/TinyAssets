@@ -177,24 +177,25 @@ def build_claude_cmd(args: argparse.Namespace) -> list[str]:
     return cmd
 
 
-# A reviewer's tools: it reads the head as git objects, runs main's poster and
-# untangle check by path, and writes only its review. Everything else, `gh`, the
-# network and the environment included, is refused: in `dontAsk` mode a call no
-# rule allows is denied, and the deny rules cover what Claude Code would otherwise
-# run unasked as read-only. Agent is its finders and verifier.
+# A reviewer's tools: its one command is main's poster by path, whose read
+# subcommands (`show`, `diff`, `grep`, `log`) are its git, with fixed arguments and
+# checked shas and paths; and it writes only its review. A command's own flags
+# reach past Claude Code's working-directory checks, which cover only its file
+# tools (`git diff --no-index`, `--output`, `-c` read, write and run anything),
+# so no other command is allowed. Everything else, git, `gh`, the network and the
+# environment included, is refused: in `dontAsk` mode a call no rule allows is
+# denied, and the deny rules cover what Claude Code would otherwise run unasked as
+# read-only. Agent is its finders and verifier.
 _REVIEW_TOOLS = ("Read", "Grep", "Glob", "Bash", "Write", "Edit", "Agent")
-_REVIEW_GIT = ("show", "diff", "log", "grep", "rev-parse", "merge-base")
-_REVIEW_DENY = ("Bash(gh *)", "Bash(curl *)", "Bash(wget *)", "Bash(env*)",
-                "Bash(printenv*)", "Bash(git push *)", "WebFetch", "WebSearch")
+_REVIEW_DENY = ("Bash(git *)", "Bash(gh *)", "Bash(curl *)", "Bash(wget *)",
+                "Bash(env*)", "Bash(printenv*)", "WebFetch", "WebSearch")
 
 
 def review_claude_args(main: str, review_dir: str) -> list[str]:
     """The flags that make `claude -p` a reviewer: `main` is its working directory,
     a worktree of origin/main, and `review_dir` the one directory it may write."""
     allow = ["Read", "Grep", "Glob", "Agent", f"Edit(/{review_dir}/**)",
-             *(f"Bash(git {sub} *)" for sub in _REVIEW_GIT),
-             f"Bash(python3 -I {main}/scripts/review_post.py *)",
-             f"Bash(python3 -I {main}/scripts/review_checks.py --untangle-check *)"]
+             f"Bash(python3 -I {main}/scripts/review_post.py *)"]
     settings = {"permissions": {"blockReadsOutsideWorkingDirectories": True,
                                 "blockWritesOutsideWorkingDirectories": True}}
     return ["--permission-mode", "dontAsk", "--permission-prompts", "none",
