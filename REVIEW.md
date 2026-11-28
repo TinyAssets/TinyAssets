@@ -18,7 +18,8 @@ instructions.
 
 @.claude/skills/untangle/SKILL.md
 
-Run the skill's step 5 search on the PR and check its Untangle check.
+Run the skill's step 5 search on the PR yourself, slice by slice, and check its
+Untangle check.
 
 ## What Important means here
 

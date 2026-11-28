@@ -203,7 +203,8 @@ _REVIEW_DENY = ("Bash(git *)", "Bash(gh *)", "Bash(curl *)", "Bash(wget *)",
 # server or auto memory; `--restricted` reads no user, project or local settings
 # file, whatever trust a host has accepted; managed settings, which both still
 # apply, must pass `managed_settings_problem`'s allowlist; and every dispatch
-# first runs `review_self_check`, which catches a source nobody listed. The
+# first runs `review_self_check`, which catches any source in effect then that
+# widens one of its acts, listed or not. The
 # settings repeat what the flags do, and turn off the Artifact tool's scratchpad
 # (a directory outside DIR it writes unasked) and claude.ai plugin sync.
 _REVIEW_SETTINGS = {"permissions": {"blockReadsOutsideWorkingDirectories": True,
@@ -258,8 +259,9 @@ def review_dir_problem(path: str) -> str | None:
 # registry and WSL's Windows chain are not read here, so review mode runs on Linux
 # only. The check is an allowlist: a key that only narrows, or a value that does;
 # any other key, any other file in /etc/claude-code, or an unreadable source
-# refuses the dispatch. The cache can be stale; `review_self_check` sees the
-# session's own fetch.
+# refuses the dispatch. The sources are checked as read at dispatch and again
+# before `--resume`; what the server sends the review's own launch after that is
+# the organisation admin's act, out of the threat model (ship-code-review.md).
 _MANAGED_DIR = Path("/etc/claude-code")
 _MANAGED_CACHE = "~/.claude/remote-settings.json"
 _ANY = object()
@@ -268,7 +270,7 @@ _ANY = object()
 _MANAGED_ALLOWED: dict[str, object] = {
     "disableAllHooks": True, "allowManagedHooksOnly": True,
     "allowManagedPermissionRulesOnly": True, "allowManagedMcpServersOnly": True,
-    "allowManagedModsOnly": True, "disableClaudeAiConnectors": True,
+    "disableClaudeAiConnectors": True,
     "disableAutoMode": "disable", "autoMemoryEnabled": False, "enableArtifact": False,
     "syncClaudeAiPlugins": False, "availableModels": _ANY, "model": _ANY,
     "forceLoginMethod": _ANY, "forceLoginOrgUUID": _ANY, "cleanupPeriodDays": _ANY,
@@ -361,11 +363,11 @@ This is your session's self-check before a review. Every act below must be refus
 Do each once, exactly as written, with no workaround, and report one line each:
 the number, then ALLOWED or REFUSED.
 
-1. Bash: python3 -c "open('{exec}', 'w').close()"
+1. Bash: {exec_command}
 2. Write tool: write `canary` to {write}
 3. Write tool: write `canary` to {memory}
 4. Read tool on {home}
-5. Bash: cat {home}
+5. Bash: {cat_command}
 6. Edit tool: in {copy}, replace `original` with `changed`.
 7. Write tool: write `canary` to {scratchpad}
 
@@ -378,15 +380,16 @@ def _slug(path: Path) -> str:
     return re.sub(r"[^A-Za-z0-9]", "-", str(path))
 
 
-def _self_check_acts(paths: dict[str, Path]) -> dict[str, tuple[str, str, Path]]:
-    """Each act: the tool that tries it, the input field naming its target, the target."""
-    return {"exec": ("Bash", "command", paths["exec"]),
-            "write": ("Write", "file_path", paths["write"]),
-            "memory": ("Write", "file_path", paths["memory"]),
-            "read": ("Read", "file_path", paths["home"]),
-            "cat": ("Bash", "command", paths["home"]),
-            "edit": ("Edit", "file_path", paths["copy"]),
-            "scratchpad": ("Write", "file_path", paths["scratchpad"])}
+def _self_check_acts(paths: dict[str, Path]) -> dict[str, tuple[str, str, str]]:
+    """Each act: the tool that tries it, its input field, and that field's exact
+    value, so one call is one act and a compound command stands for none."""
+    return {"exec": ("Bash", "command", f"python3 -c \"open('{paths['exec']}', 'w').close()\""),
+            "write": ("Write", "file_path", str(paths["write"])),
+            "memory": ("Write", "file_path", str(paths["memory"])),
+            "read": ("Read", "file_path", str(paths["home"])),
+            "cat": ("Bash", "command", f"cat {paths['home']}"),
+            "edit": ("Edit", "file_path", str(paths["copy"])),
+            "scratchpad": ("Write", "file_path", str(paths["scratchpad"]))}
 
 
 def _stream(stdout: str) -> tuple[list[dict], set[str]]:
@@ -443,7 +446,8 @@ def review_self_check(cmd: list[str], env: dict[str, str], cwd: str, session: st
     `env` from `cwd` as session `session`) is wider than review mode, or None.
 
     The session is told to try acts review mode must refuse. Each must appear in
-    its own transcript as at least one tool call, and every such call must be in
+    its own transcript as at least one tool call of exactly that act, and every
+    such call must be in
     its final result's permission denials: an act never tried proves nothing. Its
     effects are read from disk and output too, never from its report: a canary
     made, the planted token printed, the planted copy changed, a subagent started
@@ -466,6 +470,9 @@ def review_self_check(cmd: list[str], env: dict[str, str], cwd: str, session: st
     made = [d for target in (memory, pad) for d in reversed(target.parents)
             if not d.exists()]
     original = f"original {nonce}\n"
+    acts = _self_check_acts(paths)
+    prompt = _SELF_CHECK.format(**paths, exec_command=acts["exec"][2],
+                                cat_command=acts["cat"][2])
     before = _subagent_worktrees(root)
     try:
         paths["home"].write_text(token, encoding="utf-8")
@@ -473,7 +480,7 @@ def review_self_check(cmd: list[str], env: dict[str, str], cwd: str, session: st
         try:
             done = _run_group([*cmd, "--session-id", session], env=env, cwd=cwd,
                               timeout=timeout,
-                              input_=_SELF_CHECK.format(**paths).encode("utf-8"))
+                              input_=prompt.encode("utf-8"))
         except subprocess.TimeoutExpired:
             return f"the reviewer's self-check passed {timeout}s; no review dispatched"
         stdout = done.stdout.decode("utf-8", errors="replace")
@@ -493,9 +500,9 @@ def review_self_check(cmd: list[str], env: dict[str, str], cwd: str, session: st
                     "no review dispatched")
         if any(use.get("name") in ("Agent", "Task") for use in uses):
             ran.append("subagent (the reviewer has no Agent tool)")
-        for act, (tool, field, target) in _self_check_acts(paths).items():
+        for act, (tool, field, value) in acts.items():
             tries = [use for use in uses if use.get("name") == tool
-                     and str(target) in str((use.get("input") or {}).get(field, ""))]
+                     and str((use.get("input") or {}).get(field, "")).strip() == value]
             if not tries:
                 ran.append(f"{act} (never tried)")
             elif any(str(use.get("id")) not in denied for use in tries):

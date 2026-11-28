@@ -310,7 +310,7 @@ lacks yet), each command run once as written:
   DIR ran. (The reviewer has had no Agent tool since round 8.)
 
 `scripts/tests/test_peer_agent_review.py` holds the flags and the environment
-and `scripts/tests/test_peer_agent_self_check.py` the self-check (51 mutations of both, each killed); `scripts/tests/test_review_post_git.py` runs the
+and `scripts/tests/test_peer_agent_self_check.py` the self-check (53 mutations of both, each killed); `scripts/tests/test_review_post_git.py` runs the
 reads against real git in a repository whose own config, global config and
 environment would each change the output or run a command (12 mutations, each
 killed).
@@ -323,7 +323,8 @@ or `sandbox.autoAllowBashIfSandboxed` passing the managed check, user and
 managed agent definitions still loading, and the session scratchpad writable
 outside DIR. Each round found one more source missing from a denylist, which
 is Fact 14's signal that the shape is wrong. So review mode now fails closed
-three ways, and a source nobody has listed is caught at run time:
+three ways, and a source nobody has listed is caught at run time if it is in
+effect then and widens one of the self-check's acts:
 
 1. **What loads at all.** `--safe-mode` (CLI 2.1.332, `cli-reference`): "CLAUDE.md,
    skills, plugins, hooks, MCP servers, custom commands and agents, output
@@ -357,7 +358,8 @@ three ways, and a source nobody has listed is caught at run time:
 
    The wrapper never takes the session's report. From its stream-json
    transcript it requires each act tried, as at least one call of that act's
-   tool naming its target, and every such call in the final result's
+   tool whose input is exactly the act (so a compound command is no act), and
+   every such call in the final result's
    `permission_denials`: an act never tried, or tried and not denied, stops the
    dispatch, so a session that did nothing proves nothing. Effects stop it
    too: a canary file, the token anywhere in its output, a changed copy, any
@@ -367,8 +369,16 @@ three ways, and a source nobody has listed is caught at run time:
    timeout. Every canary, and every directory made for one, is removed either
    way. Then every managed source is read again and must match, byte for
    byte, what the first check read (the server's copy is fetched again in the
-   background), and is checked again; only then does the review run, resuming
-   that same session (`--session-id`, then `--resume`).
+   background), and is checked again; then the review runs, resuming that same
+   session (`--session-id`, then `--resume`).
+
+   What this covers: the managed sources as read at dispatch and again before
+   `--resume`. The `--resume` launch makes its own startup fetch of the
+   server-managed settings, applied to the running review, and no check reads
+   it: a change the organisation's admin makes after the last check, or one a
+   failed self-check fetch hid, reaches the review. Only that admin writes
+   server-managed settings, through the claude.ai admin console, never a PR, so
+   it is the trusted admin's act and out of scope (§ Threat model).
 
 Round 8 (755c14fff) found the managed sources read once, before a self-check
 that can run ten minutes, and the self-check taking no effect for refused: a
@@ -378,10 +388,19 @@ transcript dump that showed the second: an Agent subagent with isolation
 `worktree` made `.claude/worktrees/agent-<id>` in the main checkout and removed
 it, so the reviewer has no Agent tool now and finds by itself (§ Departures).
 Its Nits: `allowManagedDomainsOnly` and `allowManagedReadPathsOnly` (sandbox
-sub-keys) and `permissions.disableAutoMode` (a top-level key) matched nothing
-and are gone; a narrowing key passes only its narrowing value, where `false`
-passed too; the scratchpad act; the memory directories the check made are
+sub-keys) and `allowManagedModsOnly` (a plugin option under `pluginConfigs`)
+matched nothing at top level and are gone, the last in round 9;
+`disableAutoMode` moved from `permissions` to the top level, where it lives; a
+narrowing key passes only its narrowing value, where `false` passed too; the scratchpad act; the memory directories the check made are
 removed; the timeout kills the process group, not the child alone.
+
+Round 9 (b2e1c8f66) found the `--resume` launch's own fetch unread, and three
+texts claiming more than the checks do (b2e1c8f66's commit title, "checked to
+the end", among them). By the threat model that fetch is the admin's act, so
+no mechanism was added: item 3 says what the check covers, and the texts are
+corrected. Its Nits: an act matches only a call that is exactly it; `REVIEW.md`
+runs step 5's search slice by slice, with no subagents; the departure below
+gives its reason; `allowManagedModsOnly` is gone.
 
 The settings also turn off the Artifact tool's scratchpad (`enableArtifact`), a
 directory outside DIR it writes without asking, and claude.ai plugin sync
@@ -422,9 +441,10 @@ The probes:
   - No canary was left.
 - Round 8's transcript dump (an earlier self-check form, which still told the
   session to spawn an isolated subagent) left an empty `.claude/worktrees` in
-  the main checkout, with no worktree registered. It is the live checkout's,
-  so the coordinator removes it; the check compares the directory's state
-  before and after, so it does not matter meanwhile.
+  the main checkout, with no worktree registered. It was gone by round 9's
+  probe; this session did not remove it.
+- Round 9's probe, with acts matched exactly: the review-mode self-check
+  passed and a full dispatch answered (exit 0); no canary was left.
 - Before round 7, a baseline on round 6's flags wrote a 5-byte file into
   the shared memory directory. It is gone now; this session did not remove it.
 
@@ -446,18 +466,35 @@ outside DIR (a hook or setting later host sessions load, main's worktree, the
 shared memory); a credential, the environment's or the CLI's login; a post but
 the poster's. A finding where such text gets one is in scope.
 
-Trusted, because only the host's admin writes them and no PR or comment does:
-the managed settings (`/etc/claude-code`, and the server's copy the
-organisation's admins set, cached in `~/.claude/remote-settings.json`), the
-installed CLI and its login, the dispatcher's environment, and `origin/main`,
-which only a reviewed merge changes. The user's config (`~/.claude`,
-`~/.claude.json`) is trusted the same way, but the host's own sessions write
-it too, a full agent that read PR text among them, so review mode loads none
-of its settings, instructions, agents, skills or MCP servers. Trusted sources
-are still checked where it is cheap, failing closed, because a mistake there
-widens every review: the managed allowlist, the environment allowlist, the
-self-check. A hostile host admin, a compromised CLI or proxy, and GitHub
-itself are out of scope.
+Trusted: the managed settings (`/etc/claude-code`, and the server's copy the
+organisation's admin sets in claude.ai's admin console, cached in
+`~/.claude/remote-settings.json`), the user's config (`~/.claude`,
+`~/.claude.json`), the installed CLI and its login, the dispatcher's
+environment, and `origin/main`, which only a reviewed merge changes. Not
+because the files are out of an agent's reach: every agent on this host runs
+as uid 0, so any full agent can write `/etc/claude-code` and `~/.claude`. They
+are trusted because only the founder and the founder's own sessions write them,
+and those sessions already hold the writer's token, so one could post a
+counting verdict itself (`claude-ship.md`, founder decision 2: agents keep the
+founder's account, and its indistinguishable acts are known gaps).
+
+Two gaps follow, accepted rather than defended:
+
+- **A host session steered by PR text.** A full agent that reads PR text (the
+  steward reading findings and replies, a `--write` peer) could be talked into
+  writing managed or user config, or posting a verdict, as the founder. That is
+  decision 2's accepted gap; review mode only declines to load the user's
+  config (no settings, instructions, agents, skills or MCP servers from it).
+- **A persuaded verdict.** PR text can talk the reviewer into a wrong verdict
+  posted through the poster, a misreviewed head passing. Review mode cannot
+  remove it; `REVIEW.md` makes text addressed to a reviewer a finding, the
+  poster refuses an inconsistent review, every new head gets a fresh review,
+  and CI, not the reviewer, runs the gates.
+
+Trusted sources are still checked where it is cheap, failing closed, because a
+mistake there widens every review: the managed allowlist, the environment
+allowlist, the self-check. A hostile founder or admin, a compromised CLI or
+proxy, and GitHub itself are out of scope.
 
 ## Bootstrap
 
@@ -470,8 +507,8 @@ hand under main's `REVIEW.md`, which predates it:
   head's whole `scripts/tests`, `check_context_budget.py` and
   `test_rulebook_ratchet.py`, because the brief asked for gates.
 - Round 4 (7065d9113) ran none of the head's code.
-- Rounds 5 to 8 (b6b3c4574, 99d04f34a, 88618388e, 755c14fff) were by hand
-  too, as the coordinator's subagents, reading the head as git objects.
+- Rounds 5 to 9 (b6b3c4574, 99d04f34a, 88618388e, 755c14fff, b2e1c8f66) were
+  by hand too, as the coordinator's subagents, reading the head as git objects.
 
 This PR stays reviewed by hand under main's rules to the end: a review in the
 form it builds needs main's poster and review mode, which main has only once
@@ -486,7 +523,10 @@ and review mode this PR lands, and runs none of the head's code.
 
 - **No parallel finders.** Ship's review fans out finders and a verifier as
   subagents; this reviewer has no Agent tool (round 8, § Reviewer sources) and
-  finds slice by slice, then verifies, in its one session.
+  finds slice by slice, then verifies, in its one session. Separate
+  review-mode peers per finder and for the verifier were not used: each costs
+  a session on the subscription and its own self-check of minutes, for every
+  head, and the verify is the same session's, not an independent one.
 - **A head past the commit read is refused**, nothing posted, where
   `land_pr2.sh` only noted it. The poster places inline comments from the
   head's diff, and a review covers the head it read: the reviewer reviews the
@@ -505,13 +545,13 @@ and review mode this PR lands, and runs none of the head's code.
 
 ## Pins
 
-The skills aggregate moves from 37,400 to 39,424 B (peer-agents 5,175 to
-6,746 B, steward 4,147 to 4,504 B, untangle 10,575 to 10,671 B) and
-`REVIEW.md`'s from 4,550 to 4,996 B: together +2,470 B, for the rules the
+The skills aggregate moves from 37,400 to 39,395 B (peer-agents 5,175 to
+6,717 B, steward 4,147 to 4,504 B, untangle 10,575 to 10,671 B) and
+`REVIEW.md`'s from 4,550 to 5,022 B: together +2,467 B, for the rules the
 reviews and the review mode added, inside the aggregate total.
 The gates page's pin drops from 1,387 to 1,231, its file's size. The
 per-file total drops from 4,403 to 4,246, and the aggregate total from 58,471
-to 58,320.
+to 58,317.
 
 ## Known
 

@@ -48,6 +48,9 @@ if act == "idle":
     uses = []
 if act.startswith("skip:"):
     del uses[int(act[5:])]
+if act == "compound":
+    uses = [use for n, use in enumerate(uses) if n not in (0, 4)]
+    uses.append(("Bash", {"command": f"cat {home}; python3 -c \\"open('{exec_}', 'w').close()\\""}))
 if act == "agent":
     uses.append(("Agent", {"prompt": "do acts 1 and 2", "isolation": "worktree"}))
 ids = [f"toolu_{n}" for n in range(len(uses))]
@@ -137,6 +140,8 @@ def test_a_session_that_tries_and_is_denied_every_act_passes(setup):
     ("worktree", "worktree (a subagent's worktree was made)"),
     ("garbage", "left no transcript to read"),
     ("exit", "exited 1"),
+    # One compound command names both Bash acts' targets, and is neither act.
+    ("compound", "exec (never tried), cat (never tried)"),
     *[(f"skip:{n}", f"{name} (never tried)") for n, name in enumerate(
         ("exec", "write", "memory", "read", "cat", "edit", "scratchpad"))],
 ])

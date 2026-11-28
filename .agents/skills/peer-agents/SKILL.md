@@ -49,7 +49,7 @@ Claude Ship's Code Review, in a session (`docs/decisions/untangle-2026-11/claude
 - **The head as git objects only**, through the poster: `review_post.py diff|show|grep|log --repo <o/r> --pr <n> --commit <sha> [--path <p>] [--pattern=<text>]`, never checked out, added as a directory or read with git itself.
 
 1. **Read** those, then `review_post.py read --repo <o/r> --pr <n> --writers <file>`: the earlier entries (findings, edits, founder questions) and the comments that count.
-2. **Find** slice by slice (an area of the diff, or a kind from REVIEW.md's Important list), each candidate with `file:line` and the failing case, alone: it has no Agent tool.
+2. **Find** slice by slice (an area of the diff, or a kind from REVIEW.md's Important list), each candidate with `file:line` and the failing case.
 3. **Verify**: reread each candidate in the source and drop what the code does not show; merge duplicates.
 4. **Rank** by `REVIEW.md`, and mark each earlier entry as the poster's docstring says.
 5. **Post**: write the review as the JSON that poster documents and run its `post` with `--commit <the sha you read>`. It refuses a review `REVIEW.md` forbids, and a head past yours: review the new one. It resolves the threads you mark fixed.
