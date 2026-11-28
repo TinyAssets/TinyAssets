@@ -789,9 +789,11 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     `Runs.#place` named `sourceLabel`; `limits-audit.md`'s tier row and the site's plans copy
     in the same words; the owner policy document's `places` table, whole: its schema,
     keyed by agent name, its check keeping `sandbox` last in any order, restrictions kept
-    with the name through a delete, rename or recreate, and grants (a key pin, a fallback)
-    cleared on delete with a notice to the owner; `agent.json`'s `credential` and `connection` retired, refused `agent_file_invalid`
-    with the owner's pin named, and with them the owner app's form fields that write them
+    with the name through a delete, rename or recreate, and grants (a key pin, a fallback, a
+    pin to a subscription the sandbox can run) cleared when the agent's `agent.json` is gone,
+    a rename away included, with a notice to the owner of what went and what stays;
+    `agent.json`'s `credential` and `connection` retired, refused `agent_file_invalid` with
+    the owner's pin named, and with them the owner app's form fields that write them
     (`doors/app/app.js`, "Runs on" and "API key connection") and their end-to-end test
     (`doors/test/app.e2e.mjs`); the starter names neither and the importer maps none, and the
     stage's own `agent.json` files that name either get that loud refusal, acceptable before
@@ -812,7 +814,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     stays; a kill switch with no fallback waits, and with one takes the key; a run that
     renames a device-only agent away and recreates its name, and a run that deletes and
     recreates it, each leave it device-only, never in the sandbox; a deleted agent's key pin
-    and fallback are gone for the recreated agent of its name, with the owner told;
+    and fallback are gone for the recreated agent of its name, with the owner told; a rename
+    away clears the pin, as a delete does;
     `preview` and the notices name the place; the starter's instructions per place, with the
     steer of ADR-040 decision 5. It merges `untangle/strongest-ranking` (call 4: the same
     function and ranking file), after `untangle/main-agent-definition` (`untangle/place-rule`).
@@ -944,8 +947,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     passes one (`untangle/owner-test-seams`); a guard against a vendor or engine id in Worker or
     runner source outside the records' data (`untangle/vendor-names-guard`); a workerd test with
     the sandbox binding failing, every door but the run doors answering, and runs still placed
-    on a main agent or a device (`untangle/sandbox-down-test`); a purged schedule lane coming back with no door or wake,
-    researched first (`untangle/lane-purge`).
+    on a main agent or a device (`untangle/sandbox-down-test`); a purged schedule lane coming
+    back with no door or wake, researched first (`untangle/lane-purge`).
 
 ### Step 6. The engines' locks, the one paid template build, the pin PR
 
@@ -1202,8 +1205,8 @@ real data, in step 5 (d3 §P).
   frontier, is Step 19's comparison, its loop changing only `platform/starter/` unless a primitive
   is approved; B2, agents on unmodified engines, is ADR-034; S6, one extension unit, is the
   package (Step 5); N1, one inbound door, is `/hooks/inbound`; N5, the owner's egress gate, is
-  G4; N8, the optional link to the user's computer, is Step 5's PL4 to PL6; N10, the owner-only policy layer, is
-  R5; N11, one user-built app, is S6; N12, cost-driver receipts measured and never enforced, is
+  G4; N8, the optional link to the user's computer, is Step 5's PL4 to PL6; N10, the
+  owner-only policy layer, is R5; N11, one user-built app, is S6; N12, cost-driver receipts measured and never enforced, is
   the sandbox time and the usage receipts. Still to build, each researched first: N2 phone push,
   N3 realtime voice and video, N4 a live takeover view of the sandbox's browser, N6 undo by
   snapshot, N7 agent purchases under the owner's caps with receipts, N9 media results.

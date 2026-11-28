@@ -111,6 +111,11 @@ those ADRs' bodies are not edited: only their Status lines point here.
      never what the owner happens to hold. So a vendor withdrawing a path, or the kill
      switch failing a source closed, moves no agent onto a key unless its fallback covers it:
      its runs wait with the offer. A fallback or pin for agent A never runs agent B.
+   - **A pin and a fallback are the owner's choice for a name**, whatever definition that
+     name's folder holds. A run that overwrites the folder's files, or deletes and recreates
+     them within one sync, leaves the pin and runs on it: the owner pinned the name, so that
+     is the owner's choice, and it is bounded by it. What a run cannot do is make a grant
+     (decision 3).
    - **A newly connected subscription** takes every agent with no pin whose work's `needs`
      it meets, at that agent's next input, a fallback agent included. The move is announced once
      per agent: "Your research agent now runs on your Claude plan." A pinned agent stays on
@@ -149,8 +154,8 @@ those ADRs' bodies are not edited: only their Status lines point here.
        of an order, or reorder the others.
      - `agents.<name>.places`: the places the agent of that name may use, under the same
        check;
-     - `default_places`: the places an agent name with no entry of its own may use, under
-       the same check; left out, the platform's orders;
+     - `default_places`: the places an agent name with no `places` of its own may use,
+       under the same check; left out, the platform's orders;
      - `sources.<name>`: a pin (decision 2), naming the source, and for a key its connection;
      - `metered`: `fallback`, and `fallback_agents`, a list of agent names (decision 2), both
        off by default (Fact 15).
@@ -165,10 +170,16 @@ those ADRs' bodies are not edited: only their Status lines point here.
        agent away and recreates its name, or deletes and recreates it, still gets a
        device-only agent.
      - **Grants are cleared when the agent is deleted**: a pin to a key, and its place in
-       `fallback_agents`. The owner is told what went: "Your research agent was deleted: its
-       pin to your OpenAI key went with it." A recreated agent of that name has no grant until
-       the owner gives one.
-     - `default_places` applies only to a name that has no entry of its own.
+       `fallback_agents`. A pin to a subscription the sandbox can run is neither a restriction
+       nor a grant, and is cleared the same way.
+     - **"Deleted"** means the agent's `agent.json` is gone, however it went: a door's
+       delete, a rename away, or a sync that removes it. A rename away clears the grants as a
+       delete does.
+     - **The owner is told** what went and what stays: "Your research agent was deleted: its
+       pin to your OpenAI key went with it. Its device-only limit stays on the name." A
+       recreated agent of that name has no grant until the owner gives one.
+     - `default_places` applies to a name that has no `places` of its own, whatever else it
+       has.
    - **What an agent's files hold, and what they cannot do.**
      - `agent.json` keeps `needs` (decision 4), and the `engine` and `model` its definition
        is written for.
