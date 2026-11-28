@@ -83,17 +83,30 @@ those ADRs' bodies are not edited: only their Status lines point here.
      - second, API keys, routers and custom endpoints.
    - Direction 4's strongest connected source ranks within each group
      (`model-ranking.json`).
-   - **A metered source runs only by the owner's choice.** That choice is one of these:
-     - the owner pinned it for that agent, or chose it with "Move to…";
-     - the owner turned `metered_fallback` on;
-     - the owner holds no subscription source the agent allows, so connecting the key was the
-       choice. A sign-in that decision 9 allows at no place is never offered, so it is never
-       held.
-   - Otherwise the run waits for a subscription source, even when none can take it now. The
-     message offers the choice: "Waiting for your computer. Use your OpenAI key for this run,
-     or always?"
-   - So a model that only an API key reaches runs only when the owner chose it, by one of
-     those three. Otherwise the strongest subscription runs.
+   - **A metered source runs only by the owner's choice, and the choice is data the owner
+     set.** It is one of these, and nothing else:
+     - a pin for that agent (its `agent.json`);
+     - "Move to…" for one run;
+     - `metered_fallback` turned on, for every agent.
+
+     Connecting a key is not a choice to run on it: the app offers a key as the secondary
+     option, beside subscriptions.
+   - **Otherwise the run waits** for a subscription source, even when none can take it now.
+     Its message offers the choice: "Waiting for your computer. Use your OpenAI key for this
+     run, or always?" "This run" is a "Move to…". "Always" stores a pin for that agent, or
+     `metered_fallback` if the owner picks all agents.
+   - **A key-only owner** meets that offer on an agent's first run. Or the connect flow asks
+     once, when the owner connects a key and holds no subscription that decision 9 allows:
+     "Run your agents on this key?" A yes is stored the same way, as `metered_fallback` on.
+   - **What the owner chose stays chosen.** Each admission reads only the stored choice,
+     never what the owner happens to hold. So a vendor withdrawing a path, or the kill
+     switch failing a source closed, moves no agent onto a key: its runs wait with the offer.
+     A pin for agent A never runs agent B.
+   - **A newly connected subscription** takes every unpinned agent its definition allows, at
+     that agent's next input. The move is announced once per agent: "Your research agent now
+     runs on your Claude plan." A pinned agent stays on its pin.
+   - So a model that only an API key reaches runs only when the owner chose it. Otherwise
+     the strongest subscription runs.
    - A top-up, credits or a limit reset stays on the same subscription sign-in. TinyAssets
      needs no separate path for them.
    - **A subscription at its limit.** The run waits, or it goes to another subscription
@@ -116,18 +129,20 @@ those ADRs' bodies are not edited: only their Status lines point here.
        "unattended":       ["main_push", "main_pull", "device", "sandbox"],
        "unattended_due":   ["main_push", "device", "main_pull", "sandbox"],
        "warm_first":       true,
-       "metered_fallback": false,
-       "can": {
-         "device":  ["tinyassets", "shell", "repo", "browse", "long_runs", "local"],
-         "sandbox": ["tinyassets", "shell", "repo", "browse", "long_runs"]
-       }
+       "metered_fallback": false
      }
      ```
 
-   - **What the file does not hold.** The group order of decision 2 is the founder's rule,
-     not a setting. The owner's one choice about metered sources is `metered_fallback`, or a
-     pin per agent. A place that can take nothing waits; it is never refused (ADR-039
-     decision 6), so that is no setting either.
+   - **What the file does not hold.**
+     - The group order of decision 2 is the founder's rule, not a setting.
+     - The owner's choices about metered sources are the three of decision 2. This file holds
+       `metered_fallback`; the pins are in each agent's `agent.json`; a "Move to…" belongs to
+       one run.
+     - A place that can take nothing waits, and is never refused (ADR-039 decision 6), so
+       that is no setting either.
+     - What each place kind `can` do is a platform fact, not an owner preference, so it is
+       not here (decision 4). An owner who overrides this file whole copies no platform
+       facts.
 
    - **Attended** means a person waits in the app. A push main agent comes first, then the
      device, then the sandbox. A pull-only main agent is not in this order, because it cannot
@@ -191,8 +206,16 @@ those ADRs' bodies are not edited: only their Status lines point here.
      `local` (the user's own files and apps).
      - Each main agent's `can` is in its wake record (`contract/wake-kinds.json`), from its
        vendor's pages, each cited.
-     - The device's and the sandbox's are in `placement.json` (decision 3). Only the device
-       lists `local`.
+     - The device's and the sandbox's are in `contract/place-kinds.json`, platform data
+       beside `wake-kinds.json` that no owner file overrides. Only the device lists `local`:
+
+       ```json
+       {
+         "device":  ["tinyassets", "shell", "repo", "browse", "long_runs", "local"],
+         "sandbox": ["tinyassets", "shell", "repo", "browse", "long_runs"]
+       }
+       ```
+
      - An agent's `agent.json` lists what its work `needs`. A schedule or mail item may add
        to that. The default is `["tinyassets"]`.
      - The rule matches `needs` against `can`, one rule for every place kind. It never
@@ -345,7 +368,7 @@ those ADRs' bodies are not edited: only their Status lines point here.
      | Engine and credential | Device | Hosted sandbox | Own agent |
      |---|---|---|---|
      | Claude Code, Claude plan | allowed [1] | allowed [1] | allowed: Claude over MCP, and Claude Code cloud sessions [16] |
-     | Codex, ChatGPT plan | allowed [2][24][25] | unclear, so off until the founder decides (below) [2][3][24][25] | allowed: ChatGPT over MCP [26] |
+     | Codex, ChatGPT plan | allowed [2][24][25] | unclear, so off; the founder asks OpenAI through its interest form (below) [2][3][24][25] | allowed: ChatGPT over MCP [26] |
      | Gemini CLI, Google AI Pro or Ultra | not served since 2026-06-18 [5] | not served [5] | none reaches the door today (Jules, [21]) |
      | Gemini CLI, Code Assist Standard or Enterprise sign-in | not allowed: Google's route for a third-party agent is an API key [8], and its terms ban third-party software reaching Gemini CLI's services [6] | not allowed [6][8] | none |
      | Antigravity CLI, Google AI Pro or Ultra | not allowed: "not supported under consumer plans" [7][8] | not allowed [7][8] | none |
@@ -375,14 +398,16 @@ those ADRs' bodies are not edited: only their Status lines point here.
          [3][4], and TinyAssets running the VM may read as making the account available to
          another [25].
 
-       That is ambiguous, and the risk is the user's ChatGPT account. So the record's
-       verdict stays `unclear`: the sign-in is not offered in the sandbox until the founder
-       decides. The founder can turn it on through the control record's sign-in switch, with
-       no deploy.
+       That is ambiguous, and the risk is the user's ChatGPT account. The founder decided
+       (2026-11-28): it stays off, and TinyAssets submits OpenAI's Sign in with ChatGPT
+       interest form. So the record's verdict stays `unclear`, and the sign-in is not offered
+       in the sandbox. Once OpenAI answers yes, the control record's sign-in switch turns it
+       on, with no deploy.
    - **Google's subscribers.** Neither of Google's CLIs runs a consumer Google plan for an
      app like TinyAssets, and Jules does not yet reach the door. Such a user's Gemini runs on
-     a Google API key they connect, as Google's own FAQ recommends [8]. Under decision 2,
-     that is the owner's choice, and the app says why.
+     a Google API key they connect, as Google's own FAQ recommends [8]. The app says why.
+     That key runs only once the owner chooses it, by decision 2's stored choice: a pin,
+     "Move to…", or `metered_fallback`, offered at the first run or in the connect flow.
 
 ## What changes in the other ADRs, exactly
 
@@ -412,10 +437,15 @@ those ADRs' bodies are not edited: only their Status lines point here.
 - **Direction 8 holds in every mix.** With no device, main agents and the sandbox serve
   every surface. With E2B down, main agents and devices still run.
 - **The E2B ceiling is now a real constraint.**
-  - Five sandboxes per free owner meet the E2B team's account-wide ceiling quickly.
-  - Hobby allows 10 running sandboxes and Pro 100 [15]. The control record holds 20.
-  - Which plan the team is on is a founder spending question. The control record is
-    corrected to that plan in `untangle/place-shapes`.
+  - Most owners hold one sandbox at a time, their own work's. A free owner holds five only
+    when four outside clients run its hosted agents at once (decision 6). Even so, the E2B
+    team's account-wide ceiling binds early: Hobby's 10 is ten owners running at once.
+  - Hobby allows 10 running sandboxes and Pro 100 [15]. The control record held 20.
+  - The founder keeps Hobby for now (2026-11-28): "we will need a way of knowing when we hit
+    this limit so we can upgrade then". So the control record's ceiling is 10, and the
+    founder is paged at 80% and 100% of it, and at once when E2B refuses a create for
+    concurrency (`tasks.md` Step 5, `untangle/sandbox-ceiling-alert`). Raising the plan is
+    then his spending call.
 - **The decision changes if** a vendor changes a page a verdict cites, or E2B's ceilings
   change.
 

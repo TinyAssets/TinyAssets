@@ -742,9 +742,16 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   `dry-run-queue.md`).
 - [x] The platform's canary and one alert path, as d3 §J2 and §J3 design them (R6; X5,
   `x5.md`). Live from `routes` (§9 step 13).
+- [ ] The E2B team's ceiling, told before it is reached (founder, 2026-11-28: "we will need
+  a way of knowing when we hit this limit so we can upgrade then"): the canary's alarm
+  (`platform/deploy/alarm.ts`) reads the team's live sandboxes (E2B's
+  `/teams/{id}/metrics/max`) against the control record's `sandbox_concurrency_ceiling` and
+  pages the founder through `contract/canary.json`'s pager at 80% and at 100%; a create E2B
+  refuses for concurrency pages at once. Researched first: where the refusal is read
+  (`sandbox/src/slots.ts`, or the sandbox Worker's logs) (`untangle/sandbox-ceiling-alert`).
 - [ ] The canary's alerts for what is only log lines today (list3 P18): `sandbox_waiting`,
-  `sandbox_renewal_refused`, `sandbox_runner_mismatch`, `exceededMemory`, and E2B's team metrics
-  (`/teams/{id}/metrics/max`) against the concurrency ceiling. Reading the logs needs a
+  `sandbox_renewal_refused`, `sandbox_runner_mismatch` and `exceededMemory` (E2B's team
+  metrics against the ceiling are the item above). Reading the logs needs a
   read-only Cloudflare token (Workers Observability Read), not the deploy token. E2B's credit
   and spend have no API. (The off-account copy's alarm past two nights is built: `x7.md`.)
 - [x] The deletion-jobs step before `admit` (§9 step 11; d3 §C4).
@@ -778,13 +785,16 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     `vendor_login` (no place in the name), `runs.place`, `engine_signins` keyed `(engine,
     place)`, each record's verdicts keyed by place (ADR-040 decision 9), `TierNumbers.sandboxes`
     and admission by sandboxes, a run past them waiting (it absorbs
-    `untangle/runs-wait-message`), `control.json`'s E2B ceiling set to the founder's plan, and
+    `untangle/runs-wait-message`), and
     `Runs.#place` named `sourceLabel`; `limits-audit.md`'s tier row and the site's plans copy
     in the same words (`untangle/place-shapes`).
   - [ ] PL2, the rule: `contract/placement.json` and the owner's override; `agent.json`
-    `places` and `needs`; each wake record's `can`; `choose` over `(source, place)` for the
-    main agents and the sandbox, every subscription before any metered source and
-    `metered_fallback` off; `due`; a limit reached waits or moves to another subscription;
+    `places` and `needs`; each wake record's `can`, and `contract/place-kinds.json` for the
+    device's and the sandbox's; `choose` over `(source, place)` for the main agents and the
+    sandbox, every subscription before any metered source, a key only by the owner's stored
+    choice (a pin, "Move to…", `metered_fallback`, off), and an agent's move to a newly
+    connected subscription announced; `due`; a limit reached waits or moves to another
+    subscription;
     `preview` and the notices name the place; the starter's instructions per place, with the
     steer of ADR-040 decision 5. It merges `untangle/strongest-ranking` (call 4: the same
     function and ranking file), after `untangle/main-agent-definition` (`untangle/place-rule`).
@@ -812,7 +822,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     its record researched first (ADR-040 decision 4; `untangle/wake-copilot-agent`).
   - [ ] PL9, the app: each run's place and state, the devices screen, the overrides and "Move
     to…", the steer before a sandbox opens, the vendors' own connects first and an API key
-    second, and the `metered_fallback` switch; `test:app` (`untangle/place-app`).
+    second, the one question a key-only owner's connect asks, the waiting run's "this run,
+    or always?" offer, and the `metered_fallback` switch; `test:app` (`untangle/place-app`).
 - [ ] The data shapes already known to be wrong, fixed before real data, as decided in d3 §P
   (list3 P48), each in its own lane PR:
   - rooms and room members with opaque ids, in lane O after T1c and before S4: built in
@@ -1210,21 +1221,16 @@ Open questions, from the as-built record:
    and retired `/mcp-directory`.
 5. The published plugins say `license: "Proprietary"` (`platform/plugins/build.mjs`
    `PUBLISHER`), but the repository is MIT. Which should the plugins carry (list 6, item 6d)?
-6. Which E2B plan is the team on, and so its ceiling of simultaneous sandboxes? The control
-   record says 20; E2B's page says Hobby runs 10 and Pro 100, with add-ons to 600 or 1,100.
-   A sandbox is one per authority (ADR-040 decision 6), so an owner whose own agents run
-   holds one, and only an owner whose outside clients run hosted agents at once holds more,
-   up to 5 on free. So Hobby's 10 serves 10 owners running at once in the usual case, and 2
-   free owners at their worst case; Pro serves 100, or 20. Main agents and devices take most
-   runs first, so fewer owners need a sandbox at all. `untangle/place-shapes` sets the record
-   to the plan.
-7. Codex in our sandbox on the user's ChatGPT plan: OpenAI documents Sign in with ChatGPT in
-   a remote or headless environment, and for automation on "trusted private
-   infrastructure", but sends "a paid or remotely hosted app" that uses a user's plan to its
-   interest form, and does not say which a platform's per-user sandbox is (ADR-040 decision
-   9). Keep it off, and Codex runs on the user's computer and as ChatGPT, or turn it on and
-   accept the risk to the user's account? Recommended: keep it off, and ask OpenAI through
-   the interest form, an outward act that is yours.
+6. Answered (founder, 2026-11-28): E2B stays on Hobby for now, "we will need a way of
+   knowing when we hit this limit so we can upgrade then". The control record's ceiling is
+   Hobby's 10 (`platform/deploy/control.json`, `untangle/placement-adr`), and the founder is
+   paged before and at it (Step 5, `untangle/sandbox-ceiling-alert`). Hobby's 10 serves 10
+   owners running at once in the usual case, and 2 free owners at their worst case (ADR-040
+   decision 6).
+7. Answered (founder, 2026-11-28): Codex stays off in our sandbox on a ChatGPT plan, and
+   TinyAssets submits OpenAI's Sign in with ChatGPT interest form (ADR-040 decision 9).
+   `codex.json` stays `unclear`. Once OpenAI answers yes, the control record's sign-in
+   switch turns it on, with no deploy.
 
 The coordinator's to decide (no spending, irreversible or outward-facing act), from the
 as-built record, and decided (the coordinator, 2026-11-12):

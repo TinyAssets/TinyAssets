@@ -8,6 +8,6 @@
     "paid": { "runs": 10, "storage_bytes": 250000000000 }
   },
   "sandbox_runtime_ceiling_s": 3600,
-  "sandbox_concurrency_ceiling": 20,
+  "sandbox_concurrency_ceiling": 10,
   "sandbox_renewal_window_s": 600
 }

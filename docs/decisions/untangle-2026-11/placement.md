@@ -193,8 +193,10 @@ ADR-033's 2026-11-01 reading:
   can be a push main place (PL8).
 - **OpenRouter and API keys:** allowed everywhere, through the egress door.
 
-One vendor reading is both genuinely ambiguous and risky for users: Codex in our sandbox,
-`tasks.md`'s founder question 7. The E2B plan is a spending question (question 6).
+One vendor reading was both genuinely ambiguous and risky for users: Codex in our sandbox.
+The founder answered it on 2026-11-28: off, and TinyAssets submits OpenAI's interest form.
+The E2B plan, a spending question, he answered the same day: Hobby, with an alert before the
+ceiling (`tasks.md` questions 6 and 7).
 
 ## 7. The re-cut (`tasks.md`)
 
@@ -228,8 +230,18 @@ open work that says "simultaneous runs", or assumes the sandbox or a key first.
   (`openspec/specs/public-website-surface/spec.md`), `engines-replan.md` and the owner-object
   spec's agents-posting requirement say tiers differ by simultaneous runs. Each becomes
   sandboxes with the shape (`untangle/place-shapes`).
-- [ ] `platform/deploy/control.json` `sandbox_concurrency_ceiling: 20` against E2B's Hobby 10, once the
-  founder names the plan (`untangle/place-shapes`).
+- [x] `platform/deploy/control.json` `sandbox_concurrency_ceiling: 20` against E2B's Hobby 10,
+  once the founder names the plan (`untangle/place-shapes`). Done here: the founder kept
+  Hobby (2026-11-28), so the record, `checklist.md` and `contract/src/control.ts` say 10.
+- [ ] A control record already written with 20 keeps it, since a deploy writes the record only
+  when none is held: mode `control` sets `sandbox_concurrency_ceiling` to 10 wherever one is
+  (`live:` the founder's operator run).
+- [ ] The founder is paged before and at the E2B team's ceiling, and at once when E2B refuses
+  a create for concurrency (`untangle/sandbox-ceiling-alert`).
+- [ ] TinyAssets submits OpenAI's Sign in with ChatGPT interest form
+  (https://openai.com/form/sign-in-with-chatgpt-interest/), asking for hosted use of the
+  unmodified Codex CLI on a user's own ChatGPT sign-in (`live:` the founder and the
+  coordinator, a host act).
 - [ ] `contract/src/limits.ts:226` calls ADR-035's body rule "the placement rule"; it becomes
   "the body rule", so `placement.json` names one thing (`untangle/place-shapes`).
 - [ ] `sources/src/model-ranking.json`'s `about` and `ranking.ts` put a top-tier key over a
@@ -245,7 +257,7 @@ open work that says "simultaneous runs", or assumes the sandbox or a key first.
 
 ## Sources
 
-The vendor terms and cloud-agent pages are ADR-040's Sources 1 to 23. The market pages:
+The vendor terms and cloud-agent pages are ADR-040's Sources 1 to 26. The market pages:
 
 | # | Source | Page date |
 |---|---|---|

@@ -82,7 +82,7 @@ export interface SandboxCeilings {
    * the vendor plan's own ceiling, which raising needs the plan raised first, or E2B refuses.
    */
   readonly runtime_ceiling_s: number;
-  /** How many sandboxes the E2B team may run at once (Hobby 20, Pro 100 and more with add-ons). */
+  /** How many sandboxes the E2B team may run at once (Hobby 10, Pro 100 and more with add-ons). */
   readonly concurrency_ceiling: number;
   /**
    * How long before the runtime ceiling a renewal looks for a moment its CLIs are quiet: the

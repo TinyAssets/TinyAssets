@@ -86,7 +86,7 @@
     "unattended": {
       "vendor_login_in_sandbox": {
         "allowed": false,
-        "reason": "Unclear: OpenAI documents ChatGPT-managed Codex automation only where \"the runner is trusted private infrastructure\", and sends \"a paid or remotely hosted app\" that uses a user's plan to its interest form; no page says which a platform's per-user hosted sandbox is, so it stays off until the founder decides (ADR-040 decision 9).",
+        "reason": "Unclear: OpenAI documents ChatGPT-managed Codex automation only where \"the runner is trusted private infrastructure\", and developers.openai.com/siwc/token-sharing-open-source sends \"a paid or remotely hosted app\" that uses a user's plan to its interest form; no page says which a platform's per-user hosted sandbox is, so it stays off until the founder decides (ADR-040 decision 9).",
         "cite": "https://learn.chatgpt.com/docs/auth/ci-cd-auth",
         "read": "2026-11-28"
       },
