@@ -171,6 +171,29 @@ function backoff(tries: number): number {
 }
 
 /**
+ * Whether E2B has room for one more running sandbox, a start's or a move's: E2B's count is the
+ * team's, and advisory, so unknown, the create is tried and E2B's own refusal holds the plan;
+ * a renewal's sandbox, paused for a moment, keeps its slot (`reserved`): counted, and with no
+ * count to set it against, nothing is tried.
+ */
+function roomForOne(count: number | null, reserved: number, ceiling: number): boolean {
+  return count === null ? reserved === 0 : count + reserved < ceiling;
+}
+
+/**
+ * The longest a failed template move waits to be tried again, however often it failed: a day.
+ * A move fails on a cause in the new image, envd or E2B, none of which mends inside a start, and
+ * each try makes a sandbox and kills it; a day bounds how long a sandbox stays on an older image
+ * once the cause is mended (`untangle-2026-11/template-move.md`).
+ */
+const MOVE_RETRY_MAX_MS = 24 * 60 * 60_000;
+
+/** A failed move's wait before it is tried again: a lease's TTL, doubling, at most a day. */
+function moveBackoff(tries: number): number {
+  return Math.min(LEASE_TTL_S * 1000 * 2 ** Math.max(0, tries - 1), MOVE_RETRY_MAX_MS);
+}
+
+/**
  * Cloudflare's wall-clock limit on one alarm handler, 15 minutes: one look for a quiet
  * moment ends inside it with room for the renewals after, and the next alarm looks on.
  */
@@ -216,6 +239,11 @@ interface Row {
    * adoption, before `prepare` ended) prepares it before anything launches in it.
    */
   prepared: number;
+  /** The sandbox a move made while it is not yet the authority's (`#move`), or null. */
+  move_to: string | null;
+  /** A move's failures in a row, and when it is tried again (ms; `moveBackoff`). */
+  move_tries: number;
+  move_after: number | null;
 }
 
 interface Box extends Handle {
@@ -809,6 +837,10 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
                 ceilings: SandboxCeilings, route: string):
       Promise<{ handle: Box } | "waiting" | "lost"> {
     const e2b = this.#e2b();
+    // What a move cut short left is settled first; one E2B will not kill yet is the look's.
+    await this.#settle().catch((left: unknown) => {
+      console.error("sandbox_move_failed: what a move left is killed by the look", left);
+    });
     const row = this.#row(authority);
     const found = row === null ? null : await e2b.info(row.sandbox_id);
     const running = found === null ? null : handleOf(found, row!);
@@ -845,11 +877,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       return wait();
     }
     try {
-      const count = await e2b.running();
-      // E2B's count is the team's, and advisory: unknown, the create is tried and E2B's
-      // own refusal holds the plan. A renewal's sandbox, paused for a moment, keeps its slot
-      // (`reserved`): counted, and with no count to set it against, nothing is tried.
-      if (count === null ? reserved > 0 : count + reserved >= ceilings.concurrency_ceiling) {
+      if (!roomForOne(await e2b.running(), reserved, ceilings.concurrency_ceiling)) {
         return await wait();
       }
       if (found !== null) {
@@ -865,17 +893,11 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       }
       const created = await this.#create(network!, ceilings, route);
       const info = await e2b.info(created.sandboxID);
-      const digest = this.#digest;
-      // One E2B no longer has is forgotten as the look forgets it: nothing of it, its window
-      // or its kill, its runs or its held slot, is the new one's.
-      this.#forget(authority);
-      this.#sql.exec("INSERT INTO sandboxes (authority, sandbox_id, lease_id, end_at, runner) " +
-                       "VALUES (?, ?, NULL, ?, ?)", authority, created.sandboxID,
-                     info === null ? Date.now() : Date.parse(info.endAt), digest);
-      this.#log(authority, "start");
+      this.#replaced(authority, created.sandboxID,
+                     info === null ? Date.now() : Date.parse(info.endAt), 0);
       await this.#took();
       // The template holds no runner: this Worker's, installed before its first command.
-      const box = { ...created, runner: digest };
+      const box = { ...created, runner: this.#digest };
       await this.#install(box);
       await this.#prepare(box, network!);
       return { handle: box };
@@ -901,75 +923,133 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   }
 
   /**
+   * The authority's sandbox now `sandboxId`, made from the pin: the one before forgotten as the
+   * look forgets one gone (its time logged, its runs, its window, its kill and its held slot are
+   * none of the new one's), its row made, and its start logged.
+   */
+  #replaced(authority: string, sandboxId: string, endAt: number, prepared: 0 | 1): void {
+    this.#forget(authority);
+    this.#sql.exec("INSERT INTO sandboxes (authority, sandbox_id, lease_id, end_at, runner, " +
+                     "prepared) VALUES (?, ?, NULL, ?, ?, ?)", authority, sandboxId, endAt,
+                   this.#digest, prepared);
+    this.#log(authority, "start");
+  }
+
+  /**
    * The authority's sandbox (`box`, running on this Worker's runner, as E2B told of it before:
    * `found`) moved to the pinned template when it is on another and nothing lives in it
-   * (`untangle-2026-11/template-move.md`): its runner packs what lives in it alone
-   * (`carry-out`), a new sandbox is made from the pin with the opening start's `network`, its
-   * runner installed and prepared, the carry copied across (`copy`, one stream through envd)
-   * and put in place (`carry-in`), and the old sandbox killed; only then does the row name the
-   * new one. The new one, or `box` as it was: while anything lives in it (it moves at a later
-   * idle start), on a runner this Worker keeps rather than ships, past E2B's count, or when
-   * any step before the kill fails (logged `sandbox_move_failed`; the new sandbox killed, the
-   * start goes on in the old one, untouched). A move never makes a run wait that the old
-   * sandbox can serve, so it takes no turn in the line.
+   * (`untangle-2026-11/template-move.md`, `#move`): the new one, or `box` as it was. A move is
+   * never a start's refusal: one that fails at any step is logged (`sandbox_move_failed`), what
+   * it made is killed, the archive it left in `box` dropped, and the start goes on in `box`; it
+   * is tried again past a back-off (`moveBackoff`), so a cause that does not mend costs no start
+   * a sandbox made and killed.
    */
   async #moved(authority: string, box: Box, found: SandboxInfo, network: NetworkDocument,
                ceilings: SandboxCeilings, route: string): Promise<Box> {
     const from = found.metadata[TEMPLATE_METADATA] ?? null;
-    if (from === this.env.E2B_TEMPLATE || box.runner !== this.#digest) {
+    const row = this.#row(authority)!;
+    if (from === this.env.E2B_TEMPLATE || box.runner !== this.#digest
+        || (row.move_after !== null && Date.now() < row.move_after)) {
       return box;
     }
+    try {
+      return await this.#move(authority, box, from, network, ceilings, route) ?? box;
+    } catch (error) {
+      const tries = row.move_tries + 1;
+      const after = Date.now() + moveBackoff(tries);
+      this.#sql.exec("UPDATE sandboxes SET move_tries = ?, move_after = ? WHERE authority = ?",
+                     tries, after, authority);
+      console.error(`sandbox_move_failed: sandbox ${box.sandboxID} stays on ${String(from)}; ` +
+                    `its move is tried again from ${new Date(after).toISOString()}`, error);
+      await this.#own(box, [COMMAND.carryDrop]).catch((dropped: unknown) => {
+        console.error(`sandbox_move_failed: sandbox ${box.sandboxID}'s archive was not dropped; ` +
+                      "its next prepare drops it", dropped);
+      });
+      await this.#settle().catch((left: unknown) => {
+        console.error("sandbox_move_failed: the sandbox the move made is killed by the look", left);
+      });
+      return box;
+    }
+  }
+
+  /**
+   * One move, each step's state kept before the next, so a fault or the object's end at any
+   * point leaves nothing unnamed and no credential with no row: the room for one more sandbox
+   * by the line's own rule (`roomForOne`); `box`'s runner packs what lives in it alone
+   * (`carry-out`; refused while anything lives); a new sandbox made from the pin with the
+   * opening start's `network`, named on the row (`move_to`) before anything else awaits, so
+   * while it holds nothing of the owner's; its runner installed and prepared; the carry copied
+   * across (`copy`, one stream through envd) and put in place (`carry-in`). From there the new
+   * sandbox is the owner's: in one transaction the row names it and `box` is marked to be killed
+   * (`retiring`), and only then killed (`#settle`), so a kill whose reply is lost, or never
+   * sent, leaves `box` to the look, never the new one. Null when it moves nothing now: something
+   * lives, or no room (each tried again at the next idle start).
+   */
+  async #move(authority: string, box: Box, from: string | null, network: NetworkDocument,
+              ceilings: SandboxCeilings, route: string): Promise<Box | null> {
     const e2b = this.#e2b();
+    const { reserved } = await this.#slots().turn(this.#owner);
+    if (!roomForOne(await e2b.running(), reserved, ceilings.concurrency_ceiling)) {
+      return null;
+    }
     const out = await this.#own(box, [COMMAND.carryOut, authority]);
     if (out.code === EXIT.no) {
-      return box;
+      return null;
     }
     const carry = answerOf<CarryAnswer>(out.out, ANSWERS[COMMAND.carryOut]);
-    const count = await e2b.running();
-    if (count !== null && count + 1 > ceilings.concurrency_ceiling) {
-      console.error(`sandbox_move_failed: sandbox ${box.sandboxID} stays on ${String(from)}: ` +
-                    `E2B runs ${count} sandboxes, and the move would make one more for a moment`);
-      return box;
+    const created = await this.#create(network, ceilings, route);
+    this.#sql.exec("UPDATE sandboxes SET move_to = ? WHERE authority = ?", created.sandboxID,
+                   authority);
+    const made: Box = { ...created, runner: this.#digest };
+    await this.#install(made);
+    await this.#run(made, [COMMAND.prepare, ...network.dnsServers]);
+    await e2b.copy(box, made, CARRY_FILE, carry.bytes);
+    if ((await this.#own(made, [COMMAND.carryIn, carry.sha256])).code !== EXIT.ok) {
+      throw new Error("the new sandbox's runner did not take the carry");
     }
-    let made: Box | null = null;
-    let endAt: number;
-    try {
-      made = { ...await this.#create(network, ceilings, route), runner: this.#digest };
-      await this.#install(made);
-      await this.#run(made, [COMMAND.prepare, ...network.dnsServers]);
-      await e2b.copy(box, made, CARRY_FILE, carry.bytes);
-      if ((await this.#own(made, [COMMAND.carryIn, carry.sha256])).code !== EXIT.ok) {
-        throw new Error("the new sandbox's runner did not take the carry");
-      }
-      const info = await e2b.info(made.sandboxID);
-      if (info === null) {
-        throw new Error(`the new sandbox ${made.sandboxID} is gone`);
-      }
-      endAt = Date.parse(info.endAt);
-      await e2b.kill(box.sandboxID);
-    } catch (error) {
-      if (made !== null) {
-        await e2b.kill(made.sandboxID).catch((killed: unknown) => {
-          console.error(`sandbox_move_failed: the new sandbox ${made!.sandboxID} could not be ` +
-                        "killed; its owner's erasure, or E2B's own timeout, ends it", killed);
-        });
-      }
-      if (refusalOf(error) !== null) {
-        throw error;
-      }
-      console.error(`sandbox_move_failed: sandbox ${box.sandboxID} stays on ${String(from)}, ` +
-                    "and is moved at its next idle start", error);
-      return box;
+    const info = await e2b.info(made.sandboxID);
+    if (info === null) {
+      throw new Error(`the new sandbox ${made.sandboxID} is gone`);
     }
-    // One gone is forgotten as the look forgets it: its time logged, its runs, its held slot.
-    this.#forget(authority);
-    this.#sql.exec("INSERT INTO sandboxes (authority, sandbox_id, lease_id, end_at, runner, " +
-                     "prepared) VALUES (?, ?, NULL, ?, ?, 1)", authority, made.sandboxID, endAt,
-                   made.runner);
-    this.#log(authority, "start");
+    this.ctx.storage.transactionSync(() => {
+      this.#replaced(authority, made.sandboxID, Date.parse(info.endAt), 1);
+      this.#sql.exec("INSERT INTO retiring (sandbox_id) VALUES (?) ON CONFLICT DO NOTHING",
+                     box.sandboxID);
+    });
     console.log(`sandbox_moved: sandbox ${box.sandboxID} on ${String(from)} is now ${
       made.sandboxID} on ${this.env.E2B_TEMPLATE}`);
+    await this.#settle().catch((left: unknown) => {
+      console.error(`sandbox_move_failed: sandbox ${box.sandboxID}, which a move left, is ` +
+                    "killed by the look", left);
+    });
     return made;
+  }
+
+  /**
+   * What moves left, settled on the chain: a sandbox a move made that is not yet the
+   * authority's (`move_to`: the move went no further, or this object ended under it) killed by
+   * its id, and each sandbox a move left (`retiring`) killed; each kept until E2B's kill
+   * answers, so the look asks again (`#arm`). Neither holds a run; the line is rung for each.
+   */
+  async #settle(): Promise<void> {
+    const e2b = this.#e2b();
+    let killed = false;
+    for (const { authority, move_to: made } of this.#sql.exec<{ authority: string;
+                                                                move_to: string }>(
+      "SELECT authority, move_to FROM sandboxes WHERE move_to IS NOT NULL").toArray()) {
+      await e2b.kill(made);
+      this.#sql.exec("UPDATE sandboxes SET move_to = NULL WHERE authority = ?", authority);
+      killed = true;
+    }
+    for (const { sandbox_id } of this.#sql.exec<{ sandbox_id: string }>(
+      "SELECT sandbox_id FROM retiring").toArray()) {
+      await e2b.kill(sandbox_id);
+      this.#sql.exec("DELETE FROM retiring WHERE sandbox_id = ?", sandbox_id);
+      killed = true;
+    }
+    if (killed) {
+      await this.#freed();
+    }
   }
 
   async start(start: SandboxStart): Promise<Started> {
@@ -1357,8 +1437,9 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    */
   async #arm(at = Number.POSITIVE_INFINITY): Promise<void> {
     const ceilings = this.#known();
-    let soonest = this.#sql.exec("SELECT 1 FROM owed LIMIT 1").toArray().length > 0
-      ? Math.min(at, Date.now()) : at;
+    let soonest = this.#sql.exec("SELECT 1 FROM owed UNION ALL SELECT 1 FROM retiring UNION " +
+                                   "ALL SELECT 1 FROM sandboxes WHERE move_to IS NOT NULL LIMIT 1")
+      .toArray().length > 0 ? Math.min(at, Date.now()) : at;
     for (const row of this.#rows()) {
       if (row.renewing === 1 || row.releasing === 1
           || (row.paused === 1 && (row.kill_at !== null || this.#leased(row.authority)))) {
@@ -1472,13 +1553,20 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     })));
     return this.#serial(async () => {
       let next = Number.POSITIVE_INFINITY;
+      let left = 0;
+      try {
+        await this.#settle();
+      } catch (error) {
+        console.error("what a move left is not killed yet; it is asked again, backing off", error);
+        left = 1;
+      }
       for (const row of this.#rows().filter((each) => !failed.has(each.authority))) {
         await settle(row, async () => {
           next = Math.min(next, await this.#lookAt(row, quiet.get(row.authority) ?? false,
                                                    ceilings));
         });
       }
-      return { next, failed: failed.size };
+      return { next, failed: failed.size + left };
     });
   }
 
@@ -1686,7 +1774,11 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   async erase(): Promise<{ killed: number }> {
     return this.#serial(async () => {
       const e2b = this.#e2b();
-      const ids = new Set(this.#rows().map((row) => row.sandbox_id));
+      // Each row's, each a move made or left, and any E2B lists under the owner's tag.
+      const ids = new Set(this.#sql.exec<{ id: string }>(
+        "SELECT sandbox_id AS id FROM sandboxes UNION SELECT move_to FROM sandboxes WHERE " +
+          "move_to IS NOT NULL UNION SELECT sandbox_id FROM retiring").toArray()
+        .map((each) => each.id));
       for (const id of await e2b.list("ta_owner", ownerTag(this.#owner))) {
         ids.add(id);
       }

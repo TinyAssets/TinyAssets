@@ -62,6 +62,7 @@ export const COMMAND = Object.freeze({
   hooks: "hooks",
   carryOut: "carry-out",
   carryIn: "carry-in",
+  carryDrop: "carry-drop",
 } as const);
 
 export type Command = (typeof COMMAND)[keyof typeof COMMAND];
@@ -74,10 +75,12 @@ export const WORKER_COMMANDS = Object.freeze([
 ] as const);
 /**
  * What the Worker sends to its own runner alone, the one it ships (`control.ts` `#own`): a
- * template move's carry (`carry-out` in the sandbox it leaves, `carry-in` in the one it makes),
- * which only a sandbox nothing lives in takes, so never one whose runner it keeps.
+ * template move's carry (`carry-out` in the sandbox it leaves, `carry-in` in the one it makes,
+ * `carry-drop` in the one it leaves when the move goes no further), which only a sandbox nothing
+ * lives in takes, so never one whose runner it keeps.
  */
-export const OWN_COMMANDS = Object.freeze([COMMAND.carryOut, COMMAND.carryIn] as const);
+export const OWN_COMMANDS = Object.freeze([COMMAND.carryOut, COMMAND.carryIn,
+                                           COMMAND.carryDrop] as const);
 export type WorkerCommand = (typeof WORKER_COMMANDS)[number];
 export type OwnCommand = (typeof OWN_COMMANDS)[number];
 

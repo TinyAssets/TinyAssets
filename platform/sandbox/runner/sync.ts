@@ -1381,7 +1381,8 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
  * the owner's files hold of each store copy, carried with the store), its cursor 0. So the
  * next sandbox's first sync-in reads every other path from the owner's files, as a new
  * sandbox does, and its sync-out sends what this one would have, against the same bases.
- * What the sync-ignore keeps out is the working copy's own, never carried.
+ * Each file with a row is hashed, its change time trusted for nothing. What the sync-ignore
+ * keeps out is the working copy's own, never carried; nor is a mode alone, which no row keeps.
  */
 export async function carryOut(place: Pick<Place, "local" | "authority">, mirror: Mirror,
                                dir: string): Promise<void> {
@@ -1409,7 +1410,10 @@ export async function carryOut(place: Pick<Place, "local" | "authority">, mirror
       const local = localOf(place, path);
       const stat = fileStat(local);
       const known = mirror.get(path);
-      if (stat === null || (known !== undefined && !await differs(place, path, stat, known))) {
+      // Hashed whatever its change time says: an edit of the same size inside the time's tick
+      // is no other sync's to find, and a move is the last chance to keep it.
+      if (stat === null || (known !== undefined && Number(stat.size) === known.size
+                            && (await scanned(place.local, local, []))?.sha256 === known.sha256)) {
         continue;
       }
       if (await copied(place.local, local, files, join(files, rel),

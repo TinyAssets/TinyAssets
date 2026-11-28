@@ -17,9 +17,10 @@
  * is live, `prepare` dropping every other runner while nothing lives, a move's `carry-out`
  * refused ("no") while the state is live and otherwise packing an archive of its sandbox's at
  * the record's carry path (answered by its size and digest), `carry-in` taking only an upload
- * there of the digest it names, and every other command done, answering nothing. An upload can be refused (a full disk), a command's
- * reply lost after it ran (`lost`), and a command held before it runs until the test lets
- * it go (`hold`, `/release`).
+ * there of the digest it names, `carry-drop` dropping the archive, and every other command
+ * done, answering nothing. An upload can be refused (a full disk), a command's reply lost after
+ * it ran (`lost`), a kill's reply lost after it killed (`killLost`), and a command held before
+ * it runs until the test lets it go (`hold`, `/release`).
  */
 import { env } from "cloudflare:workers";
 
@@ -77,6 +78,8 @@ interface Script {
   room: number | null;
   /** A runner command that runs, but whose reply envd loses (answered 502 after it ran). */
   lost: string | null;
+  /** The next kill kills, but its reply is lost (answered 502). */
+  killLost: boolean;
   /**
    * The next run of a runner command, held as it arrives until the test lets it go
    * (`/release`): what it finds is read then. The state lists it while held (`held`).
@@ -115,7 +118,7 @@ function reset(): void {
                   full: false, pauseMode: "full", noCount: false, down: 0,
                   refuseResume: false, broken: null, tampered: null,
                   protocol: (env as unknown as { RUNNER_PROTOCOL: number }).RUNNER_PROTOCOL,
-                  room: null, lost: null, hold: null };
+                  room: null, lost: null, killLost: false, hold: null };
 }
 reset();
 
@@ -261,6 +264,10 @@ async function api(request: Request, url: URL): Promise<Response> {
   }
   if (request.method === "DELETE") {
     fake.sandboxes.delete(id);
+    if (fake.script.killLost) {
+      fake.script.killLost = false;
+      return new Response("the reply was lost", { status: 502 });
+    }
     return new Response(null, { status: 204 });
   }
   if (action === "pause") {
@@ -362,6 +369,9 @@ async function envd(request: Request, url: URL): Promise<Response> {
       const bytes = new TextEncoder().encode(archive);
       done = { ...done, out: JSON.stringify({ bytes: bytes.byteLength,
                                               sha256: await sha256(bytes) }) };
+    }
+    if (done.argv[1] === "carry-drop") {
+      fake.files.delete(carry);
     }
     if (done.argv[1] === "carry-in") {
       const archive = fake.files.get(carry);

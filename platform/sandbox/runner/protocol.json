@@ -316,10 +316,10 @@
     }
   },
   "6": {
-    "commands": ["adopt", "cancel", "carry-in", "carry-out", "decide", "hooks", "launch",
-                 "login-cancel", "login-drop", "login-input", "login-launch", "login-run",
-                 "prepare", "quiet-wait", "recover", "renew-wait", "renewed", "run",
-                 "signin-check", "state", "sync"],
+    "commands": ["adopt", "cancel", "carry-drop", "carry-in", "carry-out", "decide", "hooks",
+                 "launch", "login-cancel", "login-drop", "login-input", "login-launch",
+                 "login-run", "prepare", "quiet-wait", "recover", "renew-wait", "renewed",
+                 "run", "signin-check", "state", "sync"],
     "exit": { "ok": 0, "usage": 2, "no": 3, "fenced": 4, "absent": 24, "mismatch": 25 },
     "paths": {
       "loader": "/usr/local/bin/ta-runner",

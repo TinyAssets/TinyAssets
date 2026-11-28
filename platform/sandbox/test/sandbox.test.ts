@@ -32,7 +32,7 @@ import { sha256Hex } from "../../contract/src/digest";
 import { LEASE_TTL_S } from "../../contract/src/limits";
 import { MIGRATION_CHANGED, migrate, migrationDigest } from "../../contract/src/migrate";
 import { refusalOf } from "../../contract/src/refusal";
-import { inboxCode, inboxDoc, INBOX, INCOMING, LEASE_FILE, PROTOCOL,
+import { CARRY_FILE, inboxCode, inboxDoc, INBOX, INCOMING, LEASE_FILE, PROTOCOL,
          SPEAKS } from "../runner/protocol";
 import { shapeProblems, spokenShape } from "../runner/test/state-shape";
 import Sandbox from "../src/index";
@@ -1727,40 +1727,112 @@ describe("a template move", () => {
     expect(state.files[`${state.sandboxes[0]!.id}:carried`]).toBe(`carry of ${old}`);
   });
 
-  it("starts the run in the old sandbox, untouched, when the move fails, the new one killed",
-     async () => {
-    const who = owner();
-    const old = await madeFrom(who, OLD);
-    await e2b("/script", { broken: "carry-in" });
+  /** The next start that opens a lease, on a lease of its own: its answer. */
+  let opened = 4;
+  const opening = () => {
+    opened += 1;
+    const id = opened.toString(16).padStart(32, "0");
+    return start({ run: `run_${id}`, lease: { lease_id: id, epoch: opened } });
+  };
+  /** What the start answered and every `sandbox_move_failed` it logged. */
+  async function failing(who: string): Promise<{ got: unknown; failed: string[] }> {
     const logged = vi.spyOn(console, "error");
     try {
-      expect(await stub(who).start(start({ run: NEXT_RUN, lease: NEXT_LEASE })))
-        .toEqual({ started: true });
-      expect(logged.mock.calls.some((call) => String(call[0])
-        .startsWith(`sandbox_move_failed: sandbox ${old} stays on ${OLD}`))).toBe(true);
+      const got = await stub(who).start(opening()).then((answer) => answer,
+                                                       (error: unknown) => String(error));
+      return { got, failed: logged.mock.calls.map((call) => String(call[0]))
+        .filter((line) => line.startsWith("sandbox_move_failed")) };
     } finally {
       logged.mockRestore();
     }
-    const state = await seen();
-    // The sandbox it made is gone, and the run runs in the old one, which keeps its row.
-    expect(state.sandboxes.map((box) => box.id)).toEqual([old]);
-    expect(state.files[`${old}:${inboxDoc(NEXT_RUN)}`]).toBeDefined();
-    expect(state.commands.filter((command) => command.argv[1] === "launch").at(-1)!.sandbox)
-      .toBe(old);
-    // It is moved at its next idle start, once nothing stands in the way.
-    await e2b("/script", { broken: null });
-    await stub(who).release({ lease_id: NEXT_LEASE.lease_id });
-    await stub(who).start(start({ run: `run_${hex(32, "5")}`,
-                                  lease: { lease_id: hex(32, "9"), epoch: 3 } }));
-    expect((await seen()).sandboxes.map((box) => box.id)).not.toContain(old);
+  }
+  /** The move's back-off passed, as time passing would. */
+  const backedOff = (who: string) => runInDurableObject(stub(who), (_instance, state) => {
+    state.storage.sql.exec("UPDATE sandboxes SET move_after = 0");
   });
 
-  it("makes no move past E2B's count, and the run starts in the old sandbox", async () => {
+  for (const fault of [{ broken: "carry-out" }, { lost: "carry-out" }, { broken: "carry-in" },
+                       { lost: "carry-in" }, { broken: "install" }]) {
+    it(`starts the run in the old sandbox when the move fails (${JSON.stringify(fault)}), the ` +
+       "new one killed and the archive dropped, and backs off", async () => {
+      const who = owner();
+      const old = await madeFrom(who, OLD);
+      await e2b("/script", fault);
+      const { got, failed } = await failing(who);
+      expect(got).toEqual({ started: true });
+      expect(failed[0]).toMatch(new RegExp(`^sandbox_move_failed: sandbox ${old} stays on ${OLD}`));
+      let state = await seen();
+      // The run runs in the old one, the only sandbox left, with no archive at rest.
+      expect(state.sandboxes.map((box) => box.id)).toEqual([old]);
+      expect(state.commands.filter((command) => command.argv[1] === "launch").at(-1)!.sandbox)
+        .toBe(old);
+      expect(state.files[`${old}:${CARRY_FILE}`]).toBeUndefined();
+      // Backing off: the next idle start moves nothing, and carries nothing out.
+      await e2b("/script", { broken: null, lost: null });
+      const before = state.commands.length;
+      await stub(who).start(opening());
+      state = await seen();
+      expect(state.sandboxes.map((box) => box.id)).toEqual([old]);
+      expect(state.commands.slice(before).map((command) => command.argv[1]))
+        .not.toContain("carry-out");
+      // Past it, the next idle start moves it.
+      await backedOff(who);
+      await stub(who).start(opening());
+      expect((await seen()).sandboxes.map((box) => box.id)).not.toContain(old);
+    });
+  }
+
+  it("keeps the new sandbox, never the old, when the old one's kill answers lost", async () => {
     const who = owner();
     const old = await madeFrom(who, OLD);
-    await e2b("/script", { others: NUMBERS.sandbox_concurrency_ceiling - 1 });
-    expect(await stub(who).start(start({ run: NEXT_RUN, lease: NEXT_LEASE })))
-      .toEqual({ started: true });
+    // The old one's kill kills, and its reply is lost: the look asks again, and E2B says gone.
+    await e2b("/script", { killLost: true });
+    expect(await stub(who).start(opening())).toEqual({ started: true });
+    const state = await seen();
+    expect(state.sandboxes).toHaveLength(1);
+    const made = state.sandboxes[0]!;
+    expect(made.id).not.toBe(old);
+    expect(state.files[`${made.id}:carried`]).toBe(`carry of ${old}`);
+    // The row names the new one; the old one is kept to be killed until E2B answers.
+    const kept = await runInDurableObject(stub(who), (_instance, s) => ({
+      rows: s.storage.sql.exec("SELECT sandbox_id FROM sandboxes").toArray(),
+      retiring: s.storage.sql.exec("SELECT sandbox_id FROM retiring").toArray() }));
+    expect(kept).toEqual({ rows: [{ sandbox_id: made.id }], retiring: [{ sandbox_id: old }] });
+    await runDurableObjectAlarm(stub(who));
+    expect(await runInDurableObject(stub(who), (_instance, s) =>
+      s.storage.sql.exec("SELECT sandbox_id FROM retiring").toArray())).toEqual([]);
+  });
+
+  it("kills a sandbox a move made that no row names yet, its object having ended under it",
+     async () => {
+    const who = owner();
+    await madeFrom(who, OLD);
+    // A move made one and recorded it, and the object ended before it went further.
+    const { id: made } = await e2b("/stray", { metadata: { ta_owner: "x" } }) as { id: string };
+    await runInDurableObject(stub(who), (_instance, state) => {
+      state.storage.sql.exec("UPDATE sandboxes SET move_to = ?", made);
+    });
+    // The next call on the chain settles it, whatever it is.
+    await stub(who).start(start({ run: NEXT_RUN, tokens: null, network: null }));
+    expect((await seen()).sandboxes.map((box) => box.id)).not.toContain(made);
+    expect(await runInDurableObject(stub(who), (_instance, state) =>
+      state.storage.sql.exec("SELECT move_to FROM sandboxes").toArray()))
+      .toEqual([{ move_to: null }]);
+  });
+
+  it("makes no move past E2B's count, renewals' held slots counted, and the run starts in " +
+     "the old sandbox", async () => {
+    const who = owner();
+    const old = await madeFrom(who, OLD);
+    // One slot short of the ceiling by E2B's count; another owner's renewal holds that slot.
+    await e2b("/script", { others: NUMBERS.sandbox_concurrency_ceiling - 2 });
+    await slots().reserve("sbx-renewing");
+    try {
+      expect(await stub(who).start(start({ run: NEXT_RUN, lease: NEXT_LEASE })))
+        .toEqual({ started: true });
+    } finally {
+      await slots().unreserve("sbx-renewing");
+    }
     const state = await seen();
     expect(state.sandboxes.map((box) => box.id)).toEqual([old]);
     expect(state.calls.filter((call) => call.path === "/v2/sandboxes" && call.method === "POST"))

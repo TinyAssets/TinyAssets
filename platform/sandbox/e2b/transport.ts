@@ -13,9 +13,10 @@
  * - a sandbox's own daemon, envd, on the shared sandbox host `sandbox.e2b.app`, routed by
  *   `E2b-Sandbox-Id` and `E2b-Sandbox-Port`, by the sandbox's envd token
  *   (`X-Access-Token`), as root (HTTP Basic): a file upload (`POST /files`, the bytes as
- *   `application/octet-stream`), its read (`GET /files`, the bytes as stored) and a process (`/process.Process/Start`, a Connect server
- *   stream of `application/connect+json` envelopes: the start event with the pid, stdout and
- *   stderr in base64, then the end event with the exit code). A process the stream is dropped
+ *   `application/octet-stream`), its read (`GET /files`, the bytes as stored) and a process
+ *   (`/process.Process/Start`, a Connect server stream of `application/connect+json`
+ *   envelopes: the start event with the pid, stdout and stderr in base64, then the end event
+ *   with the exit code). A process the stream is dropped
  *   from keeps running (probed); the runner's own launch daemonizes anyway, so nothing relies
  *   on that.
  *

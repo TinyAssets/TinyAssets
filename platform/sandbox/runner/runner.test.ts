@@ -2918,14 +2918,18 @@ describe("a template move's carry", () => {
     chmodSync(box.path(STORE_FILE), 0o600);
     box.write("/var/lib/ta/generations/claude-code", "2");
     box.write("/workspace/synced.md", "as synced");
+    // An edit of the same size whose change time the row holds: no sync finds it, a move does.
+    box.write("/workspace/same.md", "edited: AB");
     box.write("/workspace/notes/changed.md", "changed here");
     box.write("/workspace/notes/new.md", "never sent");
     chmodSync(box.path("/workspace/notes/new.md"), 0o755);
     box.write("/workspace/node_modules/x/index.js", "a cache");
     box.write("/scratch/main/build.o", "scratch");
     const synced = statSync(box.path("/workspace/synced.md"));
+    const same = statSync(box.path("/workspace/same.md"));
     const mirror = openMirror(box.path(MIRROR));
     mirror.put("/workspace/synced.md", { ...row(1, "as synced"), mtime_ms: synced.mtimeMs });
+    mirror.put("/workspace/same.md", { ...row(5, "edited: XY"), mtime_ms: same.mtimeMs });
     mirror.put("/workspace/notes/changed.md", row(2, "the base"));
     mirror.put("/workspace/removed.md", row(3, "gone here"));
     mirror.put(SESSION, row(4, "a session"));
@@ -2956,11 +2960,15 @@ describe("a template move's carry", () => {
     // The sign-in, root's alone, and its generation.
     expect(readFileSync(next.path(STORE_FILE), "utf8")).toBe("{\"token\":\"vendor-secret\"}");
     expect(statSync(next.path(STORE_FILE))).toMatchObject({ uid: 0, mode: 0o100600 });
+    // Every mode set by the new one's runner, none the old one's: the store's folders root's
+    // alone, though the old one left them open.
+    expect(statSync(next.path("/var/lib/ta/store/claude-code")).mode & 0o7777).toBe(0o700);
     expect(readFileSync(next.path("/var/lib/ta/generations/claude-code"), "utf8")).toBe("2");
     // The unsent changes, the sync agent's to send, its exec bit kept; nothing synced, kept
     // out or scratch.
     expect(readFileSync(next.path("/workspace/notes/changed.md"), "utf8")).toBe("changed here");
     expect(readFileSync(next.path("/workspace/notes/new.md"), "utf8")).toBe("never sent");
+    expect(readFileSync(next.path("/workspace/same.md"), "utf8")).toBe("edited: AB");
     expect(statSync(next.path("/workspace/notes/new.md")).mode & 0o777).toBe(0o775);
     expect(statSync(next.path("/workspace/notes/changed.md")).uid).toBe(SYNC_UID);
     for (const gone of ["/workspace/synced.md", "/workspace/node_modules", "/scratch/main"]) {
@@ -2972,7 +2980,7 @@ describe("a template move's carry", () => {
     try {
       expect(mirror.cursor()).toBe(0);
       expect(mirror.page("", 100)).toEqual([SESSION, "/workspace/notes/changed.md",
-                                            "/workspace/removed.md"]);
+                                            "/workspace/removed.md", "/workspace/same.md"]);
       expect(mirror.get("/workspace/notes/changed.md")).toEqual(row(2, "the base"));
     } finally {
       mirror.close();
@@ -3018,5 +3026,9 @@ describe("a template move's carry", () => {
     expect(next.runner(COMMAND.carryIn, other.sha256).code).toBe(1);
     expect(readdirSync(next.path("/var/lib/ta/store"))).toEqual(["codex"]);
     expect(readFileSync(next.path("/var/lib/ta/store/codex/auth.json"), "utf8")).toBe("its own");
+    // Where a move went no further, the old one's archive is dropped.
+    expect(existsSync(box.path(CARRY_FILE))).toBe(true);
+    expect(box.runner(COMMAND.carryDrop).code).toBe(0);
+    expect(existsSync(box.path(CARRY_FILE))).toBe(false);
   });
 });

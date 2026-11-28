@@ -47,9 +47,10 @@
  *   waited for until the deadline; `renewed`: each posts `ta.renewed` and goes on.
  * - `recover`: after a resume that rebooted the sandbox, each run that was live is started
  *   again from its session (`resume_argv`).
- * - `carry-out <authority>` and `carry-in <sha256>`: a template move's carry, sent to this
- *   runner alone by the Worker that ships it (`control.ts` `#moved`): what lives in the
- *   sandbox alone packed while nothing lives, then put in place in a new one.
+ * - `carry-out <authority>`, `carry-in <sha256>` and `carry-drop`: a template move's carry,
+ *   sent to this runner alone by the Worker that ships it (`control.ts` `#moved`): what lives in
+ *   the sandbox alone packed while nothing lives, then put in place in a new one, or dropped
+ *   where the move went no further.
  * - `sync` (internal, as `ta-sync`, its job on stdin): the sync agent and the projection.
  * - `decide` and `hooks` (internal, as a run's user, by its CLI's hook file): the hook helper
  *   (`decide.ts`) and the agent's own hooks' dispatcher (`hooks.ts`), taken by the hook
@@ -718,7 +719,10 @@ async function fileSha(path: string): Promise<string> {
 
 /**
  * A tree unpacked from a carry held to what a carry holds, directories and regular files
- * alone (a link or a node refused, loudly), each given to `owner`.
+ * alone (a link or a node refused, loudly), each given to `owner` with a mode set here: a
+ * directory 0700, a file 0600, or 0700 where its owner could run it (the exec bit the workspace's
+ * carry keeps, `carryIn`). No mode the old sandbox wrote (setuid, one others may write) comes
+ * across.
  */
 function ownTree(dir: string, owner: { uid: number; gid: number }): void {
   const stat = lstatSync(dir);
@@ -726,6 +730,7 @@ function ownTree(dir: string, owner: { uid: number; gid: number }): void {
     throw new Error(`the carry holds ${dir}, neither a directory nor a regular file`);
   }
   lchownSync(dir, owner.uid, owner.gid);
+  chmodSync(dir, stat.isDirectory() || (stat.mode & 0o100) !== 0 ? 0o700 : 0o600);
   if (stat.isDirectory()) {
     for (const name of readdirSync(dir)) {
       ownTree(join(dir, name), owner);
@@ -791,6 +796,9 @@ async function carryInCommand(sha: string): Promise<number> {
     if (await fileSha(CARRY_FILE) !== sha) {
       throw new Error(`the carry uploaded is not ${sha}`);
     }
+    // GNU tar's defaults, kept: a member's leading `/` is stripped and one whose name holds
+    // `..` is refused, so nothing lands outside the stage; a link it makes is refused by
+    // `ownTree`, which sets every owner and mode.
     const unpacked = spawnSync("tar", ["-x", "-f", CARRY_FILE, "-C", stage, "--no-same-owner"],
                                { encoding: "utf8" });
     if (unpacked.status !== 0) {
@@ -813,6 +821,15 @@ async function carryInCommand(sha: string): Promise<number> {
     remove(CARRY_FILE);
     remove(SYNC_CARRY);
   }
+  return OK;
+}
+
+/**
+ * `carry-drop` (in the sandbox a move left, when it went no further): its archive, a copy of
+ * the sign-ins, never left at rest for the run that goes on there.
+ */
+function carryDropCommand(): number {
+  remove(CARRY_FILE);
   return OK;
 }
 
@@ -1843,6 +1860,7 @@ const HANDLERS: { readonly [C in Exclude<Command, HookCommand>]: Handler } = {
   [COMMAND.sync]: () => syncCommand(),
   [COMMAND.carryOut]: (args) => carryOutCommand(args[0] ?? ""),
   [COMMAND.carryIn]: (args) => carryInCommand(args[0] ?? ""),
+  [COMMAND.carryDrop]: () => carryDropCommand(),
 };
 
 export async function main(argv: readonly string[]): Promise<number> {
