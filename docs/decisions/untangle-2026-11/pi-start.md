@@ -48,10 +48,17 @@ no connect.
   resumed claude-code, codex and gemini with that flag. pi takes the next argument verbatim,
   so it alone was safe. `modelArgs` was then surplus and is gone, and so is its second copy
   of `fill`'s placeholder grammar.
-- The owner refuses to keep such an id (`owner/src/runs.ts` `SESSION_ID`, no leading `-`),
-  as it refuses one with a space: the run fails with `session_id_refused`, and the id is
-  never handed back. The table's CHECK stays wider. Narrowing it needs a migration, and the
-  object's own gate is the only writer.
+- Give a session id one shape, `SESSION_ID` in `contract/src/run-events.ts`: 1 to 256
+  printable ASCII characters, no space, no `/` or `*`, no leading `-` (second review of
+  #5858). Before, the shape lived in three places that disagreed: the owner's regex kept
+  `a/b`, the runner's `resumePaths` refused it on every resume, and nothing cleared it, so
+  the conversation failed every run from then on. Under low disk, `sessionsRoom` read it
+  for every live start, so other runs' starts threw too.
+  - The owner keeps no other (`runs.ts`, the run fails with `session_id_refused`).
+  - It hands none back: an id the table still holds outside the shape (kept before it
+    narrowed, or restored; the CHECK stays wider, and narrowing it needs a migration)
+    starts the conversation anew, and the start's update clears it.
+  - `resumePaths` refuses any other, in place of its own `/[/*]/`.
 - Make a failed probe turn carry its stderr's tail (`probes.ts`, 600 characters, the end,
   where a CLI says why it stopped). The probe read it before and put it only in the turn's
   own failure, which the request verdict ("no model request reached the door") replaced, so
@@ -67,12 +74,15 @@ no connect.
   flag", once per engine record. Mutation: `resume_argv` filled by plain `fill` fails all
   four.
 - `owner/test/runs.test.ts` "keeps the run ... a session id outside its shape is refused":
-  `--dangerously-skip-permissions` is refused and not kept. Mutation: the old `SESSION_ID`
-  fails it.
+  `a/b` and `--dangerously-skip-permissions` are refused and not kept. Mutation: the owner's
+  regex before this PR (`[!-~]`) fails it on `a/b`.
+- `owner/test/runs.test.ts` "continues a conversation ...": a row holding `a/b` is not
+  handed back and is cleared. Mutation: the hand-back without the shape check fails it.
 - The large "fails a CLI that does not complete its turn ..." now also runs a pi that exits
-  1 with pi's refusal on stderr: each of its route lines (one per pi step of the plan,
-  checked, so never none) names no request and carries that stderr. Mutation: the result's turns without `stderr` fail it. The fake CLI takes a
-  `stderr` line for it (`test/harness.ts`).
+  1 with pi's refusal on stderr. Each of its route lines names no request and carries that
+  stderr, one line per pi step of the plan (checked, so never none). Mutation: the
+  result's turns without `stderr` fail it. The fake CLI takes a `stderr` line for it
+  (`test/harness.ts`).
 - Not covered by a local test: real pi on the real argv. Only the pair check runs the
   image's CLIs; the reproduction above ran pi 1.6.0 by hand on both forms.
 

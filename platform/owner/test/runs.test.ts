@@ -172,6 +172,16 @@ describe("a run", () => {
     const after = await ownerRun(r.stub, r.bind(), undefined, "main",
                                  { conversation_id: run.conversation_id });
     expect(after.start.session_id).toBe("sess-1");
+    // An id outside the shape the table still holds (kept before it narrowed, or restored) is
+    // never handed back: the conversation starts anew, and the id is cleared.
+    await r.stub.runEvents(runnerBinding(r, after.start), { frames: [], end: { exit_code: 0 } });
+    await r.sql("UPDATE conversations SET session_id = 'a/b' WHERE id = ?", run.conversation_id);
+    const fresh = await ownerRun(r.stub, r.bind(), undefined, "main",
+                                 { conversation_id: run.conversation_id });
+    expect(fresh.start.session_id).toBeNull();
+    expect(await r.sql("SELECT session_id FROM conversations WHERE id = ?",
+                       run.conversation_id)).toEqual([{ session_id: null }]);
+    await r.stub.runEvents(runnerBinding(r, fresh.start), { frames: [], end: { exit_code: 0 } });
     // Another agent's, or no such conversation, is none of this one's.
     await defineAgent(r.stub, r.bind(), "other", SIGNED_IN);
     expect((await failure(() => ownerRun(r.stub, r.bind(), undefined, "other",
@@ -564,8 +574,8 @@ describe("a run's settle", () => {
     const stored = JSON.stringify(await r.sql("SELECT * FROM runs"));
     expect(stored).toContain("\"result\":\"done\"");
     expect(stored).not.toContain("assistant");
-    // A space, or a leading `-` that a resume would hand its CLI as a flag.
-    for (const id of ["has a space", "--dangerously-skip-permissions"]) {
+    // A space, a `/` that would reach past its own files, or a leading `-` (a flag to its CLI).
+    for (const id of ["has a space", "a/b", "--dangerously-skip-permissions"]) {
       const bad = await ownerRun(r.stub, r.bind());
       await r.stub.runEvents(runnerBinding(r, bad.start), {
         frames: frames(INIT(id), RESULT("done")), end: { exit_code: 0 } });

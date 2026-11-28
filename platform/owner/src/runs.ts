@@ -76,7 +76,7 @@ import { sha256Hex } from "../../contract/src/digest";
 import { bundledSources } from "../../sources/src/catalog";
 import { planProvider, servedRecord, signsIn } from "../../sources/src/served";
 import {
- type EngineEvents, EVENTS_RACED, type Frame, FRAME_VERSION, readEvent,
+ type EngineEvents, EVENTS_RACED, type Frame, FRAME_VERSION, readEvent, SESSION_ID,
 } from "../../contract/src/run-events";
 
 import { AGENT_DISABLED, type AgentFile, AUTO } from "../../contract/src/agent-definition";
@@ -458,13 +458,9 @@ function authorityOf(origin: { readonly client: string } | null): string {
 }
 
 /**
- * A session id the conversations keep: 1 to 256 printable ASCII characters, no space (the
- * `conversations.session_id` CHECK), never a leading `-`, which a resume would hand its CLI
- * as a flag. The VM is untrusted, so any other the engine names is refused here, never
- * handed to SQLite to fail the runner's whole post.
+ * The run's error when its engine named a session id outside its shape (`SESSION_ID`): a
+ * fixed code, the id never kept, so never handed to SQLite to fail the runner's whole post.
  */
-const SESSION_ID = /^(?!-)[!-~]{1,256}$/;
-/** The run's error when its engine named a session id outside that shape: a fixed code. */
 export const SESSION_REFUSED = "session_id_refused: the engine named a session id outside " +
   "its shape, so this conversation does not resume";
 /**
@@ -759,8 +755,12 @@ export class Runs {
       conversationId = this.#newConversation(ask, chosen.engine, now);
     } else {
       conversationId = conversation.id;
-      // Another engine cannot resume this one's session: it starts a new one.
-      session = conversation.source === chosen.engine ? conversation.session_id : null;
+      // Another engine cannot resume this one's session: it starts a new one. So does an id
+      // outside the shape, kept before it narrowed or brought back by a restore (the
+      // table's CHECK is wider); the update below clears it.
+      const kept = conversation.session_id;
+      session = conversation.source === chosen.engine && kept !== null && SESSION_ID.test(kept)
+        ? kept : null;
       this.#sql.exec("UPDATE conversations SET source = ?, session_id = ?, last_at = ? " +
                        "WHERE id = ?", chosen.engine, session, now, conversationId);
     }

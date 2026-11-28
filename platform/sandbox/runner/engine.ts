@@ -10,7 +10,8 @@
  *   variable the run's credential forbids (`forbid_env`) fails the run loudly.
  * - The argv, each argument as the record writes it, one a value made start with `-` refused
  *   (`argOf`): the binary, then the credential's own arguments, the model (`--model={model}`
- *   where the engine takes that form, pi's `--model {model}`), the unattended flags on an unattended run, what keeps the engine's own layers out
+ *   where the engine takes that form, pi's `--model {model}`), the unattended flags on an
+ *   unattended run, what keeps the engine's own layers out
  *   (`definition.native.argv`, every run), the agent's skills where the engine
  *   takes each by its argv (`definition.skills.argv_each`), the MCP arguments, the update
  *   switch, then the record's `argv` or `resume_argv` past its binary. The prompt goes on stdin
@@ -48,6 +49,7 @@ import {
 import { object } from "../../contract/src/checks";
 import { DECIDE_HEADER, decideDoor, egressDoor, envStem } from "../../contract/src/egress";
 import { AGENTS_DIR } from "../../contract/src/paths";
+import { SESSION_ID } from "../../contract/src/run-events";
 import { forbids } from "../../contract/src/text";
 
 import { DECIDE_ENV, helperArgv, helperCommand, matcherOf } from "./decide";
@@ -476,14 +478,14 @@ export function keptPaths(record: Served): { secrets: string[]; sessions: string
 
 /**
  * The store files a resume of `session` reads (the record's `resume_paths`, `{sid}` filled),
- * each from its home; none for a new conversation (null). A session id is one name: one
- * holding a `/` or a `*` would reach past its own files, so it fails loudly.
+ * each from its home; none for a new conversation (null). One outside `SESSION_ID`'s shape
+ * (a `/` or a `*` would reach past its own files) fails loudly.
  */
 export function resumePaths(record: Served, session: string | null): string[] {
   if (session === null) {
     return [];
   }
-  if (session === "" || /[/*]/.test(session)) {
+  if (!SESSION_ID.test(session)) {
     throw new Error(`the session id ${JSON.stringify(session)} is not one name`);
   }
   return record.cli.resume_paths.map((path) =>
