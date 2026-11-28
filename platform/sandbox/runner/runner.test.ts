@@ -2931,6 +2931,8 @@ describe("the sign-in", () => {
 });
 
 describe("a template move's carry", () => {
+  /** A carry command's deadline, a minute on. */
+  const soon = () => String(Date.now() + 60_000);
   const STORE_FILE = "/var/lib/ta/store/claude-code/.claude/.credentials.json";
   const SESSION = "/workspace/.sessions/owner/claude-code/projects/p/s1.jsonl";
   const MIRROR = `${SYNC_HOME}/mirror.db`;
@@ -2978,13 +2980,13 @@ describe("a template move's carry", () => {
 
   /** `carry-out` in `from`, its archive copied to `to` as the Worker's copy does, `carry-in`. */
   function moved(from: Sandbox, to: Sandbox): void {
-    const out = from.runner(COMMAND.carryOut, "owner");
+    const out = from.runner(COMMAND.carryOut, "owner", soon());
     expect(out.code, out.why).toBe(0);
     const answer = JSON.parse(out.out) as { bytes: number; sha256: string };
     const archive = readFileSync(from.path(CARRY_FILE));
     expect(answer).toEqual({ bytes: archive.byteLength, sha256: sha256Hex(archive) });
     writeFileSync(to.path(CARRY_FILE), archive);
-    const placed = to.runner(COMMAND.carryIn, answer.sha256);
+    const placed = to.runner(COMMAND.carryIn, answer.sha256, soon());
     expect(placed.code, placed.why).toBe(0);
   }
 
@@ -3037,12 +3039,12 @@ describe("a template move's carry", () => {
     const start = startDoc(doors, "claude-code", { config: config("claude-code") });
     box.start(start);
     expect(box.runner("launch", start.run).code).toBe(0);
-    expect(box.runner(COMMAND.carryOut, "owner").code).toBe(3);
+    expect(box.runner(COMMAND.carryOut, "owner", soon()).code).toBe(3);
     expect(existsSync(box.path(CARRY_FILE))).toBe(false);
     box.write(release, "");
     await doors.ended_(25_000, start.run);
     const carried = () => {
-      const out = box.runner(COMMAND.carryOut, "owner");
+      const out = box.runner(COMMAND.carryOut, "owner", soon());
       expect(out.code, out.why).toBe(0);
       return { ...JSON.parse(out.out) as { sha256: string },
                archive: readFileSync(box.path(CARRY_FILE)) };
@@ -3053,15 +3055,20 @@ describe("a template move's carry", () => {
     next = new Sandbox();
     // A carry, but not the one named: refused, nothing placed.
     writeFileSync(next.path(CARRY_FILE), other.archive);
-    expect(next.runner(COMMAND.carryIn, named.sha256).code).toBe(1);
+    expect(next.runner(COMMAND.carryIn, named.sha256, soon()).code).toBe(1);
     expect(existsSync(next.path("/var/lib/ta/store"))).toBe(false);
     expect(existsSync(next.path(CARRY_FILE))).toBe(false);
     // A sandbox that holds a store already is no new one: refused, its store as it was.
     next.write("/var/lib/ta/store/codex/auth.json", "its own");
     writeFileSync(next.path(CARRY_FILE), other.archive);
-    expect(next.runner(COMMAND.carryIn, other.sha256).code).toBe(1);
+    expect(next.runner(COMMAND.carryIn, other.sha256, soon()).code).toBe(1);
     expect(readdirSync(next.path("/var/lib/ta/store"))).toEqual(["codex"]);
     expect(readFileSync(next.path("/var/lib/ta/store/codex/auth.json"), "utf8")).toBe("its own");
+    // A carry past its deadline is refused and leaves no archive.
+    box.runner(COMMAND.carryDrop);
+    expect(box.runner(COMMAND.carryOut, "owner", String(Date.now() - 1)).code).toBe(1);
+    expect(existsSync(box.path(CARRY_FILE))).toBe(false);
+    expect(box.runner(COMMAND.carryOut, "owner", soon()).code).toBe(0);
     // Where a move went no further, the old one's archive is dropped.
     expect(existsSync(box.path(CARRY_FILE))).toBe(true);
     expect(box.runner(COMMAND.carryDrop).code).toBe(0);

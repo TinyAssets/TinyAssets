@@ -234,10 +234,11 @@ export class E2bTransport {
 
   /**
    * Write `bytes` at `path` as root (parents made); the file is replaced whole. A stream is
-   * sent as it comes, of the length it was made with (the Worker's `copy`).
+   * sent as it comes, of the length it was made with, and cut at its copy's deadline
+   * (`signal`; the Worker's `copy`).
    */
-  async upload(handle: Handle, path: string, bytes: Uint8Array | ReadableStream<Uint8Array>):
-      Promise<void> {
+  async upload(handle: Handle, path: string, bytes: Uint8Array | ReadableStream<Uint8Array>,
+               signal?: AbortSignal): Promise<void> {
     if (!path.startsWith("/") || path.includes("\0")) {
       throw new Error("an upload's path is absolute");
     }
@@ -246,6 +247,7 @@ export class E2bTransport {
       method: "POST",
       headers: { ...this.#envd(handle), "Content-Type": "application/octet-stream" },
       body: bytes,
+      ...(signal === undefined ? {} : { signal }),
     });
     await response.arrayBuffer();
     if (response.status !== 200) {
@@ -253,13 +255,14 @@ export class E2bTransport {
     }
   }
 
-  /** The file at `path`, read as root: its bytes as envd streams them. */
-  async download(handle: Handle, path: string): Promise<ReadableStream<Uint8Array>> {
+  /** The file at `path`, read as root: its bytes as envd streams them, cut at `signal`. */
+  async download(handle: Handle, path: string, signal: AbortSignal):
+      Promise<ReadableStream<Uint8Array>> {
     if (!path.startsWith("/") || path.includes("\0")) {
       throw new Error("a download's path is absolute");
     }
     const response = await this.#fetch(`${E2B_ENVD}/files?path=${encodeURIComponent(path)
-      }&username=root`, { method: "GET", headers: this.#envd(handle) });
+      }&username=root`, { method: "GET", headers: this.#envd(handle), signal });
     if (response.status !== 200 || response.body === null) {
       await response.arrayBuffer();
       throw new E2bError(response.status, null, `envd's download answered ${response.status}`);

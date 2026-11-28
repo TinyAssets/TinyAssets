@@ -47,10 +47,11 @@
  *   waited for until the deadline; `renewed`: each posts `ta.renewed` and goes on.
  * - `recover`: after a resume that rebooted the sandbox, each run that was live is started
  *   again from its session (`resume_argv`).
- * - `carry-out <authority>`, `carry-in <sha256>` and `carry-drop`: a template move's carry,
- *   sent to this runner alone by the Worker that ships it (`control.ts` `#moved`): what lives in
- *   the sandbox alone packed while nothing lives, then put in place in a new one, or dropped
- *   where the move went no further.
+ * - `carry-out <authority> <until>`, `carry-in <sha256> <until>` and `carry-drop`: a template
+ *   move's carry, sent to this runner alone by the Worker that ships it (`control.ts`
+ *   `#moveIdle`), each step stopped at the Worker's deadline: what lives in the sandbox alone
+ *   packed while nothing lives, then put in place in a new one, or dropped where the move went
+ *   no further.
  * - `sync` (internal, as `ta-sync`, its job on stdin): the sync agent and the projection.
  * - `decide` and `hooks` (internal, as a run's user, by its CLI's hook file): the hook helper
  *   (`decide.ts`) and the agent's own hooks' dispatcher (`hooks.ts`), taken by the hook
@@ -705,8 +706,31 @@ function adopt(): number {
  */
 const CARRIED = Object.freeze([STORE, GENERATIONS]);
 
-/** A carry command's bound: the Worker's own deadline for it. */
-const carryDeadline = () => new Promise((resolve) => setTimeout(resolve, COMMAND_MS).unref());
+/**
+ * A carry command's deadline (`until`, ms since the epoch, the Worker's own for its move), read
+ * from its argument: one past, or not a time, is refused.
+ */
+function untilOf(arg: string): number {
+  const until = /^[0-9]{1,15}$/.test(arg) ? Number(arg) : Number.NaN;
+  if (!(until > Date.now())) {
+    throw new Error("a carry command takes its deadline, a time still to come");
+  }
+  return until;
+}
+
+/** What comes at `until`, which a carry's sync agent stops on. */
+const atUntil = (until: number) => new Promise((resolve) =>
+  setTimeout(resolve, Math.max(0, until - Date.now())).unref());
+
+/** `tar` with `args`, stopped at `until`: its exit, or a refusal naming what it did. */
+function tarUntil(args: readonly string[], until: number, what: string): void {
+  const done = spawnSync("tar", args, { encoding: "utf8",
+                                        timeout: Math.max(1, until - Date.now()) });
+  if (done.status !== 0) {
+    throw new Error(`the carry could not be ${what} (${String(done.status ?? done.signal)}): ${
+      done.stderr}`);
+  }
+}
 
 /** A file of the state directory's SHA-256, read a piece at a time. */
 async function fileSha(path: string): Promise<string> {
@@ -739,17 +763,19 @@ function ownTree(dir: string, owner: { uid: number; gid: number }): void {
 }
 
 /**
- * `carry-out <authority>` (a template move, `control.ts` `#moved`, in the sandbox it leaves):
- * what lives in this sandbox alone packed into `CARRY_FILE`, root's alone, while nothing
- * lives (3 otherwise): `CARRIED`, and the workspace's carry (`carryOut`, by the sync agent as
- * itself, for that authority's sandbox); answered by the archive's size and SHA-256. Nothing
- * else changes, so a move that goes no further leaves the sandbox as it was, and its next
- * `prepare` drops the archive.
+ * `carry-out <authority> <until>` (a template move, `control.ts` `#moveIdle`, in the sandbox it
+ * leaves): what lives in this sandbox alone packed into `CARRY_FILE`, root's alone, while
+ * nothing lives (3 otherwise): `CARRIED`, and the workspace's carry (`carryOut`, by the sync
+ * agent as itself, for that authority's sandbox); answered by the archive's size and SHA-256.
+ * Every step stops at `until`, the Worker's deadline, and a carry that does not end by it
+ * leaves no archive. Nothing else changes, so a move that goes no further leaves the sandbox as
+ * it was (`carry-drop`, or its next `prepare`, drops an archive).
  */
-async function carryOutCommand(authority: string): Promise<number> {
+async function carryOutCommand(authority: string, untilArg: string): Promise<number> {
   if (!AUTHORITY.test(authority)) {
     throw new Error("carry-out takes the sandbox's authority");
   }
+  const until = untilOf(untilArg);
   if (livingJobs() > 0) {
     process.stderr.write("ta-runner: a run or a sign-in lives; nothing is carried\n");
     return NO;
@@ -760,34 +786,37 @@ async function carryOutCommand(authority: string): Promise<number> {
     safeDirs("/", dir, 0o700);
   }
   try {
-    await syncAgent({ direction: "carry-out", authority }, carryDeadline());
-    const packed = spawnSync("tar", ["-c", "-f", CARRY_FILE, "-C", STATE,
-                                     ...CARRIED.map((dir) => relative(STATE, dir)), "-C",
-                                     SYNC_HOME, relative(SYNC_HOME, SYNC_CARRY)],
-                             { encoding: "utf8" });
-    if (packed.status !== 0) {
-      remove(CARRY_FILE);
-      throw new Error(`the carry could not be packed (${String(packed.status)}): ${packed.stderr}`);
+    await syncAgent({ direction: "carry-out", authority }, atUntil(until));
+    tarUntil(["-c", "-f", CARRY_FILE, "-C", STATE, ...CARRIED.map((dir) => relative(STATE, dir)),
+              "-C", SYNC_HOME, relative(SYNC_HOME, SYNC_CARRY)], until, "packed");
+    chmodSync(CARRY_FILE, 0o600);
+    const packed = { bytes: lstatSync(CARRY_FILE).size, sha256: await fileSha(CARRY_FILE) };
+    if (Date.now() >= until) {
+      throw new Error("the carry was packed past its deadline");
     }
+    return answer(packed);
+  } catch (error) {
+    remove(CARRY_FILE);
+    throw error;
   } finally {
     remove(SYNC_CARRY);
   }
-  chmodSync(CARRY_FILE, 0o600);
-  return answer({ bytes: lstatSync(CARRY_FILE).size, sha256: await fileSha(CARRY_FILE) });
 }
 
 /**
- * `carry-in <sha256>` (a template move, in the sandbox it makes, once prepared): the archive
+ * `carry-in <sha256> <until>` (a template move, in the sandbox it makes, once prepared; every
+ * step stopped at `until`): the archive
  * the Worker put at `CARRY_FILE` checked to be those bytes, unpacked root's into a directory
  * of root's own, held to what a carry holds (`ownTree`), then `CARRIED` put in place and the
  * workspace's carry handed to the sync agent (`carryIn`). Refused, changing nothing, in a
  * sandbox that already holds a store or a generation (or a mirror, `carryIn`): a carry goes
  * into a new sandbox only. The archive and what was unpacked go whatever follows.
  */
-async function carryInCommand(sha: string): Promise<number> {
+async function carryInCommand(sha: string, untilArg: string): Promise<number> {
   if (!HEX64.test(sha)) {
     throw new Error("carry-in takes the carry's sha256");
   }
+  const until = untilOf(untilArg);
   if (CARRIED.some((dir) => existsSync(dir))) {
     throw new Error("this sandbox holds a store already: a carry goes into a new sandbox only");
   }
@@ -799,12 +828,7 @@ async function carryInCommand(sha: string): Promise<number> {
     // GNU tar's defaults, kept: a member's leading `/` is stripped and one whose name holds
     // `..` is refused, so nothing lands outside the stage; a link it makes is refused by
     // `ownTree`, which sets every owner and mode.
-    const unpacked = spawnSync("tar", ["-x", "-f", CARRY_FILE, "-C", stage, "--no-same-owner"],
-                               { encoding: "utf8" });
-    if (unpacked.status !== 0) {
-      throw new Error(`the carry could not be unpacked (${String(unpacked.status)}): ${
-        unpacked.stderr}`);
-    }
+    tarUntil(["-x", "-f", CARRY_FILE, "-C", stage, "--no-same-owner"], until, "unpacked");
     const workspace = join(stage, relative(SYNC_HOME, SYNC_CARRY));
     for (const dir of CARRIED) {
       ownTree(join(stage, relative(STATE, dir)), { uid: 0, gid: 0 });
@@ -815,7 +839,7 @@ async function carryInCommand(sha: string): Promise<number> {
     }
     remove(SYNC_CARRY);
     renameSync(workspace, SYNC_CARRY);
-    await syncAgent({ direction: "carry-in" }, carryDeadline());
+    await syncAgent({ direction: "carry-in" }, atUntil(until));
   } finally {
     remove(stage);
     remove(CARRY_FILE);
@@ -1858,8 +1882,8 @@ const HANDLERS: { readonly [C in Exclude<Command, HookCommand>]: Handler } = {
   [COMMAND.run]: (args) => runCommand(args[0] ?? "", args[1] === RECOVERING),
   [COMMAND.loginRun]: (args) => loginRun(args[0] ?? ""),
   [COMMAND.sync]: () => syncCommand(),
-  [COMMAND.carryOut]: (args) => carryOutCommand(args[0] ?? ""),
-  [COMMAND.carryIn]: (args) => carryInCommand(args[0] ?? ""),
+  [COMMAND.carryOut]: (args) => carryOutCommand(args[0] ?? "", args[1] ?? ""),
+  [COMMAND.carryIn]: (args) => carryInCommand(args[0] ?? "", args[1] ?? ""),
   [COMMAND.carryDrop]: () => carryDropCommand(),
 };
 
