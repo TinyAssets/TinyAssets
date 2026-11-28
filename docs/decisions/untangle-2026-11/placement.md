@@ -195,8 +195,8 @@ ADR-033's 2026-11-01 reading:
 
 One vendor reading was both genuinely ambiguous and risky for users: Codex in our sandbox.
 The founder answered it on 2026-11-28: off, and TinyAssets submits OpenAI's interest form.
-The E2B plan, a spending question, he answered the same day: Hobby, with an alert before the
-ceiling (`tasks.md` questions 6 and 7).
+The founder answered the E2B plan, a spending question, the same day: Hobby, with an alert
+before the ceiling (`tasks.md` questions 6 and 7).
 
 ## 7. The re-cut (`tasks.md`)
 

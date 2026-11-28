@@ -445,7 +445,7 @@ those ADRs' bodies are not edited: only their Status lines point here.
     this limit so we can upgrade then". So the control record's ceiling is 10, and the
     founder is paged at 80% and 100% of it, and at once when E2B refuses a create for
     concurrency (`tasks.md` Step 5, `untangle/sandbox-ceiling-alert`). Raising the plan is
-    then his spending call.
+    then the founder's spending call.
 - **The decision changes if** a vendor changes a page a verdict cites, or E2B's ceilings
   change.
 

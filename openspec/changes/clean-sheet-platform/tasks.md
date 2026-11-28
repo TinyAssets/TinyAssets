@@ -1027,8 +1027,8 @@ account, the founder's own test (§8) too.
   paused sandbox carries the pause's execution and `sandbox_execution_id`, and E2B's retry
   timing against `BILLED_WINDOW_S`.
 - [ ] 7b. Placement (ADR-040): the founder's own computer paired through the desktop app; a
-  schedule taken by a Claude scheduled task on his own subscription; a run placed on the
-  computer, the lid closed mid-run, then `away` and resumed; a schedule fired with the computer
+  schedule taken by a Claude scheduled task on the founder's own subscription; a run placed on
+  the computer, the lid closed mid-run, then `away` and resumed; a schedule fired with the computer
   off, taken by a main agent or waiting; a free owner at its sandbox limit placed elsewhere or
   waiting.
 - [ ] 8. A redeploy of the build as it then stands, then the founder's own test (§8; the
