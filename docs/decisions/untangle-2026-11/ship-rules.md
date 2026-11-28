@@ -84,4 +84,4 @@ it (corrected by `process/ship-code-review`, from #5861's review).
 ## Owed
 
 - [x] The peer-agents skill's dispatch and reviewer sections point at `REVIEW.md` for the review's format and accounting, and carry the coordinator's denied-permission rule: `process/ship-code-review`
-- [x] live: the coordinator creates the `steward-watching` label on the repository, once (done 2026-11-28, read back as 200)
+- [x] live: the coordinator creates the `steward-watching` label on the repository, once (after this PR merges)
