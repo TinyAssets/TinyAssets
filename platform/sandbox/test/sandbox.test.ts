@@ -1753,10 +1753,10 @@ describe("a template move", () => {
     // The measurements as they state them, written here rather than read from the code: the old
     // sandbox's resume (895 ms, `e2b-resume-measurement.md`), two pauses (705 ms each), the new
     // one's create (1,078 ms, `sandbox-probe.md`), the walk of 100,000 workspace files (1,050
-    // ms) and a carry's pack at its cap (50 ms, the decision file), and 19 other calls at the
+    // ms) and a carry's pack at its cap (50 ms, the decision file), and 20 other calls at the
     // slowest full request (480 ms); a failed move's finish (three pauses, six calls: 4,995 ms);
     // a resuming start's own steps (a resume, a `prepare` of 7 s, twelve calls: 13,655 ms).
-    const STEPS_MS = 895 + 2 * 705 + 1_078 + 1_050 + 50 + 19 * 480;
+    const STEPS_MS = 895 + 2 * 705 + 1_078 + 1_050 + 50 + 20 * 480;
     const FINISH_MS = 3 * 705 + 6 * 480;
     const START_MS = 895 + 7_000 + 12 * 480;
     const TRANSIT_MS = 480;
@@ -1924,6 +1924,10 @@ describe("a template move", () => {
     const row = await rowOf(who);
     expect(row).toMatchObject({ sandbox_id: old, move_to: null });
     expect(row["move_tag"]).toMatch(/^[0-9a-f]{32}$/);
+    // The slot its wake owed is given back within the move, so nothing arms a look at once:
+    // the one look armed is the token's, past its create's window.
+    expect(await runInDurableObject(stub(who), (_instance, state) =>
+      state.storage.sql.exec("SELECT sandbox_id FROM owed").toArray())).toEqual([]);
     expect(await alarmOf(who)).toBeGreaterThan(Date.now() + LEASE_TTL_S * 1000 / 2);
     await setRow(who, "move_tag_until = 0, move_after = ?", Date.now() + 3_600_000);
     await look(who);

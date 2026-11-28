@@ -218,14 +218,14 @@ const CARRY_OUT_MS = 3_000;
  * unprepared, and whatever next resumes it prepares it) and its pause; the new one's create
  * (`CREATE_MS`) and pause (no `prepare` either: nothing runs in it but root's `carry-in`, as a
  * create's install comes before its `prepare`); `carry-out` (`CARRY_OUT_MS`); and, at
- * `RETRY_BASE_MS` each (the slowest full request measured), its 19 other calls: info, the line's
- * turn and E2B's count; the resume's network, `state`, and an adoption's upload, install and
- * `adopt`; the carry's read and `carry-drop`, the line rung; the new one's upload and install,
- * the carry's write, `carry-in`, info, the line rung; the old one's kill, the line rung: 15,503
- * ms.
+ * `RETRY_BASE_MS` each (the slowest full request measured), its 20 other calls: info, the line's
+ * turn and E2B's count; the resume's network, `state`, an adoption's upload, install and
+ * `adopt`, and the slot given back; the carry's read and `carry-drop`, the line rung; the new
+ * one's upload and install, the carry's write, `carry-in`, info, the line rung; the old one's
+ * kill, the line rung: 15,983 ms.
  */
 const MOVE_STEPS_MS = RESUME_MAX_MS + 2 * PAUSE_MAX_MS + CREATE_MS + CARRY_OUT_MS
-  + 19 * RETRY_BASE_MS;
+  + 20 * RETRY_BASE_MS;
 
 /**
  * A move's finish where it went no further: the old sandbox asked of E2B, its archive dropped
@@ -236,14 +236,14 @@ const MOVE_FINISH_MS = 3 * PAUSE_MAX_MS + 6 * RETRY_BASE_MS;
 
 /**
  * A template move's whole bound, every call of it cut there: its steps and its finish, with a
- * fifth of the bound to spare (25,622.5 ms). Under a lease's TTL, so a running sandbox's next
+ * fifth of the bound to spare (26,222.5 ms). Under a lease's TTL, so a running sandbox's next
  * idle look (a TTL on) never waits on one (`#movesDue`). Every call that comes for the owner's
  * chain meanwhile waits for it, any authority's:
  * - a start, then its own steps (the resume and its `prepare`, and twelve calls: the settle's
  *   list, info, the line's turn and E2B's count, the network, info, the slot given back, the
  *   line left, the lease's write, `signin-check`, the start document's write, `launch`: 13,655
- *   ms at the same measures), inside the start's lease (`LEASE_TTL_S`): 39.3 s of 60, and two
- *   resuming starts queued behind one move 52.9 s. A move holds the chain no longer than two
+ *   ms at the same measures), inside the start's lease (`LEASE_TTL_S`): 39.9 s of 60, and two
+ *   resuming starts queued behind one move 53.5 s. A move holds the chain no longer than two
  *   resuming starts do (27.3 s), so a queue it joins is the chain's own, as before it: past two,
  *   any queue of resuming starts overruns a lease, a move or none;
  * - a cancel, a release or a network re-apply of another authority's live run: each waits at
@@ -1189,6 +1189,9 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         return;
       }
       const old = woken.handle;
+      // The slot its wake owed back, given back now as a resume's is, so no look is armed at
+      // once behind the move.
+      await this.#giveBack();
       if (old.runner !== this.#digest) {
         this.#moveFailed(authority, tries, "its runner is one this Worker keeps");
         return;

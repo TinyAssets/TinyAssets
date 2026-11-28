@@ -209,9 +209,9 @@ Read on the head (`runner/session.ts` `makeHome`, `keepHome`; `sync.ts` `stageSe
   before `prepare`) takes 7 s and a call off the bound.
 - **What waits on a move**: every call on the owner's chain, any authority's. A start's lease
   holds the bound and its own steps (twelve calls, not nine: the settle's list, the slot given
-  back and the line left among them). With the old side's `prepare` gone, the bound (25.6 s) is
+  back and the line left among them). With the old side's `prepare` gone, the bound (26.2 s) is
   less than two resuming starts' own steps (27.3 s), and two resuming starts queued behind a
-  move start within 52.9 s, inside a lease. A queue of three or more resuming starts overruns a
+  move start within 53.5 s, inside a lease. A queue of three or more resuming starts overruns a
   lease whether or not a move is in it: that is the chain's, before this change. A cancel, a
   release or a re-apply of another authority's run waits at most the bound: a re-apply's first
   send then misses the lane's call budget (15 s, `LANE_CALL_MS`), and its retry lands.
@@ -283,17 +283,18 @@ whole, backs off and counts.**
    the old one and, where it runs (resumed, whether or not the resume's answer came), drops its
    archive and pauses it (`#moveBack`); what the move made is killed by its id or token. The
    meter logs what ran: the old one's resume and pause, the new one's start and pause.
-6. **The bound** (`MOVE_MS`, 25,622.5 ms): the steps at their measured worst (`MOVE_STEPS_MS`:
+6. **The bound** (`MOVE_MS`, 26,222.5 ms): the steps at their measured worst (`MOVE_STEPS_MS`:
    the old one's resume 895 ms, two pauses at 705 ms, the create 1,078 ms, `carry-out`'s 3 s
-   share, and 19 other calls at the slowest full request, 480 ms: info, the line's turn and
-   E2B's count; the resume's network, `state`, and an adoption's upload, install and `adopt`;
+   share, and 20 other calls at the slowest full request, 480 ms: info, the line's turn and
+   E2B's count; the resume's network, `state`, an adoption's upload, install and `adopt`, and
+   the slot given back;
    the carry's read and `carry-drop`, the line rung; the new one's upload and install, the
-   carry's write, `carry-in`, info, the line rung; the kill, the line rung: 15,503 ms), and the
+   carry's write, `carry-in`, info, the line rung; the kill, the line rung: 15,983 ms), and the
    finish (`MOVE_FINISH_MS`: three pauses and six calls, 4,995 ms), with a fifth of the bound to
    spare. `carry-out`'s budget in the sandbox (2,520 ms) holds twice the measured walk of
    100,000 files (1,050 ms) and the pack of a carry at its cap (16 MiB packed and hashed in 50 ms,
    this session's Linux host). A resuming start's own steps are a resume, a `prepare` and twelve
-   calls (13,655 ms): one behind a move starts within 39.3 s, two within 52.9 s, inside a lease's
+   calls (13,655 ms): one behind a move starts within 39.9 s, two within 53.5 s, inside a lease's
    60 s.
 7. **No credential lost or exposed**: the sign-ins move VM to VM as bytes through envd and this
    isolate's memory, by the key that already reaches every sandbox's envd as root (the Worker's
@@ -307,6 +308,17 @@ stage owner, the run after its next `auto` pi run, half an hour on, runs on the 
 run is lost, and a start that comes during a move waits for it inside its lease; nothing is
 billed twice; nothing is orphaned; every try that does not move counts, and a move that cannot
 is named. Zero hosts: the Worker alone moves it.
+
+## CI at 20c662fbc, with the fix above it
+
+- **The move gives back the slot its wake owed** (`#giveBack` after `#wake`, as `#resume` does),
+  so the look after it arms the token's window alone: "leaves no sandbox unnamed when the
+  create's reply never comes" now also holds that nothing is owed.
+  - Splitting `#wake` out of `#resume` left its owed slot ungiven, so the look after every move
+    armed again at once (a probe of `#arm`: "armed in 0 ms, owed 1", then, fixed, "armed in
+    81214 ms, owed 0"). That extra look gave the slot back and armed the window, but the test's
+    read of the alarm could land while it ran (null on CI; 2 of 12 runs locally under load, 0 of
+    24 once fixed).
 
 ## Review findings (#5857, at 8006f717a), with the fix above each
 
@@ -327,7 +339,7 @@ is named. Zero hosts: the Worker alone moves it.
   - Links, unnamed entries and empty directories were dropped without a word.
 - Nits:
   - a start's own steps recounted at twelve calls, and two resuming starts behind a move bounded
-    (52.9 s), the old side's `prepare` left out to fit (`#wake`); the bound test holds two;
+    (53.5 s), the old side's `prepare` left out to fit (`#wake`); the bound test holds two;
   - a carry-out under way is stopped by `carry-drop` and `prepare` (its pid with this boot's id),
     and every carry budget runs on the runner's own clock ("stops a carry-out under way at
     carry-drop");
@@ -429,7 +441,7 @@ is named. Zero hosts: the Worker alone moves it.
 - **A move's time on the stage is not measured here** (no live act from this change): its bound
   is the measured steps' (design 6). Measured at the first live move.
 - **No test holds a whole move at the measured latencies**: the fake E2B answers at once, and a
-  move at them runs about 16 s, past the workerd tests' budget, with no large leg of the
+  move at them runs about 17 s, past the workerd tests' budget, with no large leg of the
   sandbox's workerd tests. The bound test holds the bound against the steps as the measurements
   state them, and `carry-out`'s share is held past by a test (3 s).
 - **Three or more resuming starts queued on one owner's chain** overrun a lease, with a move in
