@@ -116,6 +116,8 @@ def test_only_the_new_side_of_a_hunk_takes_an_inline_comment():
                                         "text": "first.\n\nthe failing case."}]},
      "one paragraph"),
     ({"verdict": "APPROVE", "summary": "ok\nFounder question: hidden?"}, "founder question"),
+    ({"verdict": "APPROVE", "summary": "ok\n  - Founder question: ship it?"},
+     "founder question"),
     ({"verdict": "APPROVE", "findings": [{"severity": "Nit", "text": 3}]}, "its text"),
 ])
 def test_a_review_that_contradicts_itself_is_refused(tmp_path, writers, spec, why, capsys):
@@ -199,22 +201,27 @@ def test_a_base_change_keeps_every_earlier_entry(tmp_path, writers, capsys):
                 timeline=[{"event": "base_ref_changed", "created_at": "2026-11-28T10:30:00Z"}])
     assert _post(tmp_path, writers, gh, {"verdict": "APPROVE"}) == 2
     err = capsys.readouterr().err
-    assert "earlier review:1#1" in err and "earlier comment:10" in err
+    assert "earlier review:1#1" in err and "earlier comment:10#1" in err
 
 
 def test_body_inline_and_outdated_findings_are_all_listed_and_pending_ones_are_not():
     reviews = [_review(1, "BLOCK\n\nImportant: first\ncontinued\n\nNit: small\n"
-                          "- Important: second"),
+                          "- Important: second\n  - Founder question: indented?"),
                _review(2, "", state="PENDING", when=None)]
     comments = [_comment(10, "Important: inline", review=1),
                 _comment(11, "Important: moved away", review=1, line=None),
                 _comment(12, "Nit: not important", review=1),
                 _comment(13, "Important: draft", review=2),
-                {**_comment(14, "Important: a reply", review=1), "in_reply_to_id": 10}]
+                {**_comment(14, "Important: a reply", review=1), "in_reply_to_id": 10},
+                _comment(15, "Context first.\n\nImportant: x crashes\n- Important: y too",
+                         review=1)]
     found = rp.earlier_findings(reviews, comments, writers=frozenset({WRITER}))
     assert [(f.id, f.where, f.text) for f in found] == [
-        ("comment:10", "a.py:2", "inline"),
-        ("comment:11", "a.py:2", "moved away"),
+        ("comment:10#1", "a.py:2", "inline"),
+        ("comment:11#1", "a.py:2", "moved away"),
+        ("comment:15#1", "a.py:2", "x crashes"),
+        ("comment:15#2", "a.py:2", "y too"),
+        ("question:1#1", "", "indented?"),
         ("review:1#1", "", "first continued"),
         ("review:1#2", "", "second")]
 
@@ -248,11 +255,11 @@ def test_an_edited_finding_or_review_stands_until_a_review_marks_it(tmp_path, wr
     assert _post(tmp_path, writers, gh, {"verdict": "APPROVE"}) == 2
     err = capsys.readouterr().err
     assert "earlier comment:5:edited" in err and "earlier review:1:edited" in err
-    assert "earlier comment:6 " in err
+    assert "earlier comment:6#1 " in err
     spec = {"verdict": "BLOCK", "earlier": [
         {"id": "comment:5:edited", "status": "standing"},
         {"id": "review:1:edited", "status": "withdrawn", "note": "a typo fixed"},
-        {"id": "comment:6", "status": "standing"}]}
+        {"id": "comment:6#1", "status": "standing"}]}
     assert _post(tmp_path, writers, gh, spec) == 0
 
 
@@ -335,19 +342,33 @@ def test_every_earlier_important_is_accounted_for_and_fixed_threads_resolved(
                           _comment(11, "Important: also inline", review=1)])
     base = {"verdict": "APPROVE", "earlier": [
         {"id": "review:1#1", "status": "withdrawn", "note": "the caller checks it"},
-        {"id": "comment:10", "status": "fixed", "note": "abc1234"}]}
+        {"id": "comment:10#1", "status": "fixed", "note": "abc1234"}]}
     assert _post(tmp_path, writers, gh, base) == 2
-    assert "earlier comment:11" in capsys.readouterr().err
+    assert "earlier comment:11#1" in capsys.readouterr().err
     standing = {**base, "earlier": [*base["earlier"],
-                                    {"id": "comment:11", "status": "standing"}]}
+                                    {"id": "comment:11#1", "status": "standing"}]}
     assert _post(tmp_path, writers, gh, standing) == 2
     blocked = {**standing, "verdict": "BLOCK"}
     assert _post(tmp_path, writers, gh, blocked) == 0
     (_, payload), resolve = gh.posts
     assert payload["body"].splitlines()[0] == "BLOCK"
     assert "- withdrawn: review:1#1" in payload["body"]
-    assert "- standing: comment:11 (a.py:2) also inline" in payload["body"]
+    assert "- standing: comment:11#1 (a.py:2) also inline" in payload["body"]
     assert resolve == (f"repos/{REPO}/pulls/{PR}/ccr/comments/10/resolve", None)
+
+
+def test_a_thread_is_resolved_once_and_only_when_every_finding_in_it_is_fixed(
+        tmp_path, writers):
+    gh = GitHub(comments=[_comment(10, "Important: one\n\nImportant: two")])
+
+    def spec(second: str) -> dict:
+        return {"verdict": "BLOCK" if second == "standing" else "APPROVE", "earlier": [
+            {"id": "comment:10#1", "status": "fixed"},
+            {"id": "comment:10#2", "status": second}]}
+    assert _post(tmp_path, writers, gh, spec("standing")) == 0
+    assert _post(tmp_path, writers, gh, spec("fixed")) == 0
+    assert [path for path, _ in gh.posts].count(
+        f"repos/{REPO}/pulls/{PR}/ccr/comments/10/resolve") == 1
 
 
 def test_an_earlier_finding_listed_twice_or_unknown_is_refused(tmp_path, writers, capsys):
@@ -400,9 +421,9 @@ def test_a_posted_verdict_is_the_one_review_checks_reads(tmp_path, writers, verd
 
 def test_a_posted_review_whose_thread_will_not_resolve_says_so(tmp_path, writers, capsys):
     gh = GitHub(comments=[_comment(10, "Important: inline")], fail_post="/resolve")
-    spec = {"verdict": "APPROVE", "earlier": [{"id": "comment:10", "status": "fixed"}]}
+    spec = {"verdict": "APPROVE", "earlier": [{"id": "comment:10#1", "status": "fixed"}]}
     assert _post(tmp_path, writers, gh, spec) == 3
-    assert len(gh.posts) == 1 and "comment:10" in capsys.readouterr().err
+    assert len(gh.posts) == 1 and "comment:10 " in capsys.readouterr().err
 
 
 def test_read_lists_what_the_review_must_answer(writers, capsys):

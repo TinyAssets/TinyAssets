@@ -49,7 +49,9 @@ landing step goes.
 
 1. `scripts/review_post.py read` lists what a review must answer: every
    earlier `Important:` finding (`review:<id>#<k>` from a review's body,
-   `comment:<id>` for an inline one its body lacks, outdated ones included),
+   `comment:<id>#<k>` for an inline one its body lacks, outdated ones
+   included; both read line by line, a marker or question after any indent or
+   bullet),
    every edit to a review or to a thread's first comment (`...:edited`), every
    `Founder question:` (`question:<id>#<k>`), and the PR's comments, the
    writers' apart from the bots'. Entries come only from writers, whatever the
@@ -68,34 +70,44 @@ landing step goes.
    comment after the question, past five Nits, a finding text with a blank
    line, a summary, text or note line opening with a marker or a founder
    question (a later read would take it for an entry of its own), and a
-   missing, partial or writer-less writers file. It then resolves the threads
-   of the inline findings it lists as fixed, by the session's route.
-3. The reviewer's working directory is a detached worktree of `origin/main`,
-   Code Review's way: the hooks, settings, `CLAUDE.md`, skills, the procedure
-   and the poster a session loads there are main's, and it reads the head only
-   as git objects at its sha (`git diff`, `git show`, `git grep`), never
-   checked out or added with `--add-dir`, which would load the PR's skills. It
-   runs `python3 -I scripts/review_post.py` in place: nothing is copied, so a
-   copy cannot fail into an empty file, and before this PR merges the command
-   fails loudly (no such file). The poster calls `gh` by its absolute path and
+   missing, partial or writer-less writers file. It then resolves each thread
+   whose findings it lists as fixed, all of them, once, by the session's route.
+3. The reviewer works in a detached worktree of `origin/main`, Code Review's
+   way: the hooks, settings, `CLAUDE.md`, skills, the procedure and the poster
+   it loads are main's. A peer gets it as `--write --cwd`; a session's subagent
+   (how reviews run on the subscription) only when the parent session's
+   checkout is not the head's tree, since a subagent shares its parent's
+   hooks, settings and env, and it reads the instructions from that worktree
+   and runs its poster by absolute path. It reads the head only as git objects
+   at its sha (`git diff`, `git show`, `git grep`), never checked out or added
+   with `--add-dir`, which would load the PR's skills, and never builds,
+   installs, runs or imports the head's code: CI runs the gates, the reviewer
+   reads their results on the head, and a test it wants is a finding. The
+   rules live once, in the peer-agents skill's reviewer procedure; `REVIEW.md`,
+   the untangle and steward skills point there. Nothing is copied, so a copy
+   cannot fail into an empty file, and before this PR merges the poster's
+   command fails loudly (no such file). The poster calls `gh` by its absolute path and
    refuses one inside a git checkout, read from the files rather than from
    `git`. A failed read fails the run for the reviewer to repeat.
 4. The peer-agents skill: the dispatch section holds the denied-permission
-   rule, the reviewer's dispatch (a writers file in the brief, `--write` with
-   `--cwd` a worktree of `origin/main`, never of the head, its result the
-   posted review) and the founder step; the reviewer's procedure is find in
-   parallel, verify once, rank, post; the `VERDICT: APPROVE|ADAPT|REJECT`
-   contract is gone. The
+   rule, the reviewer's dispatch (a writers file in the brief, where it runs
+   by the procedure, its result the posted review) and the founder step; the
+   reviewer's procedure is where it runs, then find in parallel, verify once,
+   rank, post; the `VERDICT: APPROVE|ADAPT|REJECT` contract is gone. The
    constraints block lets a reviewer's own subagents find and verify (the
-   untangle skill's step 5 already says subagents search); only peers are
-   refused. Its `--write` line for codex said `--full-auto`; `peer_agent.py`
+   untangle skill's step 5 already says subagents search), refuses peers, and
+   keeps "the one test file needed" for a builder: a reviewer runs none of
+   the head's code. Its `--write` line for codex said `--full-auto`; `peer_agent.py`
    passes `-s danger-full-access`, and the line now says so.
 5. The steward skill opens the PR as a draft and readies it, the acts
-   `land_pr2.sh` did, says the reviewer works from a worktree of `origin/main`,
-   never the branch, and drops "until it exists, watch without it".
-6. `REVIEW.md` says the reviewer's working directory is a worktree of
-   `origin/main`, so the file, its includes, `CLAUDE.md`, main's peer-agents
-   reviewer procedure and the poster are main's; its review section names the
+   `land_pr2.sh` did, says the reviewer works from a worktree of `origin/main`
+   and never runs the branch's code (a test it asks for is the steward's to
+   add), and drops "until it exists, watch without it". The untangle skill's
+   "a reviewer checks the PR out" becomes "reads the PR as git objects".
+6. `REVIEW.md` says the reviewer works from a worktree of `origin/main` by
+   main's procedure, reads the head as git objects and never runs its code, so
+   the file, its includes, `CLAUDE.md`, the procedure and the poster are
+   main's; its review section names the
    poster instead of restating the format it writes; earlier edits and founder
    questions are accounted for across base changes; the bot's comments raise
    and answer nothing.
@@ -131,11 +143,29 @@ landing step goes.
 - An edited founder answer counted, and a review's second founder question was
   not listed: neither holds now.
 
+## From #5864's third review (c1ea3ab98, BLOCK)
+
+- Nothing forbade the reviewer running the head's code, and two lines invited
+  it ("run at most the one test file needed"; "a reviewer checks the PR out"):
+  a planted test could post a late APPROVE with the session's `gh`, skipping
+  the poster, and both main's and #5862's verdict read count it. Item 3 now
+  forbids it, Ship's way. Running head code locally has no need Ship does not
+  meet with CI, so no credential-free form is offered: every process in this
+  session inherits `GH_TOKEN` and `GITHUB_TOKEN` (read by name, 2026-11-28),
+  and no form without them was shown to be achievable here.
+- The subagent form inherited its parent's checkout, which may be the head's:
+  item 3 pins it.
+- An indented or bulleted `Founder question:` passed under `APPROVE` and went
+  unlisted, and an inline `Important:` after a comment's first line went
+  unlisted: both read now as a review body's lines are.
+
 ## Bootstrap
 
 Until this PR merges, `origin/main` has no poster, so this PR is reviewed by
-hand under main's `REVIEW.md`, which predates it. The first PR after it is
-reviewed from a worktree of `origin/main` with the poster this PR lands.
+hand under main's `REVIEW.md`, which predates it; its reviews ran the PR's
+poster tests, read in full first, because main had none and the brief asked
+for gates. The first PR after it is reviewed from a worktree of `origin/main`
+with the poster this PR lands, and runs none of the head's code.
 
 ## Departures
 
@@ -157,9 +187,10 @@ reviewed from a worktree of `origin/main` with the poster this PR lands.
 
 ## Pins
 
-The skills aggregate moves from 37,400 to 37,871 B (peer-agents 5,175 to
-5,379 B, steward 4,147 to 4,414 B) and `REVIEW.md`'s from 4,550 to 4,613 B:
-together +534 B, for the rules both reviews added, inside the aggregate total.
+The skills aggregate moves from 37,400 to 38,512 B (peer-agents 5,175 to
+5,834 B, steward 4,147 to 4,504 B, untangle 10,575 to 10,671 B) and
+`REVIEW.md`'s from 4,550 to 4,622 B: together +1,184 B, for the rules the
+three reviews added, inside the aggregate total.
 The gates page's pin drops from 1,387 to 1,231, its file's size. The
 per-file total drops from 4,403 to 4,246, and the aggregate total from 58,471
 to 58,339.

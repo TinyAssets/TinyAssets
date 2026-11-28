@@ -20,7 +20,7 @@ python scripts/peer_agent.py codex --model sol --out output/codex-fix.md \
 The prompt goes to the peer via stdin. Peers do not see your chat: the brief holds every path, line, constraint and what "done" means. Set `--timeout` to what you will wait (900s over the 1800s default).
 
 - **A denied permission is the answer**, for you and every peer: never work around it; say what it blocks.
-- **Every PR is reviewed** (the untangle skill's "How this project uses it"): dispatch a separate reviewer on each new head once the PR is ready, never the authoring session, told to break the change; any model family, the other one when this host has it. It posts, so it runs `--write` with `--cwd` its own detached worktree of `origin/main`, never of the head (a session loads its working directory's hooks, settings, skills and instructions), or as a session's subagent. Save the GitHub MCP's `list_repository_collaborators` answer (every page) as JSON and name the file in its brief. Its result is the review on the PR, never the `--out` text.
+- **Every PR is reviewed** (the untangle skill's "How this project uses it"): dispatch a separate reviewer on each new head once the PR is ready, never the authoring session, told to break the change; any model family, the other one when this host has it. It runs where and as the reviewer's procedure says. Save the GitHub MCP's `list_repository_collaborators` answer (every page) as JSON and name the file in its brief. Its result is the review on the PR, never the `--out` text.
 - **The founder's question.** A review's `Founder question:` line holds the PR (`review` fails). Ask him in chat, post his answer on the PR as a comment quoting him with the date, from a writer's account, then dispatch a fresh review. Feedback goes to the steward first.
 
 ## A dispatched peer must not dispatch
@@ -32,7 +32,8 @@ HARD CONSTRAINTS ON HOW YOU WORK:
 - Do NOT dispatch peers: no scripts/peer_agent.py, no claude/codex
   subprocess, no worktree beyond your own. A reviewer's finders and
   verifier are its own session's subagents, nothing else.
-- Do NOT run the full suite; CI does. Run at most the one test file needed.
+- Do NOT run the full suite; CI does. A builder runs at most the one test
+  file needed; a reviewer runs none of the head's code.
 - Budget ~10 minutes, reading the diff and the cited files.
 - If this brief shares files with another open PR, or the direction it
   assumes has changed, say so and stop rather than working around it.
@@ -42,9 +43,13 @@ Parallel dispatches are fine once every brief carries the block, each with its o
 
 ## The reviewer's procedure
 
-Claude Ship's Code Review, in a session (`docs/decisions/untangle-2026-11/claude-ship.md`):
+Claude Ship's Code Review, in a session (`docs/decisions/untangle-2026-11/claude-ship.md`), which reads only the default branch's instructions and never builds or runs the PR's code. Where it runs, for every dispatch:
 
-1. **Read** from your working directory, a detached worktree of `origin/main` (Code Review reads only the default branch's instructions and never runs the PR's code): `REVIEW.md`, its includes, `CLAUDE.md` and this procedure are main's. Read the head only as git objects (`git diff origin/main...<sha>`, `git show <sha>:<path>`, `git grep <pattern> <sha>`), never checked out or added as a directory. `python3 -I scripts/review_post.py read --repo <o/r> --pr <n> --writers <file>` lists the earlier entries (findings, edits, founder questions) and the comments that count.
+- **In `<main>`, a fresh detached worktree of `origin/main`**: a peer's `--write --cwd <main>`, or a session's subagent only when the parent session's checkout is not the head's tree (a subagent shares its parent's hooks, settings and env). It reads `REVIEW.md`, its includes, `CLAUDE.md` and this procedure from `<main>`, and runs `python3 -I <main>/scripts/review_post.py` by that path, never another checkout's copy.
+- **Never the head's code**: it never builds, installs, runs or imports it (tests, scripts, `npm`, a probe that loads it). CI runs the gates; it reads their results on the head (`gh api repos/<o/r>/commits/<sha>/check-runs`). A test it wants is a finding.
+- **The head as git objects only** (`git diff origin/main...<sha>`, `git show <sha>:<path>`, `git grep <pattern> <sha>`), never checked out or added as a directory.
+
+1. **Read** those, then `review_post.py read --repo <o/r> --pr <n> --writers <file>`: the earlier entries (findings, edits, founder questions) and the comments that count.
 2. **Find** in parallel: a few finders, each one slice (an area of the diff, or a kind from REVIEW.md's Important list), each returning candidates with `file:line` and the failing case.
 3. **Verify**: one verifier rereads each candidate in the source and drops what the code does not show; duplicates merge.
 4. **Rank** by `REVIEW.md`, and mark each earlier entry as the poster's docstring says.

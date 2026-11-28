@@ -59,8 +59,10 @@ from typing import Callable
 # (scripts/tests/test_review_post.py reads a posted one through review_checks).
 VERDICTS = ("APPROVE", "BLOCK")
 MARKERS = ("Important", "Nit", "Pre-existing")
-_MARKER_RE = re.compile(r"^\s*(?:[-*+]\s+)?(Important|Nit|Pre-existing):\s*(.*)$")
-_QUESTION_RE = re.compile(r"^Founder question:\s*(.*)$")
+# A marker or a founder question opens a line after any indent or list bullet.
+_LEAD = r"^\s*(?:[-*+]\s+)?"
+_MARKER_RE = re.compile(_LEAD + r"(Important|Nit|Pre-existing):\s*(.*)$")
+_QUESTION_RE = re.compile(_LEAD + r"Founder question:\s*(.*)$")
 _WHERE_RE = re.compile(r"^`(?P<path>[^`\n]+):(?P<line>\d+)` (?P<text>.*)$")
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
@@ -166,11 +168,12 @@ def resolve_gh() -> str:
 
 def _text(first: str, rest: list[str]) -> str:
     """A finding's text: its first line and the lines after it, up to a blank
-    line or the next marker. The poster refuses a blank line in a text, so this
+    line, the next marker or a founder question. The poster refuses a blank line
+    in a text, so this
     reads back what it wrote."""
     out = [first.strip()]
     for line in rest:
-        if not line.strip() or _MARKER_RE.match(line):
+        if not line.strip() or _MARKER_RE.match(line) or _QUESTION_RE.match(line):
             break
         out.append(line.strip())
     return " ".join(out)
@@ -204,10 +207,11 @@ def earlier_findings(reviews: list[object], comments: list[object], *,
     """Every earlier entry by a writer, from `GET pulls/{n}/reviews` and
     `GET pulls/{n}/comments` (outdated ones included), whatever the base did.
 
-    A review's body is the record of its findings. An inline comment that repeats
-    one (same review, line and text) is that finding, and a fix resolves its
-    thread; an inline `Important:` its review's body lacks is a finding of its
-    own. An edited review (`edits`, from `edited_reviews`) or an edited thread's
+    A review's body is the record of its findings; both it and an inline comment
+    are read line by line. An inline `Important:` that repeats one of its
+    review's (same line and text) is that finding, and a fix resolves its thread;
+    one its review's body lacks is a finding of its own (`comment:<id>#<k>`).
+    An edited review (`edits`, from `edited_reviews`) or an edited thread's
     first comment is an entry too: what it said before is gone, so it stands
     until a review marks it. A pending review (no `submitted_at`) and its
     comments, which nobody else can read, do not count.
@@ -259,18 +263,21 @@ def earlier_findings(reviews: list[object], comments: list[object], *,
                                  "this finding was edited: " + _text(body[0] if body else "",
                                                                      body[1:])))
             continue
-        mark = _MARKER_RE.match(body[0]) if body else None
-        if not mark or mark.group(1) != "Important":
-            continue
-        text = _text(mark.group(2), body[1:])
-        twin = next((n for n, f in enumerate(found)
-                     if f.id.startswith(f"review:{rid}#") and f.where == where
-                     and f.text == text and f.comment is None), None)
-        if twin is not None:
-            found[twin] = replace(found[twin], comment=cid)
-        else:
-            found.append(Earlier(f"comment:{cid}", "important", login, when, commit,
-                                 where, text, cid))
+        k = 0
+        for i, line in enumerate(body):
+            mark = _MARKER_RE.match(line)
+            if not mark or mark.group(1) != "Important":
+                continue
+            k += 1
+            text = _text(mark.group(2), body[i + 1:])
+            twin = next((n for n, f in enumerate(found)
+                         if f.id.startswith(f"review:{rid}#") and f.where == where
+                         and f.text == text and f.comment is None), None)
+            if twin is not None:
+                found[twin] = replace(found[twin], comment=cid)
+            else:
+                found.append(Earlier(f"comment:{cid}#{k}", "important", login, when,
+                                     commit, where, text, cid))
     return sorted(found, key=lambda f: (f.when, f.id))
 
 
@@ -420,8 +427,9 @@ def build_review(spec: object, *, earlier: list[Earlier], lines: dict[str, set[i
             rows.append(f"- {entry['status']}: {f.id} ({f.where or f.commit[:9]}) "
                         f"{f.text[:120]}" + (f" -- {extra}" if extra else ""))
         parts.append("Earlier entries:\n\n" + "\n".join(rows))
-    fixed = [f.comment for f in earlier
-             if f.comment is not None and accounted[f.id]["status"] == "fixed"]
+    threads = sorted({f.comment for f in earlier if f.comment is not None})
+    fixed = [c for c in threads if all(accounted[f.id]["status"] == "fixed"
+                                       for f in earlier if f.comment == c)]
     return Review("\n\n".join(parts) + "\n", inline, fixed)
 
 
