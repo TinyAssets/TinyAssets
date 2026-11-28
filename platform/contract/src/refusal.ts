@@ -159,8 +159,9 @@ export const REFUSALS = Object.freeze({
   // The files plane: a wrapped data key that does not open for its namespace.
   data_key_refused: QUIET_INVALID,
 
-  // The platform gates (`control.ts`), closed: the maintenance gate (`MAINTENANCE`) or the
-  // outside switch (`OUTSIDE_OFF`), each the refusal's message.
+  // The platform gates (`control.ts` `gateClosed`), closed: the maintenance gate
+  // (`MAINTENANCE`, or `CANARY_ONLY` for an owner its canary list leaves out) or the outside
+  // switch (`OUTSIDE_OFF`), each the refusal's message.
   unavailable: Object.freeze({ status: 503, retryAfterS: 60, transient: true }),
 
   // The runtime's: an object it reports overloaded (see the header), a technical ceiling,

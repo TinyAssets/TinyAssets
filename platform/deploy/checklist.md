@@ -437,7 +437,7 @@ It never counts as "absent".
        `routes` phase). Its old-stack probes would page on every run against the doors.
     3. **Open the control record for the canary owner, both gates:** `outside: "on"`,
        `ordinary: "canary"` and `canary: ["<the canary owner's WorkOS user id>"]`. The keyed
-       `/api` passes only with `outside` on (the doors' `outsideOpen`), so with it off,
+       `/api` passes only with `outside` on (`gateClosed`'s outside gate), so with it off,
        the keyed checks get a `503`. With `ordinary` still `canary`, this admits no one but
        the canary owner, inside or out.
        - Read the canary owner's WorkOS user id (`user_…`) from WorkOS before its first

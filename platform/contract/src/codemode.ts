@@ -34,6 +34,8 @@ export interface CodemodeWorker<Request, Exchange> {
  * failing one script. H2's probe 1 measures it live.
  */
 export const CODEMODE_INTERRUPT_BUDGET = 50_000;
+/** Interrupt polls a second of a tight loop on Cloudflare, pi-codemode's measurement. */
+export const CLOUDFLARE_POLLS_PER_S = 10_000;
 /**
  * VM memory per execution, a technical ceiling: a script past it fails inside itself
  * (`out of memory`), where the isolate's 128 MB, which every VM placed in it shares, would

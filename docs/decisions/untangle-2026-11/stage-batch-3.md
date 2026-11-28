@@ -64,6 +64,13 @@ hand. So:
   rule, so it can be renamed to a name that passes.
 - `storedPath`'s one refusal is now three, each saying what it holds: absolute, no NUL,
   well-formed Unicode within 4,096 bytes.
+- Tests: every writer and the held name (`owner/test/file-names.test.ts`), the MCP doors
+  (`mcp.test.ts`). The app's payload test wrote file names of markup (`<img onerror=…>`,
+  `"><svg onload=…>`), which the rule now refuses: it asserts that refusal, and proves the
+  app escapes a name through names the rule lets be that are markup if built into HTML
+  unescaped (an attribute broken out of by `'`, markup written as entities), its markup
+  instrument and `__xss` count unchanged; the markup payloads stay in the file text, frames,
+  results, posts and hash it renders.
 
 **Left.** Two names that differ only in case (`Notes.md`, `notes.md`) are two files here, as on
 Linux, and one on a case-insensitive disk (macOS's default, Windows): Nextcloud does not

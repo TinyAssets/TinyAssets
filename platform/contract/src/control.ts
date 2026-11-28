@@ -422,7 +422,7 @@ export function closedToAll(control: Control): boolean {
  * The hooks gate (`/hooks/inbound`), before any route is read: `unavailable` when the record
  * is malformed or unreadable, `off` when it is missing or its `inbound` is off, else the
  * record read or kept, by whose maintenance gate the event's owner is then held
- * (`ordinaryAdmits`).
+ * (`ordinaryClosed`).
  */
 export function inboundGate(read: ControlRead): Control | "off" | "unavailable" {
   const control = gating(read);

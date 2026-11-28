@@ -28,7 +28,7 @@ import {
 import { fitted, jsonBytes } from "../../contract/src/encoded";
 import { sha256Hex } from "../../contract/src/digest";
 import {
-  CODEMODE_INTERRUPT_BUDGET, CODEMODE_MEMORY_BYTES,
+  CLOUDFLARE_POLLS_PER_S, CODEMODE_INTERRUPT_BUDGET, CODEMODE_MEMORY_BYTES,
 } from "../../contract/src/codemode";
 import { PAGE_BYTES } from "./bodies";
 import { UPLOAD_LARGER } from "./files";
@@ -182,8 +182,9 @@ function fittedCode(answer: CodeResult): CodeResult {
  * the only one it answers: its own deadline is `TIMER_MOST_MS`).
  */
 export const CODE_COMPUTE_LIMIT = "the script computed past code mode's limit of " +
-  `${CODEMODE_INTERRUPT_BUDGET.toLocaleString("en")} interrupt polls (about 5 seconds of ` +
-  "computing without a tool call), so it was stopped. Its clock stands still while it " +
+  `${CODEMODE_INTERRUPT_BUDGET.toLocaleString("en")} interrupt polls (about ${
+    CODEMODE_INTERRUPT_BUDGET / CLOUDFLARE_POLLS_PER_S} seconds of computing without a tool ` +
+  "call), so it was stopped. Its clock stands still while it " +
   "computes, so a loop that waits on Date.now() never ends. Compute less in one script, or " +
   "split the work across several code calls";
 /**
