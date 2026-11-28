@@ -9,7 +9,7 @@ or keeps ours with a concrete reason. Ship work is process work, ahead of
 product work: "Claude Ship is process improvement so it is prioritized and
 implemented."
 
-Rewritten 2026-11-28, after three reviews of #5856 and the founder's answers. On
+Rewritten 2026-11-28, after five reviews of #5856 and the founder's answers. On
 approvals he answered: "I don't understand all this about approvals. How we have
 been doing it is working for me so I don't know what all this is even all
 about." That answer is the stated reason we keep our approval model, so the
@@ -27,7 +27,7 @@ Claude Approvals public beta), all under `code.claude.com/docs/en/`:
 `approvals`, `approvals-policy`, `approvals-setup`, `approvals-classifiers`,
 `approvals-github-rules`, `approvals-pull-requests`.
 
-Ours, read at `origin/main` 42ad8e8b0: `.github/workflows/` `review.yml`,
+Ours, read at `origin/main` 42ad8e8b0 (the review gate's files re-read unchanged at f8cc9190f on 2026-11-28): `.github/workflows/` `review.yml`,
 `review-signal.yml`, `review-queue.yml`, `auto-enroll-merge.yml`,
 `queue-handoff.yml`, `pr-scope-guard.yml`, `tests.yml`;
 `scripts/review_checks.py`, `scripts/test_hygiene_gate.py`,
@@ -104,7 +104,7 @@ since 2026-11-24 (`brief_lane.md`'s "Ship's separation of duties"), which
 |---|---|---|
 | Fixes failing checks in code the PR touches, conflicts, review comments, Code Review's Important findings | **In effect**: the builder (or a fresh fixer) is the PR's steward and pushes the fixes | **Adopt**, as a session (decision 3) |
 | Merges the base in on a conflict; never rebases | "Merge `origin/main` in; never rebase" (untangle skill) | Matches |
-| Never approves or merges; the service refuses approving, changing rulesets, statuses, check runs, deleting branches, pushing tags | Agents act as the founder's admin user, so nothing refuses any of these | **Keep, a known gap** (decision 2): the steward skill forbids them. Force-pushing or deleting `main` becomes refused by GitHub (§ Branch rules), a mistaken push, not a deliberate one: an admin can still disable or delete the ruleset or add a bypass, which drift sees only at the next arm |
+| Never approves or merges; the service refuses approving, changing rulesets, statuses, check runs, deleting branches, pushing tags | Agents act as the founder's admin user, so nothing refuses any of these | **Keep, a known gap** (decision 2): the steward skill forbids them. Force-pushing or deleting `main` becomes refused by GitHub (§ Branch rules), a mistaken push, not a deliberate one: an admin can still disable or delete the ruleset, which drift sees at the next arm, or add a bypass. Drift sees a bypass only when it covers the user every agent acts as (`current_user_can_bypass`); an App, deploy-key or team bypass it cannot see, so the create's read-back checks `bypass_actors` itself |
 | Re-runs a flaky job once (failed before any test ran, or passed earlier on the same commit) | "After a red CI job, rerun only its failures" (gates); `queue-handoff` stops after two counted queue failures | **Adopt** Ship's flaky rule into the steward skill; `queue-handoff` stays (Ship leaves the merge queue to GitHub) |
 | Instructions in `.claude/skills/steward/SKILL.md` on the default branch, plus `CLAUDE.md`/`AGENTS.md` | Builder rules live partly in host briefs, lost in the 2026-11-28 restart | **Adopt**, first (§ Where the host rules land) |
 | The skill's example frontmatter sets `user-invocable: false` and `disable-model-invocation: true`: a file only the service reads | n/a | **Differs**: our steward is every builder session, so the skill must load for them; it keeps name and description only |
@@ -193,11 +193,11 @@ since 2026-11-24 (`brief_lane.md`'s "Ship's separation of duties"), which
    latest by time alone.
 
 **Who counts.** Everything the reviewer and steward read on a PR (earlier
-findings, the founder's answer as the coordinator posts it, `/steward`
-commands, comments the steward acts on) counts only from an account with
-`admin`, `maintain` or `write` on this repository, or from this repository's
-own bots: `github-actions[bot]` (the queue-handoff ledger) and the review App's
-bot. Ship counts the author, writers and bots the same way; an outsider is in
+findings, `/steward` commands, comments the steward acts on) counts only from
+an account with `admin`, `maintain` or `write` on this repository, or from this
+repository's own bots: `github-actions[bot]` (the queue-handoff ledger) and the
+review App's bot. The founder's answer, as the coordinator posts it, counts
+only from a writer, never a bot. Ship counts the author, writers and bots the same way; an outsider is in
 neither set, and an author's login cannot be forged in the API's record. In
 Actions, `review.yml` keeps `push_reader`. In a session, whose proxy refuses
 that read, the writers come from the GitHub MCP's `list_repository_collaborators`
@@ -256,7 +256,7 @@ one per PR.
 - [ ] Rules into the repo, the steward procedure, the prose carry and the delta-only ask gone: `process/ship-rules`
 - [ ] The reviewer's procedure and poster, the coordinator's founder step, the land step gone: `process/ship-code-review`
 - [ ] No force-push or deletion of `main`, one source for it: `process/ship-main-guard`
-- [ ] live: the main-guard ruleset created from its file and read back (`current_user_can_bypass` `never` to the arming token), `main`'s classic protection deleted and read back as 404, open PRs armed again (after `process/ship-main-guard` merges)
+- [ ] live: the main-guard ruleset created from its file and read back (`bypass_actors` `[]`, read with the session's token, which sees it; drift exit 0 under the arming token), `main`'s classic protection deleted and read back as 404, open PRs armed again (after `process/ship-main-guard` merges)
 
 0. **`fix/verdict-order`** (now, alone). `review_checks.py`'s decision becomes
    § Target pipeline step 3's: counted verdicts on commits in the head's
@@ -331,11 +331,18 @@ one per PR.
    requests only, and GitHub returns `bypass_actors` only to a caller with
    write access to the ruleset. So the check reads
    `current_user_can_bypass`, which `GET rulesets/{id}` returns to any reader
-   for the calling user, the user every agent acts as. Verify, read only, that
-   the endpoint returns it (from a session, `GET rulesets/24065294` reads
-   `always` for that user) and record what it returns. If it is not returned to
-   a fine-grained PAT, the lane stops and records the read that can see it;
-   it adds no token with Administration write. Then it adds
+   for the calling user, the user every agent acts as. GitHub does not say
+   whether a fine-grained PAT with only Contents and Pull requests is judged on
+   that user's admin role, so the check calibrates itself on every run, under
+   the same token: 24065294, whose bypass actor is the admin role, must read
+   `always`, or the run is drift (exit 1), because a token that cannot see the
+   role's bypass there cannot be trusted reading `never` on the guard. The
+   first step verifies both reads with the actual PAT, read only, in the first
+   `auto-enroll` run's log after merge, before the guard is created (the
+   session's own read, `always` on 24065294 today, records only the field's
+   shape). If 24065294 does not read `always` to the PAT, the lane stops and
+   records the read that can; it adds no token with Administration write.
+   Then it adds
    `docs/ops/main-guard-ruleset.json` (named `main guard`; the default branch;
    `non_fast_forward` and `deletion`; no bypass actor). `scripts/ruleset_drift.py`
    compares each ruleset file with the live rules of `main` carrying that
@@ -353,7 +360,7 @@ one per PR.
    are the coordinator's (Fact 4; the `live:` line above). Gates:
    `scripts/tests/test_ruleset_drift.py` (each file against its own ruleset;
    `always` or an absent `current_user_can_bypass`, or `disabled`, on the guard
-   is drift; a rule under the wrong ruleset id is drift; the undeclared-rule
+   is drift; 24065294 reading `never` or absent is drift; a rule under the wrong ruleset id is drift; the undeclared-rule
    case's example changes from `deletion`, which the guard declares, to
    another type), `ruleset_drift.py` exit 0 after the create,
    `--untangle-check`.
@@ -385,4 +392,4 @@ one per PR.
 ## This PR
 
 Only this file. `REVIEW.md`, the steward skill, the reviewer's poster and the
-second ruleset are the three lanes'.
+second ruleset are the lanes'.
