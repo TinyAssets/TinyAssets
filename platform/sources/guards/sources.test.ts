@@ -325,14 +325,15 @@ describe("the engine records", () => {
     });
     expect(sourceRecord(claude).cli!.unattended.vendor_login_in_sandbox).toMatchObject({
       allowed: true, cite: "https://code.claude.com/docs/en/legal-and-compliance" });
-    // Codex's refusal cites the page whose route it follows (ADR-040 decision 9).
-    expect(sourceRecord(records.get("codex")).cli!.unattended.vendor_login_in_sandbox)
-      .toMatchObject({ allowed: false, cite: expect.stringMatching(/^https:\/\//) });
-    // Gemini's refusal says what Google's terms leave open, not that they forbid it.
+    // Codex's refusal cites its page and says what OpenAI's terms leave open, not that they
+    // forbid it: the founder decides it (ADR-040 decision 9).
+    const codex = sourceRecord(records.get("codex")).cli!.unattended.vendor_login_in_sandbox!;
+    expect(codex).toMatchObject({ allowed: false, cite: expect.stringMatching(/^https:\/\//) });
+    expect(codex.allowed === false && codex.reason).toMatch(/^Unclear: /);
+    // Gemini's refusal names Google's own route for a third-party agent: an API key.
     const gemini = sourceRecord(records.get("gemini")).cli!.unattended.vendor_login_in_sandbox!;
     expect(gemini.allowed).toBe(false);
-    expect(gemini.allowed === false && gemini.reason).toMatch(/^Unclear: /);
-    expect(gemini.allowed === false && gemini.reason).not.toMatch(/forbid/);
+    expect(gemini.allowed === false && gemini.reason).toMatch(/API key/);
   });
 
   it("give pi an API key only, never a subscription's sign-in (ADR-034 decision 1.3)", () => {

@@ -155,12 +155,20 @@ ADR-033's 2026-11-01 reading:
   Claude Code cloud sessions take work through a scheduled task's API trigger, which
   Anthropic documents for "anywhere you can make an authenticated HTTP request". That is
   built (`claude_routine_fire`).
-- **Codex:** OpenAI now documents plan use for "open-source and locally hosted apps", and
-  access tokens for "trusted scripts, schedulers, and private CI runners". So Codex on the
-  user's own computer is allowed. A remotely hosted app goes through OpenAI's partner interest
-  form, so our sandbox waits on that route. `codex.json`'s hosted verdict is now `forbidden`,
-  with that citation (it was `unclear`). Codex cloud tasks have no documented third-party
-  trigger and no documented MCP, so ChatGPT's own place covers OpenAI.
+- **Codex** (read again after #5865's first review, which found the first reading quoting
+  an API-key sentence as if it were about ChatGPT sign-in). OpenAI's pages speak of an app
+  that gets a user's plan through Sign in with ChatGPT, and of a user's own automation.
+  TinyAssets launches the user's own signed-in CLI and holds no token: a third kind.
+  - On the device it is the user's own CLI "for local work", automated as their own account
+    on infrastructure that is theirs ("trusted private infrastructure"). Allowed.
+  - In our sandbox, OpenAI documents ChatGPT sign-in "in a remote or headless environment"
+    and automation on "trusted private infrastructure". It also sends "a paid or remotely
+    hosted app" to its interest form. It does not say which a platform's per-user sandbox
+    is. That is genuinely ambiguous, and the risk is the user's account, so it is the
+    founder's question (`tasks.md` question 7). `codex.json`'s hosted verdict stays
+    `unclear`, with exact quotes, and its refusal cites the CI/CD page.
+  - Codex cloud tasks have no documented third-party trigger and no documented MCP, so
+    ChatGPT's own place covers OpenAI.
 - **Gemini (found here, Fact 17):**
   - Since 2026-06-18, Gemini CLI serves no free individual, Google AI Pro or Ultra account.
     They moved to Antigravity CLI.
@@ -170,10 +178,12 @@ ADR-033's 2026-11-01 reading:
   - So no Google consumer plan runs TinyAssets work today. The founder's question about
     Gemini on users' own computers is answered by Google's own pages: no, and a Google
     user's Gemini runs on their own API key, as Google recommends.
-  - `gemini.json`'s citations now say so. Its verdicts were already off. Its sign-in still
-    serves a Code Assist Standard or Enterprise account, where the third-party ban stands.
-    That is a decided keep: the record stays for the API key and the organization sign-in,
-    both off for hosting until a page permits it.
+  - `gemini.json`'s hosted verdict is now `forbidden`, citing Google's own route: the
+    Antigravity FAQ recommends "a Gemini Enterprise or Google AI Studio API key" for a
+    third-party coding agent, and Gemini CLI's terms call reaching its services through
+    third-party software a violation. That covers the one sign-in Gemini CLI still serves,
+    Code Assist Standard or Enterprise. Its unattended refusal says the same. The record
+    stays, for the API key, and for that sign-in should a Google page permit it.
 - **Grok Build:** xAI documents headless mode for "integration into other apps" and a device
   code for "containers, headless hosts". x.ai's consumer terms answered 403 to every fetch.
   There is no Grok Build record. ADR-040 says the PR that adds one reads those terms first.
@@ -183,8 +193,8 @@ ADR-033's 2026-11-01 reading:
   can be a push main place (PL8).
 - **OpenRouter and API keys:** allowed everywhere, through the egress door.
 
-No vendor's terms were both genuinely ambiguous and risky for users, so no founder question
-on terms is open. The E2B plan is a spending question (`tasks.md`'s founder question 6).
+One vendor reading is both genuinely ambiguous and risky for users: Codex in our sandbox,
+`tasks.md`'s founder question 7. The E2B plan is a spending question (question 6).
 
 ## 7. The re-cut (`tasks.md`)
 
@@ -212,9 +222,12 @@ open work that says "simultaneous runs", or assumes the sandbox or a key first.
   `owner/src/runs.ts`, `doors/src/app.ts` and `doors/src/api-keys.ts` say "simultaneous runs";
   `limits-audit.md`'s tier row and the owner-object and doors specs say a run past them is
   refused `tier_runs`; the site's plans
-  copy (`WebSite/site-react/app/fine-print/page.tsx`, `start/page.tsx`) and its spec
-  (`openspec/specs/public-website-surface/spec.md`) say tiers differ by simultaneous runs. Each
-  becomes sandboxes with the shape (`untangle/place-shapes`).
+  copy (`WebSite/site-react/app/page.tsx`'s plans table, `fine-print/page.tsx`,
+  `start/page.tsx`), the boundary test that pins those words
+  (`WebSite/site-react/scripts/public-boundary.test.mjs`), its spec
+  (`openspec/specs/public-website-surface/spec.md`), `engines-replan.md` and the owner-object
+  spec's agents-posting requirement say tiers differ by simultaneous runs. Each becomes
+  sandboxes with the shape (`untangle/place-shapes`).
 - [ ] `platform/deploy/control.json` `sandbox_concurrency_ceiling: 20` against E2B's Hobby 10, once the
   founder names the plan (`untangle/place-shapes`).
 - [ ] `contract/src/limits.ts:226` calls ADR-035's body rule "the placement rule"; it becomes

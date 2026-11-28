@@ -61,8 +61,8 @@
         "citation": "@google/gemini-cli 0.66.0 bundle/chunk-HJ5KJXNZ.js authWithUserCode: Authorization timed out after 5 minutes (setTimeout 3e5), read 2026-11-03"
       },
       "hosted_use": {
-        "verdict": "unclear",
-        "citation": "ADR-040 decision 9 (read 2026-11-28): since 2026-06-18 Gemini CLI serves no free individual, Google AI Pro or Ultra account, which moved to Antigravity CLI (the gemini-cli README; developers.googleblog.com, 2026-05-19), and Antigravity says wrapping agy inside third-party applications is not supported under consumer plans (antigravity.google/docs/faq). For a Code Assist Standard or Enterprise sign-in, tos-privacy.md calls third-party software using Gemini CLI OAuth a violation and does not address a platform hosting the unmodified CLI"
+        "verdict": "forbidden",
+        "citation": "ADR-040 decision 9 (read 2026-11-28): Google AI Pro and Ultra moved to Antigravity CLI on June 18, 2026 (the gemini-cli README), and Antigravity's FAQ says wrapping agy inside third-party applications \"is not supported under consumer plans\" and recommends \"a Gemini Enterprise or Google AI Studio API key\" for a third-party coding agent (antigravity.google/docs/faq). Gemini CLI's terms call accessing its services \"using third-party software, tools, or services\" a violation (docs/resources/tos-privacy.md). So a platform runs Gemini on your Google API key, not your sign-in"
       },
       "model": {
         "id": "gemini-3.1-pro-preview",
@@ -79,8 +79,8 @@
     "unattended": {
       "vendor_login_in_sandbox": {
         "allowed": false,
-        "reason": "Unclear: for a Code Assist Standard or Enterprise sign-in, Google's terms ban third-party software using its OAuth and do not address a platform running the unmodified CLI unattended, and no Google page permits it; Google AI Pro and Ultra are no longer served by Gemini CLI at all, since 2026-06-18 (ADR-040 decision 9).",
-        "cite": "https://github.com/google-gemini/gemini-cli/blob/main/docs/resources/tos-privacy.md",
+        "reason": "Google's route for a third-party coding agent is an API key, \"a Gemini Enterprise or Google AI Studio API key\"; Gemini CLI no longer serves Google AI Pro or Ultra, and its terms call accessing its services through third-party software a violation (ADR-040 decision 9).",
+        "cite": "https://antigravity.google/docs/faq",
         "read": "2026-11-28"
       },
       "api_key": {

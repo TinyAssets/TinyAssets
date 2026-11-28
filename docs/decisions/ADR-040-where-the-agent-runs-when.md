@@ -83,12 +83,17 @@ those ADRs' bodies are not edited: only their Status lines point here.
      - second, API keys, routers and custom endpoints.
    - Direction 4's strongest connected source ranks within each group
      (`model-ranking.json`).
-   - A metered source runs only when no subscription source can do the work, or when the
-     owner says so. "Can do the work" means its vendor's terms allow it at some place
-     (decision 9), now or when that place comes back.
-   - So a model that only an API key reaches is used only when the owner chose it. The
-     owner chooses it by an agent's pin, by "Move to…", or by turning `metered_fallback` on.
-     Otherwise a subscription runs.
+   - **A metered source runs only by the owner's choice.** That choice is one of these:
+     - the owner pinned it for that agent, or chose it with "Move to…";
+     - the owner turned `metered_fallback` on;
+     - the owner holds no subscription source the agent allows, so connecting the key was the
+       choice. A sign-in that decision 9 allows at no place is never offered, so it is never
+       held.
+   - Otherwise the run waits for a subscription source, even when none can take it now. The
+     message offers the choice: "Waiting for your computer. Use your OpenAI key for this run,
+     or always?"
+   - So a model that only an API key reaches runs only when the owner chose it, by one of
+     those three. Otherwise the strongest subscription runs.
    - A top-up, credits or a limit reset stays on the same subscription sign-in. TinyAssets
      needs no separate path for them.
    - **A subscription at its limit.** The run waits, or it goes to another subscription
@@ -107,15 +112,22 @@ those ADRs' bodies are not edited: only their Status lines point here.
 
      ```json
      {
-       "sources":          ["subscription", "metered"],
        "attended":         ["main_push", "device", "sandbox"],
        "unattended":       ["main_push", "main_pull", "device", "sandbox"],
        "unattended_due":   ["main_push", "device", "main_pull", "sandbox"],
        "warm_first":       true,
-       "none_free":        "wait",
-       "metered_fallback": false
+       "metered_fallback": false,
+       "can": {
+         "device":  ["tinyassets", "shell", "repo", "browse", "long_runs", "local"],
+         "sandbox": ["tinyassets", "shell", "repo", "browse", "long_runs"]
+       }
      }
      ```
+
+   - **What the file does not hold.** The group order of decision 2 is the founder's rule,
+     not a setting. The owner's one choice about metered sources is `metered_fallback`, or a
+     pin per agent. A place that can take nothing waits; it is never refused (ADR-039
+     decision 6), so that is no setting either.
 
    - **Attended** means a person waits in the app. A push main agent comes first, then the
      device, then the sandbox. A pull-only main agent is not in this order, because it cannot
@@ -149,9 +161,9 @@ those ADRs' bodies are not edited: only their Status lines point here.
    - **How the source order and the place order combine.** The rule is: *the first place in
      the order that can run an acceptable source wins, and the strongest acceptable source
      runs there.*
-     - An acceptable source is one the agent's definition allows, from the first group
-       (decision 2) that holds any such source. An agent that needs one model or engine pins
-       it.
+     - An acceptable source is one the agent's definition allows, from the subscription
+       group. A metered source is acceptable only by the owner's choice (decision 2). An agent
+       that needs one model or engine pins it.
      - The places are tried in the rule's order. At each place, the strongest acceptable
        source that place can take runs.
      - Why: the order puts the places that cost the user and us nothing first, and the most
@@ -163,7 +175,7 @@ those ADRs' bodies are not edited: only their Status lines point here.
        the sandbox. The sandbox runs the subscription, unless `metered_fallback` is on. Why:
        metered use is money the user pays their provider directly, which the founder ruled
        out by default. The sandbox spends a ceiling the tier already gives them.
-   - **`none_free: wait`.** When no place can take the run now, it waits with a clear
+   - **None free: the run waits.** When no place can take the run now, it waits with a clear
      message: "Waiting for your computer", or "Waiting for a free sandbox (5 of 5 in use)".
      It is never refused for room (ADR-039 decision 6). It never spends metered money in
      silence. A device arriving, a sandbox freeing, or a limit resetting rings it.
@@ -174,14 +186,17 @@ those ADRs' bodies are not edited: only their Status lines point here.
      - board tasks are claimed by compare-and-swap.
 
 4. **The vendors' own agents: how each gets the work, and what it fits.**
-   - **The fit check, as data.**
-     - Each main agent's wake record (`contract/wake-kinds.json`) lists what that agent
-       `can` do, from its vendor's pages, each cited: `tinyassets` (it reaches the door over
-       MCP), `shell`, `repo`, `browse`, `long_runs`.
+   - **The fit check, as data.** Every place kind says what it `can` do, from one vocabulary:
+     `tinyassets` (it reaches the door over MCP), `shell`, `repo`, `browse`, `long_runs`, and
+     `local` (the user's own files and apps).
+     - Each main agent's `can` is in its wake record (`contract/wake-kinds.json`), from its
+       vendor's pages, each cited.
+     - The device's and the sandbox's are in `placement.json` (decision 3). Only the device
+       lists `local`.
      - An agent's `agent.json` lists what its work `needs`. A schedule or mail item may add
        to that. The default is `["tinyassets"]`.
-     - `local` (the user's own files and apps) is a need only a device meets.
-     - The rule matches `needs` against `can`. It never decides by a vendor's name.
+     - The rule matches `needs` against `can`, one rule for every place kind. It never
+       decides by a vendor's name.
    - **How each vendor's agent is started**, as read on 2026-11-28 (Sources):
 
      | Vendor's agent | How TinyAssets starts it | How it reaches TinyAssets | May TinyAssets trigger it? | Today |
@@ -248,8 +263,11 @@ those ADRs' bodies are not edited: only their Status lines point here.
    - A run that joins an open sandbox counts nothing new. Runs inside one sandbox are bounded
      only by a recorded technical ceiling: the VM's measured memory per CLI.
    - Main-agent and device runs count zero sandboxes. A free user whose agents run on their
-     vendors' clouds, or whose computer stays on, gets the paid experience. A phone-only free
-     user gets the whole product, with fewer sandboxes at once.
+     vendors' clouds, or whose computer stays on, gets the paid experience.
+   - So most owners hold at most one sandbox: their own work's. The tier binds only an owner
+     whose outside clients run hosted agents at the same time. Free allows the owner's own
+     sandbox plus four clients'; paid, plus nine. Past that, a client's run waits, or runs on
+     the client's own main agent once that is built (decision 5).
    - A run past the tier is placed on another place by the rule, or it waits. It is never
      refused (`tier_runs` goes).
    - Storage counts what it counts today: the files plane, R2 bodies and the object's rows.
@@ -327,15 +345,40 @@ those ADRs' bodies are not edited: only their Status lines point here.
      | Engine and credential | Device | Hosted sandbox | Own agent |
      |---|---|---|---|
      | Claude Code, Claude plan | allowed [1] | allowed [1] | allowed: Claude over MCP, and Claude Code cloud sessions [16] |
-     | Codex, ChatGPT plan | allowed [2][3] | not allowed: OpenAI's route for remotely hosted apps is its interest form [3][4] | allowed: ChatGPT over MCP |
+     | Codex, ChatGPT plan | allowed [2][24][25] | unclear, so off until the founder decides (below) [2][3][24][25] | allowed: ChatGPT over MCP [26] |
      | Gemini CLI, Google AI Pro or Ultra | not served since 2026-06-18 [5] | not served [5] | none reaches the door today (Jules, [21]) |
-     | Gemini CLI, Code Assist Standard or Enterprise sign-in | off: the third-party ban stands, and orchestration is not addressed [6] | off [6] | none |
+     | Gemini CLI, Code Assist Standard or Enterprise sign-in | not allowed: Google's route for a third-party agent is an API key [8], and its terms ban third-party software reaching Gemini CLI's services [6] | not allowed [6][8] | none |
      | Antigravity CLI, Google AI Pro or Ultra | not allowed: "not supported under consumer plans" [7][8] | not allowed [7][8] | none |
      | Grok Build, SuperGrok or X Premium+ | allowed [9][10] | allowed by xAI's docs [10]; the PR that adds a Grok Build record reads its consumer terms first (they answered 403) | allowed: Grok Bot routines |
      | Copilot CLI, Copilot plan | allowed [11] | allowed [11][12] | allowed: the Copilot cloud agent [17][19] |
      | OpenRouter, the user's own key | allowed, through the egress door [13][14] | allowed [13][14] | none |
      | Any API key | allowed, through the egress door; the key never reaches the device | allowed | none |
 
+   - **Codex, read closely.** OpenAI's pages speak of an app that gets a user's plan, and of
+     a user's own automation. TinyAssets is a third kind: it launches the user's own
+     signed-in CLI, and it never holds a token.
+     - **Its own agent.** ChatGPT reaching TinyAssets over MCP is OpenAI's own platform and
+       its own events mechanism [26]. Allowed.
+     - **The device.** OpenAI documents the user's own CLI signed in with ChatGPT "for local
+       work" [2]. It documents automation as the user's own Codex account on "trusted private
+       infrastructure" [24], and the user's own computer is theirs. The device runner holds no
+       token: the user's CLI signs itself in, so the account is not made available to anyone
+       else [25]. The interest form [3] covers an app that gets "ChatGPT plan usage" through
+       Sign in with ChatGPT tokens, which the runner never does. Allowed, on that reading.
+     - **Our sandbox.** OpenAI documents ChatGPT sign-in "in a remote or headless
+       environment" by device code [2], and automation on "trusted private infrastructure"
+       [24]. It sends "a paid or remotely hosted app" that uses a user's plan to its
+       interest form [3]. It does not say which a per-user sandbox that a platform runs is:
+       - if it is the user's own private infrastructure, signed in by them, hosting is
+         allowed;
+       - if it is a remotely hosted app's infrastructure, it needs OpenAI's partner route
+         [3][4], and TinyAssets running the VM may read as making the account available to
+         another [25].
+
+       That is ambiguous, and the risk is the user's ChatGPT account. So the record's
+       verdict stays `unclear`: the sign-in is not offered in the sandbox until the founder
+       decides. The founder can turn it on through the control record's sign-in switch, with
+       no deploy.
    - **Google's subscribers.** Neither of Google's CLIs runs a consumer Google plan for an
      app like TinyAssets, and Jules does not yet reach the door. Such a user's Gemini runs on
      a Google API key they connect, as Google's own FAQ recommends [8]. Under decision 2,
@@ -388,13 +431,21 @@ All read 2026-11-28. "Undated" means the page shows no date.
    - "Advertised usage limits for Pro, Max, and Ultra plans assume ordinary, individual usage
      of Claude Code and the Agent SDK."
 2. https://learn.chatgpt.com/docs/auth (redirected from developers.openai.com/codex/auth,
-   undated).
-   - "API keys are still the recommended default for automation."
-   - "Access tokens are intended for trusted scripts, schedulers, and private CI runners."
-   - "Don't expose Codex execution in untrusted or public environments."
-3. https://developers.openai.com/siwc/token-sharing-open-source (undated): it documents plan
-   usage for "open-source and locally hosted apps", and sends a paid or remotely hosted app to
-   the interest form.
+   undated). Each quote is under the section named.
+   - "OpenAI authentication": "The ChatGPT desktop app, Codex CLI, and IDE extension
+     support both sign-in methods for local work."
+   - "Login on headless devices", for signing in to ChatGPT with the Codex CLI when
+     "You're running the CLI in a remote or headless environment": "prefer device code
+     authentication (beta)".
+   - "Fallback: Authenticate locally and copy your auth cache": "API keys are still the
+     recommended default for automation."
+   - "Sign in with an API key", about API-key sign-in only: "Use API key authentication for
+     programmatic Codex CLI workflows, such as CI/CD jobs. Don't expose Codex execution in
+     untrusted or public environments."
+3. https://developers.openai.com/siwc/token-sharing-open-source (undated), about an app that
+   gets a user's plan through Sign in with ChatGPT: "These docs explain ChatGPT plan usage for
+   open-source and locally hosted apps. If you're interested in offering it in a paid or
+   remotely hosted app, complete the interest form."
 4. https://help.openai.com/en/articles/20001542 ("Updated: 15 days ago").
    - Plan use in "participating commercial apps and sites is available with Go, Plus, Pro,
      and Business".
@@ -469,5 +520,15 @@ All read 2026-11-28. "Undated" means the page shows no date.
 23. https://learn.chatgpt.com/docs/extend/mcp.md (undated): "ChatGPT web uses remote MCP
     tools through plugins"; "Local MCP servers and transports may not be available in the
     cloud". No page read documents a remote MCP server in a Codex cloud task.
+24. https://learn.chatgpt.com/docs/auth/ci-cd-auth (undated), on Sign in with ChatGPT in
+    automation: "This guide shows how to keep ChatGPT-managed Codex auth working on a trusted
+    CI/CD runner"; "This is an advanced workflow for enterprise and other trusted private
+    automation"; use it only when "the runner is trusted private infrastructure"; "Do not
+    use this workflow for public or open-source repositories."
+25. https://openai.com/policies/terms-of-use/ (effective 2026-01-01): "You may not share your
+    account credentials or make your account available to anyone else".
+26. https://developers.openai.com/plugins/build/mcp-events (undated): "MCP Events lets
+    ChatGPT subscribe to updates from your MCP server, such as new messages, content
+    updates, or status changes."
 - `docs/decisions/untangle-2026-11/placement.md` (the research and the market map)
 - ADR-024, ADR-033, ADR-034, ADR-039

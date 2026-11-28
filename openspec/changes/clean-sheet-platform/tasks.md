@@ -1162,9 +1162,11 @@ real data, in step 5 (d3 §P).
   agents' chains; the owner app is among the interfaces it lets the owner customize, and its app
   serving comes before the cutover (Step 5; `founder-answers.md` call 7).
 - [ ] S8, real-time tiers. (S7, the device runner, moved to Step 5's placement block.)
-- [ ] ADR-040 decision 5's engineering targets that no placement lane holds: a client's run
-  on the client's own main agent (`untangle/place-client-main`); local engines such as
-  Ollama on the device; an owner setting that keeps device sessions on the device.
+- [ ] ADR-040 decision 5's engineering target that no placement lane holds: a client's run
+  on the client's own main agent (`untangle/place-client-main`).
+- [ ] The device's later reach, each researched first: local engines such as Ollama
+  (`untangle/device-local-engines`); an owner setting that keeps device sessions on the
+  device, saving storage and giving up resume elsewhere (`untangle/device-only-sessions`).
 - [ ] The Shape registry's founder-approved rows, carried here before `docs/architecture.md`'s
   registry goes (`founder-answers.md` call 18). Homes already: B1, the bubble agent tracks the
   frontier, is Step 19's comparison, its loop changing only `platform/starter/` unless a primitive
@@ -1193,9 +1195,9 @@ page's calls, as recommended (2026-11-21, `untangle-2026-11/founder-answers.md`)
 
 Open questions, from the as-built record:
 1. Answered (2026-11-28, ADR-040 decision 9): vendor terms are read per place. Codex on a
-   ChatGPT plan runs on the user's computer and as ChatGPT, and waits on OpenAI's partner route
-   for our sandbox. Gemini CLI no longer serves Google's consumer plans, and Antigravity
-   supports no third-party app on them, so a Google user's Gemini runs on their own API key.
+   ChatGPT plan runs on the user's computer and as ChatGPT; in our sandbox it is question 7.
+   Gemini CLI no longer serves Google's consumer plans, and Antigravity supports no
+   third-party app on them, so a Google user's Gemini runs on their own API key.
    (Kimi's record is dropped until it has a usable path: `founder-answers.md` call 17.)
 2. Capture always on gives a recovery point of minutes instead of a night. It costs about $62 a
    month for a heavy owner and $0.20 for a light one, against about $0.70 for the heavy one
@@ -1210,8 +1212,19 @@ Open questions, from the as-built record:
    `PUBLISHER`), but the repository is MIT. Which should the plugins carry (list 6, item 6d)?
 6. Which E2B plan is the team on, and so its ceiling of simultaneous sandboxes? The control
    record says 20; E2B's page says Hobby runs 10 and Pro 100, with add-ons to 600 or 1,100.
-   Each free owner may now hold 5 at once (ADR-040 decision 6), so Hobby serves two busy free
-   owners. `untangle/place-shapes` sets the record to the plan.
+   A sandbox is one per authority (ADR-040 decision 6), so an owner whose own agents run
+   holds one, and only an owner whose outside clients run hosted agents at once holds more,
+   up to 5 on free. So Hobby's 10 serves 10 owners running at once in the usual case, and 2
+   free owners at their worst case; Pro serves 100, or 20. Main agents and devices take most
+   runs first, so fewer owners need a sandbox at all. `untangle/place-shapes` sets the record
+   to the plan.
+7. Codex in our sandbox on the user's ChatGPT plan: OpenAI documents Sign in with ChatGPT in
+   a remote or headless environment, and for automation on "trusted private
+   infrastructure", but sends "a paid or remotely hosted app" that uses a user's plan to its
+   interest form, and does not say which a platform's per-user sandbox is (ADR-040 decision
+   9). Keep it off, and Codex runs on the user's computer and as ChatGPT, or turn it on and
+   accept the risk to the user's account? Recommended: keep it off, and ask OpenAI through
+   the interest form, an outward act that is yours.
 
 The coordinator's to decide (no spending, irreversible or outward-facing act), from the
 as-built record, and decided (the coordinator, 2026-11-12):
