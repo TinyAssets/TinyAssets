@@ -1790,6 +1790,50 @@ describe("a template move", () => {
     });
   }
 
+  it("keeps a try's back-off when the carry is too big to move, one resume a try, and names it " +
+     "for the founder", async () => {
+    const who = owner();
+    const old = await madeFrom(who, OLD);
+    await e2b("/script", { carryBytes: 64 * 1024 * 1024 });
+    const resumes = async () => (await stub(who).meter({ after: 0 })).events
+      .filter((event) => event.kind === "resume").length;
+    const before = await resumes();
+    const logged = vi.spyOn(console, "error");
+    try {
+      await look(who);
+      expect(logged.mock.calls.some((call) => String(call[0]).startsWith(
+        "sandbox_move_stuck: the owner sandbox's move went no further (try 1)"))).toBe(true);
+    } finally {
+      logged.mockRestore();
+    }
+    // Its first try's back-off, a lease's TTL, kept; nothing made; the old one paused, whole.
+    let row = await rowOf(who);
+    expect(row).toMatchObject({ sandbox_id: old, move_tries: 1, paused: 1 });
+    expect(row["move_after"] as number).toBeGreaterThan(Date.now() + LEASE_TTL_S * 1000 * 0.9);
+    expect(await resumes()).toBe(before + 1);
+    // Inside it, the next look tries nothing; past it, the next try doubles it.
+    await look(who);
+    expect(await resumes()).toBe(before + 1);
+    await setRow(who, "move_after = 0");
+    await look(who);
+    row = await rowOf(who);
+    expect(await resumes()).toBe(before + 2);
+    expect(row["move_tries"]).toBe(2);
+    expect(row["move_after"] as number).toBeGreaterThan(Date.now() + 2 * LEASE_TTL_S * 1000 * 0.9);
+    expect((await seen()).sandboxes.map((box) => box.id)).toEqual([old]);
+  });
+
+  it("leaves no sandbox unnamed when the create's reply never comes", async () => {
+    const who = owner();
+    const old = await madeFrom(who, OLD);
+    // E2B makes the sandbox, and its answer is lost (as a create cut at the deadline is).
+    await e2b("/script", { createLost: true });
+    await look(who);
+    const state = await seen();
+    expect(state.sandboxes.map((box) => box.id)).toEqual([old]);
+    expect(await rowOf(who)).toMatchObject({ sandbox_id: old, move_to: null, move_tag: null });
+  });
+
   it("keeps the new sandbox, never the old, when the old one's kill answers lost", async () => {
     const who = owner();
     const old = await madeFrom(who, OLD);

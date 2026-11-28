@@ -91,7 +91,7 @@
  * until it lands.
  */
 import { sha256Hex } from "../../contract/src/digest";
-import { AUTHORITY, HEX32, RUN_ID, SIGNIN_ID } from "../../contract/src/ids";
+import { AUTHORITY, HEX32, randomHex, RUN_ID, SIGNIN_ID } from "../../contract/src/ids";
 import { DurableObject } from "cloudflare:workers";
 
 import { readControl, type SandboxCeilings, SqlKeeper } from "../../contract/src/control";
@@ -202,12 +202,26 @@ const MOVE_RETRY_MAX_MS = 24 * 60 * 60_000;
 const MOVE_MS = LEASE_TTL_S * 1000 / 2;
 
 /**
- * The most a move carries, read whole into this isolate between the two sandboxes, so never two
- * of the owner's run at once: 32 MiB, a quarter of the isolate's 128 MiB. A carry is the stores'
- * sign-ins and the session copies the owner's files lack, and the workspace's unsent changes; a
- * larger one waits (put off) until a run's end sends what it can.
+ * A move's finish, inside `MOVE_MS`: the old sandbox's archive dropped and its pause (busy
+ * answers asked again, `PAUSE_MAX_MS` doubling), and the kills of what it left.
  */
-const CARRY_MAX_BYTES = 32 * 1024 * 1024;
+const MOVE_FINISH_MS = 4 * PAUSE_MAX_MS + RESUME_MAX_MS;
+
+/**
+ * What a move needs of its bound to begin the new sandbox: its `prepare` (measured) and, within
+ * a renewal's measured whole, its create, install, the carry and `carry-in`.
+ */
+const MOVE_TAIL_MS = PREPARE_MS + RENEWAL_MS;
+
+/**
+ * The most a move carries, read whole into this isolate between the two sandboxes, so never two
+ * of the owner's run at once: 16 MiB, an eighth of the isolate's 128 MiB, since other owners'
+ * objects may share the isolate and move at once (each owner's moves run one at a time on its
+ * own chain). A carry is the stores' sign-ins and the session copies the owner's files lack,
+ * and the workspace's unsent changes; a larger one waits, backing off, until a run's end sends
+ * what it can, and is named for the founder (`sandbox_move_stuck`).
+ */
+const CARRY_MAX_BYTES = 16 * 1024 * 1024;
 
 /** A failed move's wait before it is tried again: a lease's TTL, doubling, at most a day. */
 function moveBackoff(tries: number): number {
@@ -265,6 +279,8 @@ interface Row {
   /** A move's failures in a row, and when it is tried again (ms; `moveBackoff`). */
   move_tries: number;
   move_after: number | null;
+  /** The token a move names the sandbox it makes by, kept before its create is sent. */
+  move_tag: string | null;
   /** The template it was made from (`E2B_TEMPLATE` then); null: made before rows named one. */
   template: string | null;
 }
@@ -435,6 +451,12 @@ function stateOf(asked: Exec): StateAnswer {
  * The metadata naming an owner's sandboxes, so an erasure finds strays the rows lost: an
  * opaque name, the first 32 hex of a SHA-256.
  */
+/**
+ * The metadata naming a sandbox a move made by the move's own token (`move_tag`), kept before the
+ * create is sent.
+ */
+const MOVE_TAG_METADATA = "ta_move";
+
 function ownerTag(owner: string): string {
   return sha256Hex(`ta_owner\n${owner}`).slice(0, 32);
 }
@@ -911,7 +933,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
           return "lost";
         }
       }
-      const created = await this.#create(network!, ceilings, route);
+      const created = await this.#create(network!, ceilings, route, null);
       // Named before anything else awaits, as a move's is: a fault reading its window after
       // leaves it the authority's, never unnamed. Its window is the create's own timeout until
       // E2B's read says it to the moment.
@@ -936,15 +958,21 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     }
   }
 
-  /** A new sandbox of the authority's from the pinned template, with `network`. */
-  async #create(network: NetworkDocument, ceilings: SandboxCeilings, route: string):
-      Promise<Handle> {
+  /**
+   * A new sandbox of the authority's from the pinned template, with `network`, named by `tag`
+   * on its metadata where the caller kept that token first (a move's, `move_tag`), so one whose
+   * create was cut or whose reply was lost is found; null where nothing keeps one yet (a
+   * start's, `untangle/create-reply`).
+   */
+  async #create(network: NetworkDocument, ceilings: SandboxCeilings, route: string,
+                tag: string | null): Promise<Handle> {
     return this.#e2b().create({
       template: this.env.E2B_TEMPLATE, timeoutS: ceilings.runtime_ceiling_s, network,
       // An opaque name, so E2B's own list shows whose it is to us and to no one else.
       metadata: { ta_owner: ownerTag(this.#owner),
                   // Sealed, so only the doors open it: the route of E2B's lifecycle events.
-                  [ROUTE_METADATA]: route },
+                  [ROUTE_METADATA]: route,
+                  ...tag === null ? {} : { [MOVE_TAG_METADATA]: tag } },
     });
   }
 
@@ -968,7 +996,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   #moveDue(row: Row): boolean {
     return row.template !== this.env.E2B_TEMPLATE && row.paused === 1 && row.renewing === 0
       && row.releasing === 0 && row.kill_at === null && row.move_to === null
-      && !this.#leased(row.authority);
+      && row.move_tag === null && !this.#leased(row.authority);
   }
 
   /** A move put off: tried again a lease's TTL on, its tries kept. */
@@ -999,6 +1027,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       await this.#serial(() => this.#moveIdle(row.authority, ceilings!)).catch((error: unknown) => {
         console.error(`sandbox_move_failed: the ${row.authority} sandbox's move`, error);
       });
+      return;  // one move a look, inside its wall clock; the next is armed at once (`#arm`)
     }
   }
 
@@ -1032,9 +1061,11 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     const tries = row.move_tries + 1;
     this.#sql.exec("UPDATE sandboxes SET move_tries = ?, move_after = ? WHERE authority = ?",
                    tries, Date.now() + moveBackoff(tries), authority);
-    const until = Date.now() + MOVE_MS;
+    const began = Date.now();
+    const until = began + MOVE_MS - MOVE_FINISH_MS;
     this.#until = until;
     let resumed: Box | null = null;
+    let committed = false;
     try {
       const e2b = this.#e2b();
       const found = await e2b.info(row.sandbox_id);
@@ -1053,27 +1084,36 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         return;
       }
       const old = resumed;
+      // From here a try has cost a resume: one that goes no further keeps its back-off.
       if (old.runner !== this.#digest) {
-        this.#moveLater(authority, "its runner is one this Worker keeps");
+        this.#moveStuck(authority, tries, "its runner is one this Worker keeps");
         return;
       }
       const out = await this.#own(old, [COMMAND.carryOut, authority, String(until)],
                                   until - Date.now());
       if (out.code === EXIT.no) {
-        this.#moveLater(authority, "a job lives in it");
+        this.#moveStuck(authority, tries, "a job lives in it");
         return;
       }
       const carry = answerOf<CarryAnswer>(out.out, ANSWERS[COMMAND.carryOut]);
       if (carry.bytes > CARRY_MAX_BYTES) {
-        await this.#own(old, [COMMAND.carryDrop]);
-        this.#moveLater(authority, `its carry is ${carry.bytes} bytes, past ${CARRY_MAX_BYTES}`);
+        this.#moveStuck(authority, tries,
+                        `its carry is ${carry.bytes} bytes, past ${CARRY_MAX_BYTES}`);
         return;
       }
       const bytes = await e2b.download(old, CARRY_FILE, carry.bytes);
       await this.#own(old, [COMMAND.carryDrop]);
-      await this.#pauseIdle(authority, old.sandboxID);
+      await this.#pauseIdle(authority, old.sandboxID, until);
       resumed = null;
-      const created = await this.#create(network, ceilings, route);
+      if (until - Date.now() < MOVE_TAIL_MS) {
+        this.#moveStuck(authority, tries, "too little of its bound is left for the new sandbox");
+        return;
+      }
+      // Named before it is sent, by a token of this move's on its metadata, so a create cut at
+      // the deadline, or whose reply is lost, leaves nothing the next settle cannot find.
+      const tag = randomHex(16);
+      this.#sql.exec("UPDATE sandboxes SET move_tag = ? WHERE authority = ?", tag, authority);
+      const created = await this.#create(network, ceilings, route, tag);
       this.#sql.exec("UPDATE sandboxes SET move_to = ? WHERE authority = ?", created.sandboxID,
                      authority);
       const made: Box = { ...created, runner: this.#digest };
@@ -1089,41 +1129,64 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         throw new Error(`the new sandbox ${made.sandboxID} is gone`);
       }
       this.ctx.storage.transactionSync(() => {
-        this.#unrow(authority);
+        // The old one's time on the meter ended at its pause; gone before it, here.
+        this.#forget(authority);
         this.#made(authority, made.sandboxID, Date.parse(info.endAt), 1);
         this.#sql.exec("INSERT INTO retiring (sandbox_id) VALUES (?) ON CONFLICT DO NOTHING",
                        old.sandboxID);
       });
-      await this.#pauseIdle(authority, made.sandboxID);
+      committed = true;
       console.log(`sandbox_moved: sandbox ${old.sandboxID} on ${String(row.template)} is now ${
         made.sandboxID} on ${this.env.E2B_TEMPLATE}`);
+      await this.#pauseIdle(authority, made.sandboxID, until);
     } catch (error) {
-      console.error(`sandbox_move_failed: sandbox ${row.sandbox_id} stays on ${
-        String(row.template)}, paused with everything it had; its move is tried again past its ` +
-                    "back-off", error);
-      if (resumed !== null) {
-        await this.#own(resumed, [COMMAND.carryDrop]).catch(() => undefined);
-      }
+      console.error(committed
+        ? `sandbox_move_failed: sandbox ${row.sandbox_id} moved to ${
+          String(this.#row(authority)?.sandbox_id)}, which is paused by the idle reaper`
+        : `sandbox_move_failed: sandbox ${row.sandbox_id} stays on ${String(row.template)}, ` +
+          "paused with everything it had; its move is tried again past its back-off", error);
     } finally {
-      this.#until = Number.POSITIVE_INFINITY;
+      // The finish (the old one's archive dropped and its pause, the kills) has its own share
+      // of the bound, so the whole move ends by `MOVE_MS`.
+      const finish = began + MOVE_MS;
+      this.#until = finish;
       if (resumed !== null) {
-        // Paused again, as it was; one this cannot pause the idle reaper pauses.
-        await this.#pauseIdle(authority, resumed.sandboxID).catch((left: unknown) => {
-          console.error(`sandbox_move_failed: sandbox ${resumed!.sandboxID} is paused by the ` +
-                        "idle reaper", left);
+        const old = resumed;
+        await this.#own(old, [COMMAND.carryDrop]).catch(() => undefined);
+        await this.#pauseIdle(authority, old.sandboxID, finish).catch((left: unknown) => {
+          console.error(`sandbox_move_failed: sandbox ${old.sandboxID} is paused by the idle ` +
+                        "reaper", left);
         });
       }
       await this.#settle().catch((left: unknown) => {
         console.error("sandbox_move_failed: what the move left is killed by the look", left);
       });
+      this.#until = Number.POSITIVE_INFINITY;
     }
   }
 
-  /** A sandbox of the authority's paused, idle, as the reaper pauses one. */
-  async #pauseIdle(authority: string, sandboxId: string): Promise<void> {
-    if (await this.#pause(sandboxId, Number.POSITIVE_INFINITY) === "paused") {
+  /**
+   * A move whose try cost a resume and went no further: its back-off (charged at the try) kept,
+   * so it is tried again no sooner, doubling to a day; named for the founder as an error.
+   */
+  #moveStuck(authority: string, tries: number, why: string): void {
+    console.error(`sandbox_move_stuck: the ${authority} sandbox's move went no further (try ${
+      tries}): ${why}; tried again past its back-off`);
+  }
+
+  /**
+   * A sandbox of the authority's paused, idle, as the reaper pauses one, by `until`. One E2B
+   * has no more is gone: its time on the meter ends at once.
+   */
+  async #pauseIdle(authority: string, sandboxId: string, until: number): Promise<void> {
+    const paused = await this.#pause(sandboxId, until);
+    if (paused === "paused") {
       this.#paused(authority);
       await this.#freed();
+    } else if (paused === "gone" && this.#row(authority)?.sandbox_id === sandboxId) {
+      this.#paused(authority);  // logged as its end, as a pause: nothing of it runs on
+    } else if (paused === "busy") {
+      throw new Error(`sandbox ${sandboxId} was not paused by its bound`);
     }
   }
 
@@ -1137,11 +1200,21 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   async #settle(): Promise<void> {
     const e2b = this.#e2b();
     let killed = false;
-    for (const { authority, move_to: made } of this.#sql.exec<{ authority: string;
-                                                                move_to: string }>(
-      "SELECT authority, move_to FROM sandboxes WHERE move_to IS NOT NULL").toArray()) {
-      await e2b.kill(made);
-      this.#sql.exec("UPDATE sandboxes SET move_to = NULL WHERE authority = ?", authority);
+    for (const { authority, sandbox_id: kept, move_to: made, move_tag: tag } of this.#sql
+      .exec<{ authority: string; sandbox_id: string; move_to: string | null;
+              move_tag: string | null }>(
+        "SELECT authority, sandbox_id, move_to, move_tag FROM sandboxes WHERE move_to IS NOT " +
+          "NULL OR move_tag IS NOT NULL").toArray()) {
+      // By its id where its create answered, and by its token where it may not have.
+      const ids = new Set([...made === null ? [] : [made],
+                           ...tag === null ? [] : await e2b.list(MOVE_TAG_METADATA, tag)]);
+      for (const id of ids) {
+        if (id !== kept) {
+          await e2b.kill(id);
+        }
+      }
+      this.#sql.exec("UPDATE sandboxes SET move_to = NULL, move_tag = NULL WHERE authority = ?",
+                     authority);
       killed = true;
     }
     for (const { sandbox_id } of this.#sql.exec<{ sandbox_id: string }>(
@@ -1496,15 +1569,10 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   }
 
   #forget(authority: string): void {
-    if (this.#row(authority)?.paused === 0) {
+    const row = this.#row(authority);
+    if (row !== null && row.paused === 0) {
       this.#log(authority, "kill");  // gone while it ran: its time ended here at the latest
     }
-    this.#unrow(authority);
-  }
-
-  /** The authority's row and its runs gone, a renewal's slot it held the line's again. */
-  #unrow(authority: string): void {
-    const row = this.#row(authority);
     if (row !== null) {
       this.#owe(row.sandbox_id);  // a renewal's slot it held: the line's again, at the look
     }
@@ -1546,7 +1614,8 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   async #arm(at = Number.POSITIVE_INFINITY): Promise<void> {
     const ceilings = this.#known();
     let soonest = this.#sql.exec("SELECT 1 FROM owed UNION ALL SELECT 1 FROM retiring UNION " +
-                                   "ALL SELECT 1 FROM sandboxes WHERE move_to IS NOT NULL LIMIT 1")
+                                   "ALL SELECT 1 FROM sandboxes WHERE move_to IS NOT NULL OR " +
+                                   "move_tag IS NOT NULL LIMIT 1")
       .toArray().length > 0 ? Math.min(at, Date.now()) : at;
     for (const row of this.#rows()) {
       soonest = Math.min(soonest, this.#needAt(row, ceilings),

@@ -3032,16 +3032,27 @@ describe("a template move's carry", () => {
     expect(existsSync(box.path(`${SYNC_HOME}/carry`))).toBe(false);
   });
 
-  it("stops at its deadline mid-carry, and leaves no archive and no carry behind", () => {
-    // Ten thousand unsent files: the sync agent's copy of them outlasts half a second.
-    for (let n = 0; n < 10_000; n += 1) {
-      box.write(`/workspace/many/${n}.md`, "x".repeat(1024));
-    }
+  it("stops at its deadline mid-carry, and leaves no archive and no carry behind", async () => {
     box.write(STORE_FILE, "{\"token\":\"vendor-secret\"}");
-    const out = box.runner(COMMAND.carryOut, "owner", String(Date.now() + 500));
-    expect(out.code, out.why).toBe(1);
-    // Cut as its sync agent copies (or, on a host too slow to start it in time, refused at once).
-    expect(out.err).toMatch(/carry-out is stopped|a time still to come/);
+    box.write("/workspace/notes/new.md", "never sent");
+    // The sync agent's lock held by a live process of its own user: the carry's sync agent waits
+    // on it, so the deadline lands inside the carry's sync phase, every time.
+    const holding = box.execAsync(["setpriv", `--reuid=${SYNC_UID}`, `--regid=${SYNC_UID}`,
+                                   "--clear-groups", "sleep", "120"]);
+    await waitFor(() => box.processesOf(SYNC_UID).length > 0);
+    const host = box.processesOf(SYNC_UID)[0]!;
+    const inBox = /^NSpid:.*\s([0-9]+)\s*$/m.exec(readFileSync(`/proc/${host}/status`, "utf8"))![1];
+    box.write(`${SYNC_HOME}/sync.lock`,
+              `${inBox} ${readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()}`);
+    chownSync(box.path(`${SYNC_HOME}/sync.lock`), SYNC_UID, SYNC_UID);
+    try {
+      const out = box.runner(COMMAND.carryOut, "owner", String(Date.now() + 3_000));
+      expect(out.code, out.why).toBe(1);
+      expect(out.err).toMatch(/carry-out is stopped/);
+    } finally {
+      process.kill(host, "SIGKILL");
+      await holding;
+    }
     expect(existsSync(box.path(CARRY_FILE))).toBe(false);
     expect(existsSync(box.path(`${SYNC_HOME}/carry`))).toBe(false);
     expect(readFileSync(box.path(STORE_FILE), "utf8")).toBe("{\"token\":\"vendor-secret\"}");

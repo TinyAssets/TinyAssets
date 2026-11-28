@@ -80,6 +80,10 @@ interface Script {
   lost: string | null;
   /** The next kill kills, but its reply is lost (answered 502). */
   killLost: boolean;
+  /** The next create makes its sandbox, but its reply is lost (answered 502). */
+  createLost: boolean;
+  /** The size `carry-out` reports of its archive, in place of the archive's own. */
+  carryBytes: number | null;
   /**
    * The next run of a runner command, held as it arrives until the test lets it go
    * (`/release`): what it finds is read then. The state lists it while held (`held`).
@@ -118,7 +122,8 @@ function reset(): void {
                   full: false, pauseMode: "full", noCount: false, down: 0,
                   refuseResume: false, broken: null, tampered: null,
                   protocol: (env as unknown as { RUNNER_PROTOCOL: number }).RUNNER_PROTOCOL,
-                  room: null, lost: null, killLost: false, hold: null };
+                  room: null, lost: null, killLost: false, createLost: false,
+                  carryBytes: null, hold: null };
 }
 reset();
 
@@ -235,6 +240,10 @@ async function api(request: Request, url: URL): Promise<Response> {
                                metadata: b.metadata, template: b.templateID,
                                secure: b.secure === true, runners: new Set() };
     fake.sandboxes.set(id, box);
+    if (fake.script.createLost) {
+      fake.script.createLost = false;
+      return new Response("the reply was lost", { status: 502 });
+    }
     return Response.json({ templateID: b.templateID, sandboxID: id, clientID: "x",
                            envdVersion: "0.10.0",
                            ...(box.secure ? { envdAccessToken: box.token } : {}) },
@@ -367,7 +376,7 @@ async function envd(request: Request, url: URL): Promise<Response> {
       const archive = `carry of ${id}`;
       fake.files.set(carry, archive);
       const bytes = new TextEncoder().encode(archive);
-      done = { ...done, out: JSON.stringify({ bytes: bytes.byteLength,
+      done = { ...done, out: JSON.stringify({ bytes: fake.script.carryBytes ?? bytes.byteLength,
                                               sha256: await sha256(bytes) }) };
     }
     if (done.argv[1] === "carry-drop") {
