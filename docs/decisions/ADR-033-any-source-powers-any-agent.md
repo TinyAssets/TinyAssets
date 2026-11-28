@@ -7,6 +7,10 @@ Consequences bullets that follow from them (the paid hosted-CLI tier for
 interactive work only; `trigger: human`). Its other decisions stand.
 ADR-031 is superseded by ADR-032 (founder, 2026-11-21): the decisions this ADR
 left standing are held by ADR-039 decision 2.20.
+Amended by ADR-040 (founder, 2026-11-28): decision 1, a subscription sign-in is the
+default source and an API key the secondary one (ADR-040 decision 2); decision 3, the
+2026-11-01 reading of OpenAI's and Google's terms is replaced by ADR-040 decision 9's
+verdicts per place.
 
 ## Date
 

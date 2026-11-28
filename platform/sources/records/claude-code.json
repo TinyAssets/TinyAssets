@@ -68,7 +68,7 @@
       },
       "hosted_use": {
         "verdict": "allowed",
-        "citation": "code.claude.com/docs/en/legal-and-compliance.md (read 2026-11-03): an end user may sign in to the unmodified Claude Code binary with their own subscription, including where a platform hosts it, under the Commercial Terms; the platform may not collect, store or intermediate the credentials"
+        "citation": "code.claude.com/docs/en/legal-and-compliance.md (read 2026-11-28, ADR-040 decision 9): an end user may sign in to the unmodified Claude Code binary with their own subscription, including where a platform hosts it, under the Commercial Terms; the platform may not collect, store or intermediate the credentials"
       },
       "model": {
         "id": "claude-opus-5-5",
@@ -86,12 +86,12 @@
       "vendor_login_in_sandbox": {
         "allowed": true,
         "cite": "https://code.claude.com/docs/en/legal-and-compliance",
-        "read": "2026-11-01"
+        "read": "2026-11-28"
       },
       "api_key": {
         "allowed": true,
         "cite": "https://code.claude.com/docs/en/legal-and-compliance",
-        "read": "2026-11-01"
+        "read": "2026-11-28"
       }
     },
     "per_credential": {

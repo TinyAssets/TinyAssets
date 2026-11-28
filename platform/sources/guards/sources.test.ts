@@ -323,17 +323,17 @@ describe("the engine records", () => {
       gemini: { vendor_login_in_sandbox: false, api_key: true },
       pi: { api_key: true },
     });
-    expect(sourceRecord(claude).cli!.unattended.vendor_login_in_sandbox).toEqual({
-      allowed: true, cite: "https://code.claude.com/docs/en/legal-and-compliance",
-      read: "2026-11-01" });
-    // A page read only through a search index says so.
-    expect(sourceRecord(records.get("codex")).cli!.unattended.api_key)
-      .toMatchObject({ allowed: true, read_note: expect.stringMatching(/search index/) });
-    // Gemini's refusal says what Google's terms leave open, not that they forbid it.
+    expect(sourceRecord(claude).cli!.unattended.vendor_login_in_sandbox).toMatchObject({
+      allowed: true, cite: "https://code.claude.com/docs/en/legal-and-compliance" });
+    // Codex's refusal cites its page and says what OpenAI's terms leave open, not that they
+    // forbid it: the founder decides it (ADR-040 decision 9).
+    const codex = sourceRecord(records.get("codex")).cli!.unattended.vendor_login_in_sandbox!;
+    expect(codex).toMatchObject({ allowed: false, cite: expect.stringMatching(/^https:\/\//) });
+    expect(codex.allowed === false && codex.reason).toMatch(/^Unclear: /);
+    // Gemini's refusal names Google's own route for a third-party agent: an API key.
     const gemini = sourceRecord(records.get("gemini")).cli!.unattended.vendor_login_in_sandbox!;
     expect(gemini.allowed).toBe(false);
-    expect(gemini.allowed === false && gemini.reason).toMatch(/^Unclear: /);
-    expect(gemini.allowed === false && gemini.reason).not.toMatch(/forbid/);
+    expect(gemini.allowed === false && gemini.reason).toMatch(/API key/);
   });
 
   it("give pi an API key only, never a subscription's sign-in (ADR-034 decision 1.3)", () => {
@@ -955,7 +955,10 @@ describe("an engine record that does not fit", () => {
     records.get("codex") as Json)],
     // Citations.
     ["a read note on a refusal that cites nothing", cli((s) => {
-      at(s, "unattended.vendor_login_in_sandbox")["read_note"] = "from memory"; },
+      const refusal = at(s, "unattended.vendor_login_in_sandbox");
+      delete refusal["cite"];
+      delete refusal["read"];
+      refusal["read_note"] = "from memory"; },
     records.get("codex") as Json)],
     ["a read note that is not text", cli((s) => { at(s, "unattended.api_key")["read_note"] = 1; })],
     ["a gateway source with no engines", Object.fromEntries(Object.entries(anthropic)

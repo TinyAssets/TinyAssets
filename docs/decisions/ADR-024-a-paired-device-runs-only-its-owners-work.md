@@ -6,6 +6,8 @@ Accepted (founder, 2026-10-26). Amends ADR-008.
 
 Superseded by ADR-032 (founder, 2026-11-21), except: a paired device runs only its owner's work (ADR-039 decision 2.14).
 
+Its rule that a device's in-flight work becomes "unknown" once it goes offline is amended by ADR-040 (founder, 2026-11-28): a sleeping device pauses its run (ADR-040 decision 7).
+
 ## Date
 
 2026-10-26
