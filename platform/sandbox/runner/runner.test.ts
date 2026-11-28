@@ -2529,6 +2529,7 @@ describe("prepare, at the sandbox's real paths", () => {
     const other = "a".repeat(64);
     box.write(`${RUNNERS}/${other}/runner.mjs`, "// another runner");
     box.write(inboxCode("si_x"), "left at rest");
+    box.write(CARRY_FILE, "a move's archive, left");
     const prepared = box.runner("prepare", "8.8.8.8", "1.1.1.1");
     expect(prepared.code, prepared.why).toBe(0);
     expect(readFileSync(box.path("/etc/resolv.conf"), "utf8"))
@@ -2551,6 +2552,7 @@ describe("prepare, at the sandbox's real paths", () => {
     expect(readFileSync(box.path("/var/lib/ta/format"), "utf8")).toBe(`${STATE_FORMAT}\n`);
     expect(readdirSync(box.path(RUNNERS))).toEqual([box.digest]);
     expect(existsSync(box.path(inboxCode("si_x")))).toBe(false);
+    expect(existsSync(box.path(CARRY_FILE))).toBe(false);
     // The host's own are untouched: its sudoers, and its /proc.
     expect(readFileSync("/etc/sudoers", "utf8")).toBe(hostSudoers);
     expect(readFileSync("/proc/mounts", "utf8")).not.toMatch(/ \/proc proc [^ ]*hidepid/);
@@ -2948,10 +2950,8 @@ describe("a template move's carry", () => {
 
   it("carries the sign-ins, the session rows and the unsent changes into a new sandbox, and " +
      "nothing else", () => {
-    expect(box.runner("prepare", "1.1.1.1").code).toBe(0);
     lived();
     next = new Sandbox();
-    expect(next.runner("prepare", "1.1.1.1").code).toBe(0);
     moved(box, next);
     // The sign-in, root's alone, and its generation.
     expect(readFileSync(next.path(STORE_FILE), "utf8")).toBe("{\"token\":\"vendor-secret\"}");
@@ -2978,19 +2978,16 @@ describe("a template move's carry", () => {
       mirror.close();
     }
     expect(statSync(next.path(MIRROR)).uid).toBe(SYNC_UID);
-    // The archive rests in neither: taken in the new one, and dropped at the old one's next
-    // `prepare`, which a move that went no further leaves as it was.
+    // The archive is taken in the new one; the old one is as it was (its next `prepare` drops
+    // the archive a move that went no further left: the prepare test's).
     expect(existsSync(next.path(CARRY_FILE))).toBe(false);
     expect(readFileSync(box.path(STORE_FILE), "utf8")).toBe("{\"token\":\"vendor-secret\"}");
     expect(readFileSync(box.path("/workspace/synced.md"), "utf8")).toBe("as synced");
     expect(existsSync(box.path(`${SYNC_HOME}/carry`))).toBe(false);
-    expect(box.runner("prepare", "1.1.1.1").code).toBe(0);
-    expect(existsSync(box.path(CARRY_FILE))).toBe(false);
   });
 
   it("is refused while a job lives, and into a sandbox that holds a store, or of other bytes",
      async () => {
-    expect(box.runner("prepare", "1.1.1.1").code).toBe(0);
     const release = "/tmp/release-carry";
     box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, holdUntil: release });
     const start = startDoc(doors, "claude-code", { config: config("claude-code") });
@@ -3010,7 +3007,6 @@ describe("a template move's carry", () => {
     box.write(STORE_FILE, "{}");
     const other = carried();
     next = new Sandbox();
-    expect(next.runner("prepare", "1.1.1.1").code).toBe(0);
     // A carry, but not the one named: refused, nothing placed.
     writeFileSync(next.path(CARRY_FILE), other.archive);
     expect(next.runner(COMMAND.carryIn, named.sha256).code).toBe(1);
