@@ -61,6 +61,11 @@ def setup(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    # The canaries' temporary directory is the test's own, not the host's /tmp.
+    scratch = tmp_path / "tmp"
+    scratch.mkdir()
+    monkeypatch.setenv("TMPDIR", str(scratch))
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
     fake = tmp_path / "claude"
     fake.write_text(f"#!{sys.executable}\n{_FAKE}")
     fake.chmod(0o755)
