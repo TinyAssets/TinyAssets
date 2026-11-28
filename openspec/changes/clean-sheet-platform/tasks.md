@@ -787,10 +787,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     and admission by sandboxes, a run past them waiting (it absorbs
     `untangle/runs-wait-message`), and
     `Runs.#place` named `sourceLabel`; `limits-audit.md`'s tier row and the site's plans copy
-    in the same words; the owner policy document's `places` table, whole: its schema, its
-    check keeping `sandbox` last in any order, the stable agent ids the owner's object
-    assigns, a rename keeping them, and a delete retiring an id's entries with a notice to the
-    owner; `agent.json`'s `credential` and `connection` retired, refused `agent_file_invalid`
+    in the same words; the owner policy document's `places` table, whole: its schema,
+    keyed by agent name, its check keeping `sandbox` last in any order, restrictions kept
+    with the name through a delete, rename or recreate, and grants (a key pin, a fallback)
+    cleared on delete with a notice to the owner; `agent.json`'s `credential` and `connection` retired, refused `agent_file_invalid`
     with the owner's pin named, and with them the owner app's form fields that write them
     (`doors/app/app.js`, "Runs on" and "API key connection") and their end-to-end test
     (`doors/test/app.e2e.mjs`); the starter names neither and the importer maps none, and the
@@ -810,9 +810,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     with the offer; a policy order with the sandbox not last is refused, and one without it
     accepted; a fallback agent moves to a new subscription with its notice, and a pinned one
     stays; a kill switch with no fallback waits, and with one takes the key; a run that
-    renames a device-only agent's folder and back leaves it device-only, never in the
-    sandbox; a deleted agent's pin and fallback are gone for a new agent of its name, which
-    runs under `default_places`;
+    renames a device-only agent away and recreates its name, and a run that deletes and
+    recreates it, each leave it device-only, never in the sandbox; a deleted agent's key pin
+    and fallback are gone for the recreated agent of its name, with the owner told;
     `preview` and the notices name the place; the starter's instructions per place, with the
     steer of ADR-040 decision 5. It merges `untangle/strongest-ranking` (call 4: the same
     function and ranking file), after `untangle/main-agent-definition` (`untangle/place-rule`).

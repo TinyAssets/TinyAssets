@@ -256,8 +256,9 @@ open work that says "simultaneous runs", or assumes the sandbox or a key first.
   honoured at `owner/src/runs.ts` `choose`, written today by the owner app's form,
   `doors/app/app.js`, and its end-to-end test) pin a source or a key in a file any
   full-grant run writes. They are retired with the form's fields, and the owner policy
-  document gains the `places` table: its check keeping `sandbox` last, stable agent ids a
-  rename keeps, and a delete retiring an id's entries with a notice (`untangle/place-shapes`).
+  document gains the `places` table: keyed by agent name, its check keeping `sandbox` last,
+  restrictions kept with the name, and grants cleared on delete with a notice
+  (`untangle/place-shapes`).
 - [ ] `choose` reads an engine or model that `agent.json` names as a preference among the
   sources the policy allows, and judges "no subscription can take the run" by the work's
   `needs`, with the tests `tasks.md`'s PL2 lists (`untangle/place-rule`).

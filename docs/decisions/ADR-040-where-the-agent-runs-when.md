@@ -93,7 +93,7 @@ those ADRs' bodies are not edited: only their Status lines point here.
        the run at any place, now. Whenever one can, the subscription runs. "Can take the
        run" is judged against the work's real `needs` (decision 4), never against an engine
        or model the agent's definition names.
-     - **A pin:** `sources[agent]`, the owner choosing one source for that agent on purpose.
+     - **A pin:** `sources.<name>`, the owner choosing one source for that agent on purpose.
        A pinned agent runs on that source, a key included, whatever else is connected.
 
      Connecting a key is not a choice to run on it: the app offers a key as the secondary
@@ -147,23 +147,28 @@ those ADRs' bodies are not edited: only their Status lines point here.
        table's check refuses an order in which `sandbox` is anywhere but last, so the sandbox
        stays the last place in every order (decision 5). The owner may leave the sandbox out
        of an order, or reorder the others.
-     - `agents[agent].places`: the places one agent may use, under the same check;
-     - `default_places`: the places an agent with no entry of its own may use, under the same
-       check; left out, the platform's orders;
-     - `sources[agent]`: a pin (decision 2), naming the source, and for a key its connection;
-     - `metered`: `fallback` and `fallback_agents` (decision 2), both off by default (Fact 15).
+     - `agents.<name>.places`: the places the agent of that name may use, under the same
+       check;
+     - `default_places`: the places an agent name with no entry of its own may use, under
+       the same check; left out, the platform's orders;
+     - `sources.<name>`: a pin (decision 2), naming the source, and for a key its connection;
+     - `metered`: `fallback`, and `fallback_agents`, a list of agent names (decision 2), both
+       off by default (Fact 15).
 
      The default document leaves the table out, so every default above holds. An agent asks
      for a change with `policy_propose`, which the owner answers as a card.
-   - **Keyed by a stable agent id.** Every per-agent entry is keyed by an id the owner's
-     object assigns when the agent's folder is first made, never by its folder name.
-     - A rename keeps the id, so it keeps every entry: a run that renames a device-only
-       agent's folder and back changes nothing.
-     - A delete retires the id for good, and its entries with it. No later agent gets that
-       id, so nothing is widened: a new agent of the same name is a new id, under the owner's
-       `default_places` and no grant.
-     - When a delete retires an entry, the owner is told what went: "Your research agent was
-       deleted: its pin to your OpenAI key and its device-only limit went with it."
+   - **Keyed by the agent's name.** Every per-agent entry is keyed by the agent's name,
+     the one identity the ledger, mail and the `actions` table already use.
+     - **Restrictions stay with the name** until the owner removes them: an agent's
+       `places`, and a pin to a source our sandbox cannot run. Deleting, renaming or
+       recreating the agent's folder never clears them. So a run that renames a device-only
+       agent away and recreates its name, or deletes and recreates it, still gets a
+       device-only agent.
+     - **Grants are cleared when the agent is deleted**: a pin to a key, and its place in
+       `fallback_agents`. The owner is told what went: "Your research agent was deleted: its
+       pin to your OpenAI key went with it." A recreated agent of that name has no grant until
+       the owner gives one.
+     - `default_places` applies only to a name that has no entry of its own.
    - **What an agent's files hold, and what they cannot do.**
      - `agent.json` keeps `needs` (decision 4), and the `engine` and `model` its definition
        is written for.
@@ -173,7 +178,7 @@ those ADRs' bodies are not edited: only their Status lines point here.
        `"engine": "pi"`, which runs only on a key, gets the strongest subscription that meets
        the work's `needs`, or waits.
      - `agent.json`'s `credential` and `connection` are retired, in `untangle/place-shapes`.
-       Their job, a pin to one source or one key, is the owner's `sources[agent]`.
+       Their job, a pin to one source or one key, is the owner's `sources.<name>`.
      - `needs` can send work to the sandbox only as the platform's own order does: last, and
        within the tier's sandboxes. It names no place, and it spends no money of the user's.
    - **What no file holds.**
@@ -214,9 +219,10 @@ those ADRs' bodies are not edited: only their Status lines point here.
    - **How the source order and the place order combine.** The rule is: *the first place in
      the order that can run an acceptable source wins, and the strongest acceptable source
      runs there.*
-     - An acceptable source is one that meets the work's `needs` at the place, from the
-       subscription group, and that the agent's own places allow. A metered source is acceptable only by the owner's choice (decision 2). An owner
-       who wants one source for an agent pins it.
+     - An acceptable source is one from the subscription group that meets the work's
+       `needs` at that place, at a place the agent's own `places` include. A metered source
+       is acceptable only by the owner's choice (decision 2). An owner who wants one source
+       for an agent pins it.
      - The places are tried in the rule's order. At each place, the strongest acceptable
        source that place can take runs.
      - Why: the order puts the places that cost the user and us nothing first, and the most
