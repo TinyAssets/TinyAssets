@@ -254,7 +254,7 @@ one per PR.
 
 - [ ] The live verdict-order bug (Fact 17), its own small PR first: `fix/verdict-order`
 - [x] Rules into the repo, the steward procedure, the prose carry and the delta-only ask gone: `process/ship-rules`
-- [ ] The reviewer's procedure and poster, the coordinator's founder step, the land step gone: `process/ship-code-review`
+- [x] The reviewer's procedure and poster, the coordinator's founder step, the land step gone: `process/ship-code-review`
 - [ ] No force-push or deletion of `main`, one source for it: `process/ship-main-guard`
 - [ ] live: the main-guard ruleset created from its file and read back (`bypass_actors` `[]`, read with the session's token, which sees it; drift exit 0 under the arming token), `main`'s classic protection deleted and read back as 404, open PRs armed again (after `process/ship-main-guard` merges)
 

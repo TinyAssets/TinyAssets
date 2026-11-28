@@ -234,7 +234,7 @@ jobs:
           # now, since every PR's diff is reviewed against main. A hard cap of 8
           # would also refuse the cutover's deletion, which is meant to be that
           # broad, and this file runs from the base, so no PR could lift it for
-          # itself (docs/reference/executable-gates.md).
+          # itself (REVIEW.md, "What Important means here").
           REVIEW_NOTE_SENSITIVE=8
           LARGE_TOTAL=150
           {

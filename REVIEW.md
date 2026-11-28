@@ -65,25 +65,21 @@ a writer that quotes him with the date.
 
 ## The review
 
-One `COMMENT` review on the commit you read. Its first non-blank line is
-exactly `APPROVE` or `BLOCK`: `BLOCK` while an Important finding stands or a
-founder question is unanswered on the PR, else `APPROVE`. Then each finding,
-inline on its line where it has one, else in the body, opening with exactly
-one marker: `Important:`, `Nit:` or `Pre-existing:`.
-
-Read the PR's earlier reviews and their inline comments, outdated ones
-included, posted after its last base change by accounts that count. You may
-focus on the change since, but list each earlier `Important:` as fixed at
-this head, withdrawn by you with the reason, or standing. Resolve your own
-earlier threads this head fixes.
+One `COMMENT` review on the commit you read, posted with
+`scripts/review_post.py` by the peer-agents skill's procedure. Its first line
+is `BLOCK` while an Important finding stands or a founder question is
+unanswered on the PR, else `APPROVE`; each finding opens with one marker,
+`Important:`, `Nit:` or `Pre-existing:`. You may focus on the change since
+the last review, but list each earlier `Important:` that counts as fixed at
+this head, withdrawn by you with the reason, or standing.
 
 A review covers exactly the head it read. One review a head, and one more
 after a founder answer or after a `BLOCK` posted late on an earlier head.
 
 ## Who counts
 
-An account with `admin`, `maintain` or `write` on this repository, or its own
-bots: `github-actions[bot]` and the review App's bot. In a session, whose
+An account with `admin`, `maintain` or `write` on this repository, or
+`github-actions[bot]` (the queue-handoff ledger). In a session, whose
 proxy refuses GitHub's permission read, the writers come from the GitHub
 MCP's `list_repository_collaborators` (`role_name` `admin`, `maintain` or
 `write`); a missing, empty or failed list is refused, never read as everyone.

@@ -51,9 +51,13 @@ Beyond `docs/reference/executable-gates.md`:
   door or owner method moves `rpc`/`rv`, and an added or removed doors route
   moves `wire`: the body opens with `Recorders-Differ: <names> -- <why>`.
 
-## The watch
+## Open, ready, watch
 
-From the first push until the watch ends, act on what CI and reviews raise:
+Open the PR as a draft with your body file at your first push (`gh api
+repos/<o/r>/pulls -f title=... -f head=<branch> -f base=main -F
+body=@<file> -F draft=true`); mark it ready once the done-check passes (in a
+session, `POST repos/<o/r>/pulls/<n>/ccr/ready_for_review`). CI checks the
+body; the reviewer posts its own review. Until the watch ends, act on what CI and reviews raise:
 
 - **A failing check** in code the PR touches: fix it and push. One outside
   it: report it to the coordinator. A job that failed before any test ran,
@@ -72,11 +76,9 @@ From the first push until the watch ends, act on what CI and reviews raise:
   queue loop after two). Your subscription's usage limit is the other one.
 
 Add the `steward-watching` label at your first push and remove it when the
-watch ends. Adding a missing label creates it, a repo setting the
-coordinator makes once: until it exists, watch without it.
-The watch ends at
-merge, at close, after 7 days with no new head, review or comment, or when
-the label is removed or an account that counts posts a top-level
+watch ends. The watch ends at merge, at close, after 7 days with no new
+head, review or comment, or when the label is removed or an account that
+counts posts a top-level
 `/steward stop`. It stays ended across later pushes and comments until the
 label is added back or `/steward` is commented. `<!-- steward-disable -->`
 in the body keeps you off the PR until it is removed.

@@ -51,10 +51,9 @@ skills, `review_checks.py`, `check_shapes.py`, `check_context_budget.py`,
    needs an Untangle check; the root file only, as Ship reads and as
    `check_shapes.py` `INSTRUCTION_FILES` lists it, so a `review-*.md` note
    stays prose), and the docs-reference test's `LIVE_FILES`.
-6. The `steward-watching` label does not exist on the repository yet. Adding
-   it to a PR would create it, a repo setting the agent may make (Fact 4); the
-   steward skill leaves that act to the coordinator, done once, and a steward
-   watches without the label until it exists.
+6. The `steward-watching` label is a repo setting the agent may make (Fact 4);
+   the coordinator created it once, on 2026-11-28, and `process/ship-code-review`
+   drops the skill's "until it exists" clause.
 
 ## Pins
 
@@ -67,12 +66,13 @@ into it lower the `docs/reference` pin from 5,615 to 5,459. Neither total
 moves.
 
 The aggregate pins now sum to 47,409 B of the 58,471 B total (81%, from 68.5%
-on main). The untangle skill's 20% band is for a measured time or size that
-fails a run when it crosses its ceiling (a watchdog, a budget, a quota). This
-total fails no run: it is the ratchet's cap on a sum of pins, which a reviewed
-diff moves on purpose, and nearing it is the ratchet working, since each later
-raise must then displace an old rule. So the band does not apply, and no pin
-is cut for it.
+on main). The untangle skill's 20% band is for a measured value that drifts
+toward its ceiling under load (a watchdog, a budget, a quota). This total
+fails `test_rulebook_ratchet.py` when the pins pass it, but it is a sum of
+fixed pins that only a reviewed diff moves, each pin at 100% of its file by
+design, and nearing it is the ratchet working, since each later raise must
+then displace an old rule. So the band does not apply, and no pin is cut for
+it (corrected by `process/ship-code-review`, from #5861's review).
 
 ## Departures
 
@@ -83,5 +83,5 @@ is cut for it.
 
 ## Owed
 
-- [ ] The peer-agents skill's dispatch and reviewer sections point at `REVIEW.md` for the review's format and accounting, and carry the coordinator's denied-permission rule: `process/ship-code-review`
-- [ ] live: the coordinator creates the `steward-watching` label on the repository, once (after this PR merges)
+- [x] The peer-agents skill's dispatch and reviewer sections point at `REVIEW.md` for the review's format and accounting, and carry the coordinator's denied-permission rule: `process/ship-code-review`
+- [x] live: the coordinator creates the `steward-watching` label on the repository, once (done 2026-11-28, read back as 200)
