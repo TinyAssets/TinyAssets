@@ -5,8 +5,7 @@
  * sandbox's own envd token, probed live), info (`GET /sandboxes/{id}`), pause
  * (`POST /sandboxes/{id}/pause`, `503` while a previous snapshot finishes: the sandbox keeps
  * running), connect, which resumes a paused sandbox and only extends its timeout
- * (`POST /v2/sandboxes/{id}/connect`), the team's running count, a file copied from one
- * sandbox to another through envd (a template move's carry), and the list of an owner's
+ * (`POST /v2/sandboxes/{id}/connect`), the team's running count, and the list of an owner's
  * sandboxes by their metadata (the transport's). The tools' calls (a template's build and
  * tags, a throwaway sandbox, the team's webhooks) are `../e2b/admin.ts`'s, which the Worker
  * never imports.
@@ -14,7 +13,7 @@
 import type { NetworkDocument } from "../../contract/src/sandbox";
 import { object } from "../../contract/src/checks";
 import {
-  created, E2bError, E2bTransport, type Handle, runtimeFetch, sandboxId,
+  created, E2bError, E2bTransport, fetchUntil, type Handle, runtimeFetch, sandboxId,
 } from "../e2b/transport";
 
 /**
@@ -56,9 +55,9 @@ function info(value: unknown): SandboxInfo {
   };
 }
 
-/** The Worker's `E2b`, on the runtime's own fetch. */
-export function runtimeE2b(key: string): E2b {
-  return new E2b(key, runtimeFetch);
+/** The Worker's `E2b`, on the runtime's own fetch, each call cut at `until` where it is a time. */
+export function runtimeE2b(key: string, until: number): E2b {
+  return new E2b(key, Number.isFinite(until) ? fetchUntil(until) : runtimeFetch);
 }
 
 /** The sandbox Worker's E2B: the transport's calls and a sandbox's lifecycle. */
@@ -132,19 +131,6 @@ export class E2b extends E2bTransport {
     const { headers } = await this.api("GET", "/v2/sandboxes?state=running&limit=1");
     const total = headers.get("x-total-running");
     return total !== null && /^[0-9]{1,9}$/.test(total) ? Number(total) : null;
-  }
-
-  /**
-   * The file at `path` in `from` written at `path` in `to`, `bytes` long, through envd both
-   * ways as one stream: never whole in this isolate's memory, nor kept anywhere. One that is
-   * not that long fails the upload; one not done by `until` (ms) is cut, both ways.
-   */
-  async copy(from: Handle, to: Handle, path: string, bytes: number, until: number):
-      Promise<void> {
-    const signal = AbortSignal.timeout(Math.max(0, until - Date.now()));
-    const { readable, writable } = new FixedLengthStream(bytes);
-    const read = await this.download(from, path, signal);
-    await Promise.all([read.pipeTo(writable, { signal }), this.upload(to, path, readable, signal)]);
   }
 
   /** Every sandbox of the team, running or paused, whose metadata holds `key`=`value`: the ids. */

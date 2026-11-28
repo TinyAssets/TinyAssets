@@ -96,56 +96,77 @@ at a moment a call already brings. Fact 15: no new limit. Fact 8: fail loudly, n
 to something that looks right. Fact 4: a move is not an outward act or spending beyond a run's
 own (one more sandbox for seconds, then one fewer).
 
-## Where a move runs (research again, Fact 14: the review at 313a71b6e)
+## Where a move runs (research again, Fact 14: the reviews at 313a71b6e and ef62940c9)
 
-The first build moved a sandbox inside the start that opened its lease. The review measured
-the window that start runs in, and the shape broke:
+Two shapes were built and broke:
 
-- **The window.** A start's lease is opened with `lease_expires = now + LEASE_TTL_S`, 60 s
-  (`owner/src/files.ts`), renewed only by the runner's heartbeats; the owner settles a run whose
-  runner it has not heard from in that time `unknown` (`owner/src/runs.ts` `lost`), and stops a
-  start that answers after it (`owner/src/launch.ts`). So all of a start, its sandbox's resume,
-  `prepare` (about 7 s, `PREPARE_MS`), its network and its launch, has 60 s.
-- **What a move takes.** `carry-out` hashes every file with a row (`sync.ts` `carryOut`, so it
-  grows with the synced workspace, up to the 14.4 GB disk) and packs and hashes the archive; a
-  create, install and `prepare`; the copy, as long as the archive; `carry-in`, which hashes and
-  unpacks it again. Nothing bounds that by a start's window, and for a large workspace no bound
-  could fit it: such a move would cut the run that brought it, at every retry.
-- **Elsewhere.** No provider moves a live sandbox to a new image in a request's path. E2B keeps a
-  sandbox on its template and its lifecycle events (created, paused, resumed, killed) are
-  notices, not moments to act in; Modal and Daytona start new sandboxes from a new image or
-  snapshot and restore an archived one asynchronously; Codex cloud, Claude Code on the web,
-  Cursor and Devin start each session from the newest image. An update reaches a user's
-  environment when nothing waits on it.
-- **What our lifecycle gives.** The look (this object's alarm) already runs at moments no run
-  waits on: it pauses an idle sandbox, a released one's pause lands, and it is armed by every
-  start and release. Its handler has 15 minutes of wall clock (`ALARM_WALL_MS`); a sandbox's
-  live network (its egress transform among it) and its sealed route are read back from E2B, so a
-  move needs nothing a start brings. A paused, idle sandbox costs nothing while it waits.
-- **Not chosen:** one deadline for the move inside the start (what is left of 60 s after the
-  start's own steps): a move that cannot fit never happens, and one that nearly fits still
-  delays the run it rides on.
+- **Inside the start that opens a lease** (to 313a71b6e): a start has its lease's 60 s, renewed
+  only by the runner's heartbeats (`owner/src/files.ts`, `runs.ts` `lost`, `launch.ts`), and a
+  move hashes and copies what the workspace holds, so a large one cut the run that brought it,
+  at every retry.
+- **At the look, off the serial chain, giving way to a start** (to ef62940c9): a live sandbox
+  moved while runs can arrive kept sprouting faults. A run launched mid-move waited on the
+  carry's sync lock; the look armed at alarm speed for a leased row; the move's deadline missed
+  paused rows' retries and ran after a failed look; a row replaced or erased mid-move left the
+  new sandbox unnamed, with the sign-ins. Each is a sign of the shape: two sandboxes of the
+  owner's, and a run, at once.
 
-So the move runs at the look, after it, on a sandbox nothing lives in, its long steps off the
-serial chain: a start that comes meanwhile is never kept waiting, and the move gives way to it.
+What the research says (`Research first` above, and again here): no provider moves a live
+environment to a new image while work can arrive in it. E2B keeps a sandbox on its template;
+Modal and Daytona start new sandboxes from a new image or snapshot and restore an archived one
+asynchronously; Codex cloud, Claude Code on the web, Cursor and Devin start each session from
+the newest image. An update reaches a user's environment at a moment nothing runs in it.
+
+Weighed:
+
+- **(i) The owner's store carries what lives only in the sandbox** (the coordinator's): at the
+  idle pause, the sign-ins and the store's session copies written to the owner's files as an
+  ordinary write, the old sandbox killed, the next start creating from the new pin and restoring.
+  Fewest moving parts, but it breaks what the platform holds of a vendor sign-in: only the VM
+  holds it (`runner/login.ts`: the owner sees a URL or a code, never a token), a sync refuses a
+  file holding a secret's bytes (`sync.ts`, `guards.ts`), and the owner's files are every one of
+  the owner's agents' to read and every export's to carry. A sign-in there is exposed. An
+  encrypted copy needs a key the sandbox Worker would hold and keep, which it holds none of.
+  Refused.
+- **(ii) A paused sandbox, moved on the chain, one sandbox running at a time**: the move only
+  takes a sandbox that is paused with nothing in it (no lease, renewal, release or kill), at the
+  look, after one that failed at nothing, while nothing else of the owner's needs the look
+  within the move's bound. It holds the owner's serial chain, so no start, release, sign-in or
+  erasure of the owner's runs during it, and every E2B and envd call of it is cut at one deadline
+  (`MOVE_MS`, half a lease's TTL), so a start that comes meanwhile waits at most that, inside its
+  lease. The old sandbox is resumed, carried out and paused again before the new one is made, so
+  two of the owner's never run at once; the carry (small: the sign-ins, the session copies the
+  owner's files lack, the unsent changes) rests in the isolate's memory between them, bounded
+  (`CARRY_MAX_BYTES`). The sign-ins move VM to VM as before, through the Worker that already
+  reaches every sandbox's envd as root.
+
+Chosen: (ii). By construction a start never meets a moving sandbox (the chain), no run waits
+past its lease (the bound), two sandboxes of the owner's never run at once (the old one paused
+before the create), and nothing is left unnamed by a row replaced or erased mid-move (both are
+calls on the chain the move holds). A Worker that ends mid-move leaves the old sandbox paused and
+whole, and the new one, if made, named on the row (`move_to`) for the next call to kill.
 
 ## Design, from the research (decided before building)
 
-**A sandbox on another template than the pin is moved at the look, once nothing lives in it: a
-new sandbox is made from the pin, what lives only in the old one is carried across, the new one
-is paused, idle, and the old one killed. A start never moves a sandbox, so no run waits on a
-move or is cut by one; a move that cannot finish leaves the old sandbox as it was.**
+**A paused sandbox nothing lives in, on another template than the pin, is moved at the look, on
+the owner's serial chain, bound whole by `MOVE_MS`: it is resumed, what lives in it alone
+carried out, and it is paused again; a new sandbox is made from the pin, the carry put in, it is
+paused, and the old one killed. A start never moves a sandbox and never meets one being moved;
+one that comes meanwhile waits at most the bound. A move that cannot finish leaves the old
+sandbox paused and whole.**
 
 1. **Which template a sandbox is on** is its row's (`template`, set when this Worker makes it,
-   from the pin it makes it from). A row kept from before names none, so it moves once, in the
-   background, costing no run; that includes a sandbox main's Worker made from the new pin
-   before this deploy. Telling those apart would need E2B to say a sandbox's template tag: its
-   `info` names a template id, not the tag, so the row is the record.
-2. **The moment** is the look (the alarm), after its own work, for each row due a move
-   (`#moveDue`: another template, no lease, renewal, release, kill or move in it, past its
-   back-off). The alarm is armed for it (`#arm`). A paused sandbox is resumed for the move when
-   there is room for it and the new one, by the line's rule (`roomForOne`, renewals' held slots
-   counted), and its runner made this Worker's where nothing lives, as at any resume.
+   from the pin it makes it from). A row kept from before names none, so it moves once, costing
+   no run; that includes a sandbox main's Worker made from the new pin before this deploy.
+   Telling those apart would need E2B to say a sandbox's template tag: its `info` names a
+   template id, not the tag, so the row is the record.
+2. **The moment** is the look (the alarm) after one that failed at nothing, for each row due a
+   move (`#moveDue`: another template, paused, no lease, renewal, release, kill or move in it;
+   past its back-off), only while no other row of the owner's needs the look within `MOVE_MS`
+   (`#needAt`, the alarm's own rule, which `#arm` uses too). The alarm is armed for a due row at
+   its back-off; a leased row is never due, so a run on an older template arms nothing new.
+   The move takes its turn and room in the platform's line (`slots.turn`, `roomForOne`, a
+   renewal's held slot counted) for its one running sandbox.
 3. **What is carried is the runner's to say** (it owns the disk's format): the engines' stores
    and generations whole, and of the workspace only what lives nowhere else, the unsent changes
    (each file whose bytes differ from its base, with its mirror row; each removal not sent, its
@@ -155,57 +176,39 @@ move or is cut by one; a move that cannot finish leaves the old sandbox as it wa
    Not carried: the sync-ignore's kept-out paths and the agents' scratch (the working copy's
    own and a cache, unbounded), the caches, the finished jobs' state.
 4. **The protocol**: three Worker commands, sent to this Worker's own runner alone (`#own`):
-   `carry-out <authority> <until>` (the old sandbox's runner packs the carry into the
-   root-only state directory and answers its size and SHA-256, or refuses while anything
-   lives), `carry-in <sha256> <until>` (the new sandbox's runner checks the archive is those
-   bytes, refuses a sandbox that already holds a store or a mirror, and puts each part in place
-   by its owner's rules, every owner and mode set by it), and `carry-drop` (the old sandbox's
-   archive dropped where the move went no further). Each carry command stops at `until`, the
-   Worker's deadline, its sync agent and its `tar` with it, and leaves no archive past it. They
-   are protocol 6: protocol 5 plus the three, no document, answer of 5 or read of the owner's
-   changed, recorded and spoken first by #5860 (`untangle/template-move-protocol`), which the
-   stage serves; this change moves the runner to 6 (`runner-speaks.json`). #5860's deploy hold
-   refused this tree until then. **No rollback of the sandbox Worker past this deploy**:
-   migration 8 moves `SandboxControl`'s lock to 8, and the kit refuses a rollback to a version
-   of a lower `-m` (`deploy/deploy.ts` `forwardOnly`); this deploy is fixed forward. #5860's
-   runner still drops an archive a runner of 6 left, should a sandbox ever meet it.
-5. **The Worker's steps** (`#moveIdle`), each one's state kept before the next:
-   - on the chain: the try charged (`move_tries`, `moveBackoff`: a lease's TTL, doubling, at
-     most a day) before anything is made, so a look cut short by its wall clock backs off too;
-     the old sandbox running on this Worker's runner; its live network and sealed route; the
-     jobs launched in it so far (`launches`);
-   - off the chain, each step bound by `until` (the alarm's wall clock less a renewal's whole,
-     and the next renewal window of any other sandbox of the owner's, so no look's renewal waits
-     on a move): `carry-out`; room for one more; the new sandbox made from the pin with the old
-     one's network and route, named on the row (`move_to`) before anything else awaits, so while
-     it holds nothing of the owner's; its runner installed and prepared; the archive copied
-     through envd, streamed, its length known, cut at `until` (`copy`); `carry-in`;
-   - on the chain: only if the row still names the old sandbox, no job launched in it since
-     (`launches`), no lease runs in it and its runner says nothing lives, the row names the new
-     one (`#made`, the create's own) and the old one is marked to be killed (`retiring`), in one
-     transaction; the new one, idle, is paused as the reaper would; the old one is killed
-     (`#settle`), its end logged on the meter as E2B answers the kill, and a kill that fails or
-     whose reply is lost leaves it marked, for the look, never the new one.
-   A move put off (something lives, a job launched meanwhile, no room, no time left in the
-   look) is tried again a lease's TTL on; one that fails at any step is logged
-   `sandbox_move_failed`, what it made killed by its id, the old sandbox's archive dropped, and
-   tried again past its back-off. An object that ends at any step leaves `move_to` or
-   `retiring` set, which the next call on the chain or the look (armed at once while either is
-   set) settles (`#settle`, never a move under way, `#moving`), and an erasure kills too. Time
-   that only the platform's sandbox ran (a move's new one before it is the owner's) is no
-   owner's on the meter.
-6. **No credential lost or exposed**: the sign-ins move VM to VM as bytes through envd, by the
-   key that already reaches every sandbox's envd as root (the Worker's one secret), so no new
-   holder. The archive stays in each sandbox's root-only state directory and is deleted once
-   taken, dropped in the old sandbox where the move went no further (and at `prepare`); nothing
-   is logged or stored on the way. The new sandbox holds the sign-ins only from the copy on,
-   after the row names it.
+   `carry-out <authority> <until>`, `carry-in <sha256> <until>` and `carry-drop`. Each carry
+   command stops at `until`, its sync agent and its `tar` with it, and leaves no archive past
+   it. They are protocol 6, recorded and spoken first by #5860 (`untangle/template-move-protocol`),
+   which the stage serves; this change moves the runner to 6 (`runner-speaks.json`). **No
+   rollback of the sandbox Worker past this deploy**: migration 8 moves `SandboxControl`'s lock to
+   8, and the kit refuses a rollback to a version of a lower `-m` (`deploy/deploy.ts`
+   `forwardOnly`); this deploy is fixed forward.
+5. **The Worker's steps** (`#moveIdle`, on the chain, every E2B and envd call cut at `until`,
+   `MOVE_MS` from its start, through the deadline fetch `#until` sets): the try charged
+   (`move_tries`, `moveBackoff`: a lease's TTL, doubling, at most a day) before anything is made;
+   the old one resumed (its runner made this Worker's where nothing lives, as at any resume);
+   `carry-out`, at most `CARRY_MAX_BYTES`, read whole, the archive dropped there, the old one
+   paused again; the new one made from the pin with the old one's network and sealed route, named
+   on the row (`move_to`) before anything else awaits; its runner installed and prepared; the
+   carry written and put in place (`carry-in`); in one transaction the row names the new one
+   (`#made`, the create's own) and the old one is marked to be killed (`retiring`); the new one
+   paused, idle; the old one killed (`#settle`), a kill that fails or whose reply is lost left to
+   the look. A move put off (no turn or room, something lives, its carry past its bound, another
+   sandbox needing the look) is tried again a lease's TTL on; one that fails at any step is
+   logged `sandbox_move_failed`, what it made killed by its id, the old one left paused with
+   everything it had (its archive dropped), and tried again past its back-off. The meter logs
+   what ran, as for any sandbox: the old one's resume and pause, the new one's start and pause;
+   the move's time is the owner's sandbox's, its own upkeep, as a renewal's is.
+6. **No credential lost or exposed**: the sign-ins move VM to VM as bytes through envd and this
+   isolate's memory, by the key that already reaches every sandbox's envd as root (the Worker's
+   one secret), so no new holder; nothing is stored or logged on the way. The archive is dropped
+   in the old sandbox as soon as it is read, and deleted in the new one once taken (and at
+   `prepare`). The new sandbox holds the sign-ins only from the carry on, after the row names it.
 
 Checked against the intent: a new pin reaches every owner's sandbox at the look after its next
-use with nothing living (for the stage owner, the run after its next `auto` pi run runs on the
-new image), no run waits on a move or is cut by one, whatever the workspace's size, and the
-owner's sign-ins, conversations and unsent changes survive. Zero hosts: the Worker alone moves
-it.
+use, once it is paused with nothing in it (for the stage owner, the run after its next `auto` pi
+run runs on the new image); no run is lost, a start waiting at most half its lease behind a move;
+nothing is billed twice; nothing is orphaned. Zero hosts: the Worker alone moves it.
 
 ## Problems found (untangle step 2), with the fix above each
 
@@ -247,15 +250,35 @@ it.
   20 s. The carry needs no `prepare`; those calls are gone (CI: 0.6 s and 1.6 s), and the large
   prepare test holds that it drops an archive a failed move left.
 
+## Review findings (#5857, at ef62940c9), with the fix above each
+
+Each of the four is impossible by construction in shape (ii), and tested:
+
+- **A leased row arms no look** (`#arm` arms a move only for a row `#moveDue` takes, which is
+  paused with no lease): "arms no look for a sandbox a lease runs in".
+- **No run meets a carry**: the move holds the chain, so a start waits for it and then runs in
+  the sandbox it made (no sync lock shared with a carry, no `tar` beside a run): "holds a start
+  that comes mid-move on the chain".
+- **No move delays another sandbox's look**: none after a failed look, none while another row
+  needs the look within `MOVE_MS` (`#needAt`): "makes no move after a look that failed", "makes
+  no move while another sandbox of the owner's needs the look within its bound".
+- **Nothing replaced or erased mid-move**: both are chain calls the move holds; a Worker ending
+  mid-move leaves `move_to`, which the next call kills: "kills a sandbox a move made that no row
+  names yet".
+- Nits: every step is cut at the move's deadline (the deadline fetch, and each carry command's
+  own); the move takes its turn in the line; the meter's claim corrected (design 5); a carry cut
+  mid-way is tested in the runner ("stops at its deadline mid-carry").
+
 ## Review findings (#5857, at 313a71b6e), with the fix above each
 
-- **A move runs at the look, never in a start** (research above).
+- **A move never runs in a start** (research above).
   - The whole move ran inside the start that opened the lease, with nothing to keep it under
     that lease's 60 s, and its steps' own bounds added up to twice that; a large workspace cut
     the run that brought the move, at every retry.
 - **Each carry command stops at the Worker's deadline, and leaves no archive past it.**
   - A `carry-out` the Worker gave up on went on, and wrote its archive after `carry-drop`.
-- **The meter logs the old sandbox's end as E2B answers its kill**, not at the move's commit.
+- **The meter logs what ran** (superseded at ef62940c9: the old one is paused before the new
+  one is made, so its kill adds no time).
 - **The second deploy's owed line, ticked** (`template-move-protocol.md`).
 - **No rollback past this deploy** (design 4), said.
 
@@ -282,15 +305,19 @@ it.
   download: the transport's upload was probed with whole bytes (`transport.ts` header). The
   first live move shows it; until then a move that fails there leaves the old sandbox serving,
   tried again a day at most later.
-- **A move's time on the stage is not measured here** (no live act from this change): the
-  look bounds it, and a start never waits on it, so its time is a cost of the platform's alone.
-  Measured at the first live move.
+- **A move's time on the stage is not measured here** (no live act from this change): it is
+  bound by `MOVE_MS`, half a lease's TTL, and a move past it is cut and put off. Measured at the
+  first live move.
+- **A carry past `CARRY_MAX_BYTES`** (an owner with large session copies the owner's files
+  lack, or large unsent changes) waits until a run's end sends what it can; one that never
+  shrinks keeps that sandbox on its template.
 
 ## What an owner sees
 
-- Nothing at a start: a run on a sandbox of an older template runs there, at once. The move
-  happens afterwards, at the look once nothing lives, so the next run after it runs on the new
-  image, from a paused sandbox resumed as any other.
+- A run on a sandbox of an older template runs there. The move happens afterwards, at the look,
+  once the sandbox is paused with nothing in it, so the next run after it runs on the new image,
+  from a paused sandbox resumed as any other. A start that comes during a move waits for it, at
+  most half its lease (`MOVE_MS`), and then runs.
 - Signed-in engines stay signed in; the conversations resume; unsent files and removals are sent
   at that run's end against their bases, as they would have been.
 - The run's first sync-in reads every file again (a new sandbox's own), so a large workspace's
@@ -298,22 +325,22 @@ it.
 - The working files the sync-ignore keeps out (`node_modules`, build outputs, a custom line's
   paths) and the agents' scratch (clones, installs, caches) are gone; the agent rebuilds them. A
   file's mode changed alone, with its bytes as synced, is the owner's again.
-- A move refuses and delays nothing: one that cannot finish, or that a start overtakes, leaves the
-  old sandbox with everything it had, and is tried again later.
+- A move refuses nothing: one that cannot finish leaves the old sandbox paused with everything it
+  had, and is tried again later.
 
 ## As built
 
 - `sandbox/src/control.ts`: `#create` (the one create) and `#made` (its row, `template` among
-  it, a move's too); `#moveDue`, `#movesDue` and `#moveIdle`, after the look in `alarm`, which
-  `#arm` arms for a row due; `#settle`, run on the chain by `#ensure` and the look and by a
-  move's commit, sparing a move under way (`#moving`), logging a retired sandbox's end as it is
-  killed; `#own`, which sends `OWN_COMMANDS` to this Worker's runner alone; `roomForOne`;
-  `moveBackoff`, `MOVE_LEAST_MS`; `#forget` and `#unrow`. `#ensure` moves nothing. The header
-  says it. `src/schema.ts` migration 8 (`template`, `launches`, `move_to`, `move_tries`,
-  `move_after`, `retiring` with its authority), pinned.
-- `sandbox/src/e2b.ts` `copy` and `sandbox/e2b/transport.ts` `download` and a streamed `upload`:
-  the carry through envd, its length fixed (`FixedLengthStream`), never whole in the isolate,
-  cut at the move's deadline.
+  it, a move's too); `#moveDue`, `#movesDue` and `#moveIdle`, after a look that failed at
+  nothing in `alarm`, which `#arm` arms for a row due; `#needAt`, the alarm's rule of when the
+  look next needs a row, shared by `#arm` and the move; `#pauseIdle`; `#settle`, run on the
+  chain by `#ensure`, the look and the move; `#until`, the deadline every E2B and envd call is
+  cut at during a move; `#own`, which sends `OWN_COMMANDS` to this Worker's runner alone;
+  `roomForOne`; `moveBackoff`, `MOVE_MS`, `CARRY_MAX_BYTES`; `#forget` and `#unrow`. `#ensure`
+  moves nothing. The header says it. `src/schema.ts` migration 8 (`template`, `move_to`,
+  `move_tries`, `move_after`, `retiring`), pinned.
+- `sandbox/src/e2b.ts` `runtimeE2b(key, until)` and `sandbox/e2b/transport.ts` `fetchUntil` and
+  `download` (a file read whole, its length checked).
 - `sandbox/runner/protocol.ts` (`OWN_COMMANDS`, `CarryAnswer`), on #5860's record;
   `runner-speaks.json` 6.
 - `sandbox/runner/runner.ts`: `carry-out`, `carry-in` and `carry-drop` (`CARRIED`, `ownTree`,
@@ -321,19 +348,20 @@ it.
   past it; `syncAgent` taking the lapse it stops on (a run's heartbeat, or a carry's deadline);
   `session.ts` `GENERATIONS`; `sync.ts` `carryOut` (every file with a row hashed), `carryIn`.
 - Tests: `test/sandbox.test.ts` "a template move" (a start runs at once in a sandbox of another
-  template, and the look moves it once nothing lives, its carry in the new one, which is paused,
-  the row naming it, the meter's start, pause and then kill; one that named no template moved
-  once; a move held as long as a workspace too big for any start's window, a start meanwhile
-  running at once in the old one, the move giving way and happening at a later look; five
-  faults, each keeping the old sandbox, the new one killed, the archive dropped and the move
-  backed off; the old one's kill reply lost, the new one kept and the old one killed by a later
-  look; one a move made that no row names, killed; no move without room for two, a renewal's
-  slot held; none while a lease runs), the create naming its sandbox before reading its window;
-  `runner.test.ts` "a template move's carry" (the real runner, as root: the sign-in,
-  generation, session row, unsent change, unsent new file, same-size edit and unsent removal
-  carried, every mode the new runner's, and nothing synced, kept out or scratch; refused while a
-  job lives, past its deadline (no archive), of another carry's bytes, and into a sandbox with a
-  store; the archive dropped).
+  template, and the look moves it once paused with nothing in it, one sandbox running at a time,
+  the carry in the new one, which is paused, the row naming it, the meter's resume, pause, start
+  and pause; one that named no template moved once; a start that comes mid-move held on the
+  chain and run in the new one; five faults, each leaving the old sandbox paused and whole, the
+  new one killed, the archive dropped and the move backed off; the old one's kill reply lost,
+  the new one kept and the old one killed by a later look; one a move made that no row names,
+  killed; no move without the line's turn and room, a renewal's slot held; a leased row arming
+  no look and moving nothing; no move while another sandbox needs the look within the bound;
+  none after a failed look), the create naming its sandbox before reading its window;
+  `runner.test.ts` "a template move's carry" (the real runner, as root: the sign-in, generation,
+  session row, unsent change, unsent new file, same-size edit and unsent removal carried, every
+  mode the new runner's, and nothing synced, kept out or scratch; cut at its deadline mid-carry,
+  leaving no archive and no carry; refused while a job lives, past its deadline, of another
+  carry's bytes, and into a sandbox with a store; the archive dropped).
 
 - [ ] live: the stage owner's sandbox moves to the pin at the look after its next use once this
   deploys (envd takes the streamed copy; the move's time recorded here), and one `auto` pi run

@@ -68,18 +68,17 @@ export const CONTROL_MIGRATIONS: readonly Migration[] = Object.freeze([
     "ALTER TABLE sandboxes ADD COLUMN prepared INTEGER NOT NULL DEFAULT 0",
   ]),
   // 8 (`untangle-2026-11/template-move.md`): the template each sandbox was made from (null for
-  // the ones kept, made before rows named one) and the jobs launched in it; a template move's
-  // state, kept before each step it takes, so one cut short by a fault or the object's end leaves
-  // nothing unnamed: the sandbox it made while it is not yet the authority's (`move_to`, killed
-  // if the move goes no further), its failures and when it is tried again; and each sandbox a
-  // move left that is to be killed (`retiring`), and whose, until E2B says it is gone.
+  // the ones kept, made before rows named one); a template move's state, kept before each step it
+  // takes, so one cut short by a fault or the object's end leaves nothing unnamed: the sandbox it
+  // made while it is not yet the authority's (`move_to`, killed if the move goes no further), its
+  // failures and when it is tried again; and each sandbox a move left that is to be killed
+  // (`retiring`), until E2B says it is gone.
   Object.freeze([
     "ALTER TABLE sandboxes ADD COLUMN template TEXT",
-    "ALTER TABLE sandboxes ADD COLUMN launches INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE sandboxes ADD COLUMN move_to TEXT",
     "ALTER TABLE sandboxes ADD COLUMN move_tries INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE sandboxes ADD COLUMN move_after REAL",
-    "CREATE TABLE retiring (sandbox_id TEXT PRIMARY KEY, authority TEXT NOT NULL)",
+    "CREATE TABLE retiring (sandbox_id TEXT PRIMARY KEY)",
   ]),
 ]);
 

@@ -1635,22 +1635,25 @@ describe("the runner, by digest", () => {
 
 describe("a template move", () => {
   const OLD = "an-older-template:t1";
+  const CLIENT = "c".repeat(64);
   /** Each start that opens a lease, on a lease of its own. */
   let opened = 4;
-  const opening = () => {
+  const leaseOf = () => opened.toString(16).padStart(32, "0");
+  const opening = (over: Partial<SandboxStart> = {}) => {
     opened += 1;
-    const id = opened.toString(16).padStart(32, "0");
-    return start({ run: `run_${id}`, lease: { lease_id: id, epoch: opened } });
+    return start({ run: `run_${leaseOf()}`, lease: { lease_id: leaseOf(), epoch: opened },
+                   ...over });
   };
   /** The authority's row, as kept. */
-  const rowOf = (who: string) => runInDurableObject(stub(who), (_instance, state) =>
-    state.storage.sql.exec("SELECT * FROM sandboxes").toArray()[0] as Record<string, unknown>);
-  /** The rows' columns set, as time or an older Worker would have left them. */
+  const rowOf = (who: string, authority = "owner") => runInDurableObject(stub(who),
+    (_instance, state) => state.storage.sql.exec("SELECT * FROM sandboxes WHERE authority = ?",
+                                                 authority).toArray()[0] as Record<string, unknown>);
+  /** Rows' columns set, as time or an older Worker would have left them. */
   const setRow = (who: string, set: string, ...values: unknown[]) =>
     runInDurableObject(stub(who), (_instance, state) => {
       state.storage.sql.exec(`UPDATE sandboxes SET ${set}`, ...values as SqlStorageValue[]);
     });
-  /** The look run now, and the moves due after it: whether an alarm ran. */
+  /** The look run now, and the moves due after it. */
   const look = async (who: string) => {
     await runInDurableObject(stub(who), (_instance, state) =>
       state.storage.setAlarm(Date.now() + 3_600_000));
@@ -1658,8 +1661,8 @@ describe("a template move", () => {
   };
 
   /**
-   * A sandbox made by a start and released, nothing living in it, its row then marked made
-   * from `from` (null: before rows named a template): its id.
+   * A sandbox made by a start and released, paused with nothing living in it, its row then
+   * marked made from `from` (null: before rows named a template): its id.
    */
   async function madeFrom(who: string, from: string | null): Promise<string> {
     await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 0, quiet: true } });
@@ -1673,8 +1676,9 @@ describe("a template move", () => {
   const ranIn = (state: Seen, id: string, after = 0) => state.commands.slice(after)
     .filter((command) => command.sandbox === id).map((command) => command.argv[1]);
 
-  it("never moves a sandbox in a start: the run goes on at once in the one it finds, and the " +
-     "look moves it once nothing lives, what it alone holds carried", async () => {
+  it("never moves in a start: the run goes on at once in the sandbox it finds, and the look " +
+     "moves that sandbox once it is paused with nothing in it, one sandbox running at a time",
+     async () => {
     const who = owner();
     const old = await madeFrom(who, OLD);
     let before = (await seen()).commands.length;
@@ -1682,30 +1686,38 @@ describe("a template move", () => {
     let state = await seen();
     expect(state.sandboxes.map((box) => box.id)).toEqual([old]);
     expect(ranIn(state, old, before)).not.toContain("carry-out");
-    await stub(who).release({ lease_id: opened.toString(16).padStart(32, "0") });
+    await stub(who).release({ lease_id: leaseOf() });
     before = (await seen()).commands.length;
     expect(await look(who)).toBe(true);
     state = await seen();
-    // The old one is gone; the new one, from the pin, holds the carry, and is paused, idle.
+    // The old one is gone; the new one, from the pin, holds the carry, paused, idle.
     expect(state.sandboxes).toHaveLength(1);
     const made = state.sandboxes[0]!;
     expect(made.id).not.toBe(old);
     expect(made).toMatchObject({ state: "paused", template: env.E2B_TEMPLATE, secure: true });
     expect(state.files[`${made.id}:carried`]).toBe(`carry of ${old}`);
-    // Its runner asked once more, at the commit, that nothing began living meanwhile.
-    expect(ranIn(state, old, before)).toEqual(["prepare", "carry-out", "state"]);
+    // The old one resumed, carried out and its archive dropped; the new one prepared, then given
+    // the carry: never two of them running (the old one paused before the create).
+    expect(ranIn(state, old, before)).toEqual(["prepare", "carry-out", "carry-drop"]);
     expect(ranIn(state, made.id, before)).toEqual(["install", "prepare", "carry-in"]);
-    // Its network is the old one's, door last; the next start's lease replaces it whole.
+    const order = state.calls.filter((call) => call.method === "POST"
+      && (call.path === "/v2/sandboxes" || call.path.endsWith("/pause")))
+      .map((call) => call.path).slice(-3);
+    expect(order).toEqual([`/sandboxes/${old}/pause`, "/v2/sandboxes",
+                           `/sandboxes/${made.id}/pause`]);
+    expect(state.files[`${old}:${CARRY_FILE}`]).toBeUndefined();
     expect(made.network.allowOut.at(-1)).toBe(EGRESS_HOST);
     expect(await rowOf(who)).toMatchObject({ sandbox_id: made.id, template: env.E2B_TEMPLATE,
                                               prepared: 1, move_to: null });
-    // The meter: the new one's start and pause, then the old one's kill, as it ends.
+    // The meter: the old one resumed and paused, the new one started and paused; the old one's
+    // kill adds no time, its time having ended at its pause.
     const read = await stub(who).meter({ after: 0 });
-    expect(read.events.map((event) => event.kind).slice(-3)).toEqual(["start", "pause", "kill"]);
+    expect(read.events.map((event) => event.kind).slice(-4))
+      .toEqual(["resume", "pause", "start", "pause"]);
     // The next start resumes the new one and runs in it; nothing moves again.
     before = (await seen()).commands.length;
     expect(await stub(who).start(opening())).toEqual({ started: true });
-    await stub(who).release({ lease_id: opened.toString(16).padStart(32, "0") });
+    await stub(who).release({ lease_id: leaseOf() });
     await look(who);
     state = await seen();
     expect(state.sandboxes.map((box) => box.id)).toEqual([made.id]);
@@ -1726,42 +1738,28 @@ describe("a template move", () => {
       .not.toContain("carry-out");
   });
 
-  it("gives way to a start that comes while it moves, however long the move takes: the run " +
-     "goes on in the old one unwaited, and the move happens at a later look", async () => {
+  it("holds a start that comes mid-move on the chain, then runs it in the sandbox the move " +
+     "made: no run meets a sandbox being moved", async () => {
     const who = owner();
     const old = await madeFrom(who, OLD);
-    // The carry takes as long as the test holds it: a workspace too big for any start's window.
     await e2b("/script", { hold: "carry-out" });
     const moving = look(who);
     await seenOnce((state) => state.held.includes("carry-out"), "the move's carry-out held");
-    expect(await stub(who).start(opening())).toEqual({ started: true });
-    let state = await seen();
-    expect(state.held).toEqual(["carry-out"]);  // the run started while the move still waits
-    expect(state.commands.filter((command) => command.argv[1] === "launch").at(-1)!.sandbox)
-      .toBe(old);
-    // The run ends and its lease is given back (its pause not landing yet) before the carry
-    // is let go: a job launched in the old one since the move began, so the move gives way
-    // (the carry predates what that run left unsent).
-    await e2b("/script", { busy: 1 });
-    await stub(who).release({ lease_id: opened.toString(16).padStart(32, "0") });
+    const starting = stub(who).start(opening());
     await e2b("/release", {});
     await moving;
-    state = await seen();
-    expect(state.sandboxes.map((box) => box.id)).toEqual([old]);
-    expect(state.files[`${old}:${CARRY_FILE}`]).toBeUndefined();
-    expect(await rowOf(who)).toMatchObject({ sandbox_id: old, move_to: null });
-    // Once its back-off passed, the next look reaps it and then moves it.
-    await setRow(who, "move_after = 0");
-    await look(who);
-    state = await seen();
+    expect(await starting).toEqual({ started: true });
+    const state = await seen();
+    const made = state.sandboxes.find((box) => box.id !== old);
     expect(state.sandboxes.map((box) => box.id)).not.toContain(old);
-    expect(state.files[`${state.sandboxes[0]!.id}:carried`]).toBe(`carry of ${old}`);
+    expect(state.commands.filter((command) => command.argv[1] === "launch").at(-1)!.sandbox)
+      .toBe(made!.id);
   });
 
   for (const fault of [{ broken: "carry-out" }, { lost: "carry-out" }, { broken: "carry-in" },
                        { lost: "carry-in" }, { broken: "install" }]) {
-    it(`keeps the old sandbox when the move fails (${JSON.stringify(fault)}), the new one ` +
-       "killed and the archive dropped, and backs off", async () => {
+    it(`leaves the old sandbox paused and whole when the move fails (${JSON.stringify(fault)}), ` +
+       "the new one killed and the archive dropped, and backs off", async () => {
       const who = owner();
       const old = await madeFrom(who, OLD);
       await e2b("/script", fault);
@@ -1774,8 +1772,9 @@ describe("a template move", () => {
         logged.mockRestore();
       }
       let state = await seen();
-      expect(state.sandboxes.map((box) => box.id)).toEqual([old]);
+      expect(state.sandboxes.map((box) => [box.id, box.state])).toEqual([[old, "paused"]]);
       expect(state.files[`${old}:${CARRY_FILE}`]).toBeUndefined();
+      expect(await rowOf(who)).toMatchObject({ sandbox_id: old, move_to: null, paused: 1 });
       // Backing off: the next look moves nothing, and carries nothing out.
       await e2b("/script", { broken: null, lost: null });
       const before = state.commands.length;
@@ -1784,7 +1783,7 @@ describe("a template move", () => {
       expect(state.sandboxes.map((box) => box.id)).toEqual([old]);
       expect(state.commands.slice(before).map((command) => command.argv[1]))
         .not.toContain("carry-out");
-      // Past it, the next look moves it, and a start runs in the old one meanwhile.
+      // Past it, the next look moves it.
       await setRow(who, "move_after = 0");
       await look(who);
       expect((await seen()).sandboxes.map((box) => box.id)).not.toContain(old);
@@ -1801,16 +1800,10 @@ describe("a template move", () => {
     const made = state.sandboxes[0]!;
     expect(made.id).not.toBe(old);
     expect(state.files[`${made.id}:carried`]).toBe(`carry of ${old}`);
-    // The row names the new one; the old one is kept to be killed until E2B answers, the look
-    // armed at once for it (it may run before the next line does).
     expect(await rowOf(who)).toMatchObject({ sandbox_id: made.id });
-    // Its end is logged once E2B answers its kill, at a later look, and once.
     await look(who);
     expect(await runInDurableObject(stub(who), (_instance, s) =>
       s.storage.sql.exec("SELECT sandbox_id FROM retiring").toArray())).toEqual([]);
-    const kinds = (await stub(who).meter({ after: 0 })).events.map((event) => event.kind);
-    expect(kinds.at(-1)).toBe("kill");
-    expect(kinds.filter((kind) => kind === "kill")).toHaveLength(1);
   });
 
   it("kills a sandbox a move made that no row names yet, its object having ended under it",
@@ -1819,17 +1812,16 @@ describe("a template move", () => {
     await madeFrom(who, OLD);
     const { id: made } = await e2b("/stray", { metadata: { ta_owner: "x" } }) as { id: string };
     await setRow(who, "move_to = ?, move_after = ?", made, Date.now() + 3_600_000);
-    // The next call on the chain settles it, whatever it is.
     await stub(who).start(start({ run: `run_${hex(32, "3")}`, tokens: null, network: null }));
     expect((await seen()).sandboxes.map((box) => box.id)).not.toContain(made);
     expect(await rowOf(who)).toMatchObject({ move_to: null });
   });
 
-  it("makes no move without room for the old one resumed and the new one, renewals' held " +
-     "slots counted", async () => {
+  it("makes no move without its turn and room in the platform's line, renewals' held slots " +
+     "counted", async () => {
     const who = owner();
     const old = await madeFrom(who, OLD);
-    await e2b("/script", { others: NUMBERS.sandbox_concurrency_ceiling - 2 });
+    await e2b("/script", { others: NUMBERS.sandbox_concurrency_ceiling - 1 });
     await slots().reserve("sbx-renewing");
     try {
       await look(who);
@@ -1837,18 +1829,48 @@ describe("a template move", () => {
       await slots().unreserve("sbx-renewing");
     }
     const state = await seen();
-    expect(state.sandboxes.map((box) => box.id)).toEqual([old]);
-    expect(state.calls.filter((call) => call.path === "/v2/sandboxes" && call.method === "POST"))
-      .toHaveLength(1);
+    expect(state.sandboxes.map((box) => [box.id, box.state])).toEqual([[old, "paused"]]);
+    expect(state.calls.filter((call) => call.path.endsWith("/connect"))).toHaveLength(0);
   });
 
-  it("moves nothing a lease runs in", async () => {
+  it("arms no look for a sandbox a lease runs in, and moves nothing a lease runs in",
+     async () => {
     const who = owner();
     await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 1, quiet: false } });
     await stub(who).start(start());
     await setRow(who, "template = ?", OLD);
+    await stub(who).start(start({ run: `run_${hex(32, "3")}`, tokens: null, network: null }));
+    // The look is armed for the run's idle reap, a lease's TTL on, never at alarm speed.
+    expect(await alarmOf(who)).toBeGreaterThan(Date.now() + LEASE_TTL_S * 1000 / 2);
     await look(who);
     expect((await seen()).commands.map((command) => command.argv[1])).not.toContain("carry-out");
+  });
+
+  it("makes no move while another sandbox of the owner's needs the look within its bound",
+     async () => {
+    const who = owner();
+    const old = await madeFrom(who, OLD);
+    // A client's sandbox, live, its renewal window ten seconds off.
+    await e2b("/script", { state: { live: 1, quiet: false } });
+    await stub(who).start(opening({ authority: CLIENT }));
+    const client = (await rowOf(who, CLIENT))["sandbox_id"] as string;
+    await e2b("/age", { id: client, s: CEILING - WINDOW - 10 });
+    await look(who);
+    expect(ranIn(await seen(), old)).not.toContain("carry-out");
+    expect(await rowOf(who)).toMatchObject({ sandbox_id: old });
+  });
+
+  it("makes no move after a look that failed", async () => {
+    const who = owner();
+    const old = await madeFrom(who, OLD);
+    // A client's sandbox, live, far from its window, whose runner's `state` fails: the look at
+    // it fails, and no move follows that look.
+    await e2b("/script", { state: { live: 1, quiet: false } });
+    await stub(who).start(opening({ authority: CLIENT }));
+    await e2b("/script", { broken: "state" });
+    await look(who);
+    await e2b("/script", { broken: null });
+    expect(ranIn(await seen(), old)).not.toContain("carry-out");
   });
 });
 

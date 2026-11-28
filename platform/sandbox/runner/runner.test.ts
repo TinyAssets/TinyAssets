@@ -3032,6 +3032,21 @@ describe("a template move's carry", () => {
     expect(existsSync(box.path(`${SYNC_HOME}/carry`))).toBe(false);
   });
 
+  it("stops at its deadline mid-carry, and leaves no archive and no carry behind", () => {
+    // Ten thousand unsent files: the sync agent's copy of them outlasts half a second.
+    for (let n = 0; n < 10_000; n += 1) {
+      box.write(`/workspace/many/${n}.md`, "x".repeat(1024));
+    }
+    box.write(STORE_FILE, "{\"token\":\"vendor-secret\"}");
+    const out = box.runner(COMMAND.carryOut, "owner", String(Date.now() + 500));
+    expect(out.code, out.why).toBe(1);
+    // Cut as its sync agent copies (or, on a host too slow to start it in time, refused at once).
+    expect(out.err).toMatch(/carry-out is stopped|a time still to come/);
+    expect(existsSync(box.path(CARRY_FILE))).toBe(false);
+    expect(existsSync(box.path(`${SYNC_HOME}/carry`))).toBe(false);
+    expect(readFileSync(box.path(STORE_FILE), "utf8")).toBe("{\"token\":\"vendor-secret\"}");
+  });
+
   it("is refused while a job lives, and into a sandbox that holds a store, or of other bytes",
      async () => {
     const release = "/tmp/release-carry";

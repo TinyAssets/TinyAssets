@@ -54,6 +54,13 @@ type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;
  */
 export const runtimeFetch: Fetcher = (url, init) => fetch(url, init);
 
+/** The runtime's fetch, each call cut at `until` (ms since the epoch). */
+export function fetchUntil(until: number): Fetcher {
+  return (url, init) => runtimeFetch(url, { ...init,
+                                            signal: AbortSignal.timeout(Math.max(0,
+                                              until - Date.now())) });
+}
+
 /** A running sandbox, as envd is reached. */
 export interface Handle {
   readonly sandboxID: string;
@@ -232,13 +239,8 @@ export class E2bTransport {
     };
   }
 
-  /**
-   * Write `bytes` at `path` as root (parents made); the file is replaced whole. A stream is
-   * sent as it comes, of the length it was made with, and cut at its copy's deadline
-   * (`signal`; the Worker's `copy`).
-   */
-  async upload(handle: Handle, path: string, bytes: Uint8Array | ReadableStream<Uint8Array>,
-               signal?: AbortSignal): Promise<void> {
+  /** Write `bytes` at `path` as root (parents made); the file is replaced whole. */
+  async upload(handle: Handle, path: string, bytes: Uint8Array): Promise<void> {
     if (!path.startsWith("/") || path.includes("\0")) {
       throw new Error("an upload's path is absolute");
     }
@@ -247,7 +249,6 @@ export class E2bTransport {
       method: "POST",
       headers: { ...this.#envd(handle), "Content-Type": "application/octet-stream" },
       body: bytes,
-      ...(signal === undefined ? {} : { signal }),
     });
     await response.arrayBuffer();
     if (response.status !== 200) {
@@ -255,19 +256,19 @@ export class E2bTransport {
     }
   }
 
-  /** The file at `path`, read as root: its bytes as envd streams them, cut at `signal`. */
-  async download(handle: Handle, path: string, signal: AbortSignal):
-      Promise<ReadableStream<Uint8Array>> {
+  /** The file at `path`, read whole as root, `bytes` long, or it fails loudly. */
+  async download(handle: Handle, path: string, bytes: number): Promise<Uint8Array> {
     if (!path.startsWith("/") || path.includes("\0")) {
       throw new Error("a download's path is absolute");
     }
     const response = await this.#fetch(`${E2B_ENVD}/files?path=${encodeURIComponent(path)
-      }&username=root`, { method: "GET", headers: this.#envd(handle), signal });
-    if (response.status !== 200 || response.body === null) {
-      await response.arrayBuffer();
-      throw new E2bError(response.status, null, `envd's download answered ${response.status}`);
+      }&username=root`, { method: "GET", headers: this.#envd(handle) });
+    const read = new Uint8Array(await response.arrayBuffer());
+    if (response.status !== 200 || read.byteLength !== bytes) {
+      throw new E2bError(response.status, null, `envd's download answered ${response.status
+        } with ${read.byteLength} bytes, not ${bytes}`);
     }
-    return response.body;
+    return read;
   }
 
   /**
