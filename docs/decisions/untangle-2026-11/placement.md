@@ -210,7 +210,8 @@ open work that says "simultaneous runs", or assumes the sandbox or a key first.
 
 - [ ] `contract/src/control.ts` (`Tiers`, "Hobby 20"), `owner/src/admission.ts`,
   `owner/src/runs.ts`, `doors/src/app.ts` and `doors/src/api-keys.ts` say "simultaneous runs";
-  `limits-audit.md`'s tier row says a run past them is refused `tier_runs`; the site's plans
+  `limits-audit.md`'s tier row and the owner-object and doors specs say a run past them is
+  refused `tier_runs`; the site's plans
   copy (`WebSite/site-react/app/fine-print/page.tsx`, `start/page.tsx`) and its spec
   (`openspec/specs/public-website-surface/spec.md`) say tiers differ by simultaneous runs. Each
   becomes sandboxes with the shape (`untangle/place-shapes`).
