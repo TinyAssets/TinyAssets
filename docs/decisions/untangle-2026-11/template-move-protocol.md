@@ -40,10 +40,17 @@ the stage owner has a sandbox, so it can.
    one has deployed.
 2. **The runner's protocol is data** (`sandbox/runner/runner-speaks.json`), which `protocol.ts`
    `PROTOCOL` reads, and **the deploy hold holds the rule's two deploys**
-   (`deploy/handed.ts` `ordered`): this tree's runner speaks a protocol the serving sandbox Worker
-   speaks, and this tree's Worker speaks the serving runner's. A release that records none (no
-   `runner-speaks.json`, every one before this) is not held to it, nor one where no sandbox
-   serves. So #5857 cannot deploy before this has.
+   (`deploy/handed.ts` `ordered`), at each deploy, against what the stage serves:
+   - this tree's runner speaks a protocol the serving sandbox Worker speaks. A serving Worker from
+     before `speaks.json` (#5851; 8c80b02c8, a rollback's target) spoke at most the protocols its
+     tree recorded, so those are held (1 to 5 there: runner 5 holds, runner 6 is refused); one
+     that records no protocol at all is unknown and refused (Fact 8);
+   - this tree's Worker speaks the serving runner's protocol. A serving release that records no
+     runner of its own (no `runner-speaks.json`, every one before this) is not held to this
+     second rule.
+   Nothing is held where no sandbox serves. So no deploy of #5857 passes the kit before the stage
+   serves this; the base-branch guard (`guards/handed.test.ts`) refuses #5857's merge only until
+   this is on main.
 3. **A runner's `prepare` drops a carry left** (`CARRY_FILE`): a runner of 5 that a rollback
    adopts drops what a runner of 6 left.
 
@@ -69,12 +76,15 @@ the stage owner has a sandbox, so it can.
 
 - `platform/sandbox/runner/protocol.json` 6, `speaks.json` `[5, 6]`, `runner-speaks.json` `5`
   (`protocol.ts` `PROTOCOL` reads it), `runner/state-format.test.ts` 6's pin.
-- `platform/sandbox/runner/protocol.ts` `CARRY_FILE`; `runner.ts` `prepare` drops it;
-  `runner.test.ts`'s prepare test holds that.
-- `platform/deploy/handed.ts`: `Side.runner`, read by `sideAt`; `ordered` in `runnerProblems`.
+- `platform/sandbox/runner/protocol.ts` `CARRY_FILE`, held to every record that names a `carry`
+  path (`state-format.test.ts`); `runner.ts` `prepare` drops it; `runner.test.ts`'s prepare test
+  holds that.
+- `platform/deploy/handed.ts`: `Side.runner` and `Side.recorded`, read by `sideAt`; `spokenBy`
+  and `ordered` in `runnerProblems`.
   `ci/kit/layers.ts`: the deploy kit reads `runner-speaks.json`.
-- Tests: `deploy/guards/handed.test.ts` (the two deploys held, either way; nothing serving or
-  nothing recorded holds nothing; `sideAt` reads the runner's protocol),
+- Tests: `deploy/guards/handed.test.ts` (the two deploys held, either way; a serving Worker from
+  before `speaks.json` held to its tree's records, one that records none refused; nothing
+  serving holds nothing; `sideAt` reads the runner's protocol and the records),
   `deploy/guards/deploy.test.ts` (a run stops on a runner protocol the serving Worker does not
   speak; the rollback hold's case takes the protocol after the newest recorded, the serving
   Worker speaking this tree's too).
@@ -82,6 +92,8 @@ the stage owner has a sandbox, so it can.
 ## Owed
 
 - [ ] untangle/template-move (#5857): protocol 6's second deploy, the runner speaking 6 and taking
-  the carry, merged only once this has deployed (the hold refuses it before).
+  the carry, merged only once the stage serves this (live: this change's deploy). The kit's
+  `ordered` refuses a deploy of it before then; the base-branch guard only its merge until this is
+  on main.
 - [ ] untangle/runner-protocol-6-contract: protocol 6's contract, the Worker speaking 6 alone,
   once no deployed runner speaks 5.

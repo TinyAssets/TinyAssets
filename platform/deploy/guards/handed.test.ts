@@ -21,7 +21,8 @@ describe("what each Worker hands another, against the base branch", () => {
 const NONE = { doors: new Set<string>(), shapes: new Set<string>() };
 /** A side of `shapes` and door `rows`, the same for every Worker, its sandbox speaking none. */
 const side = (shapes: Readonly<Record<string, Shape>>, rows: readonly DoorRow[] = []):
-  Before & Side => ({ shapes, doors: rows, runners: {}, runner: null, cutover: NONE });
+  Before & Side => ({ shapes, doors: rows, runners: {}, recorded: null, runner: null,
+                      cutover: NONE });
 /** Each way `now` refuses, held against `then` as every Worker's version before. */
 const held = (then: Before, now: Side) => handedHold(() => then, now).problems;
 
@@ -362,6 +363,18 @@ describe("the owner's answers each runner protocol a sandbox version speaks read
     expect(handedHold(() => worker(["5"], null), worker(["5", "6"], 6)).problems).toHaveLength(1);
     expect(handedHold(() => worker(["5"], null), worker(["6"], 6)).problems).toHaveLength(1);
     expect(handedHold(() => worker(["5"], 5), worker(["5"], null)).problems).toEqual([]);
+    // A serving Worker from before `speaks.json` spoke at most the protocols its tree recorded
+    // (8c80b02c8, a rollback's target: 1 to 5); one that records none is unknown, refused.
+    const before = (recorded: number[] | null) => ({ ...speaking(null), recorded, runner: null });
+    expect(handedHold(() => before([1, 2, 3, 4, 5]), worker(["5", "6"], 6)).problems).toEqual([
+      "this tree's runner speaks protocol 6, which the sandbox's version before does not " +
+      "speak: deploy a sandbox Worker that speaks it first, alone, so a rollback of this one " +
+      "lands on a Worker that speaks this tree's runner"]);
+    expect(handedHold(() => before([1, 2, 3, 4, 5]), worker(["5", "6"], 5)).problems).toEqual([]);
+    expect(handedHold(() => before(null), worker(["5", "6"], 5)).problems).toEqual([
+      "this tree's runner speaks protocol 5, and what the sandbox's version before speaks is " +
+      "unknown (it records no runner protocol): deploy a sandbox Worker that records what it " +
+      "speaks first"]);
   });
 
   it("names each runner whose reads no record holds", () => {
@@ -405,6 +418,10 @@ describe("a release's side, read from git", () => {
     expect(sideAt("c", files({ ...at, "platform/sandbox/runner/runner-speaks.json": "6\n" }))
       .runner).toBe(6);
     expect(sideAt("c", files(at)).runner).toBeNull();
+    // And the protocols its tree records, or none.
+    expect(sideAt("c", files({ ...at, "platform/sandbox/runner/protocol.json": JSON.stringify(
+      { 4: { commands: [] }, 5: { relayed } }) })).recorded).toEqual([4, 5]);
+    expect(sideAt("c", files(at)).recorded).toBeNull();
     expect(() => sideAt("c", files({ ...at, "platform/sandbox/runner/speaks.json": "[5]" })))
       .toThrow("c holds platform/sandbox/runner/speaks.json and no " +
                "platform/sandbox/runner/protocol.json: what its runners read is unknown");

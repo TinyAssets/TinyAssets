@@ -22,8 +22,8 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { canonical } from "../../contract/src/canonical";
-import { ANSWERS, COMMAND, EXIT, inboxCode, inboxDoc, incoming, INSTALL, INTERNAL_COMMANDS,
-         JOBS, LEASE_FILE, LOADER, PROTOCOL, RUNNERS, SPEAKS, STATE_DIR,
+import { ANSWERS, CARRY_FILE, COMMAND, EXIT, inboxCode, inboxDoc, incoming, INSTALL,
+         INTERNAL_COMMANDS, JOBS, LEASE_FILE, LOADER, PROTOCOL, RUNNERS, SPEAKS, STATE_DIR,
          WORKER_COMMANDS } from "./protocol";
 import { checkFormat, dropRunners, type FormatRule, formatStep, READS,
          STATE_FORMAT } from "./state-format";
@@ -248,6 +248,14 @@ describe("the Worker's protocol with the runner", () => {
              incoming: incoming("<digest>"), inbox_doc: inboxDoc("<id>"),
              inbox_code: inboxCode("<id>"), lease: LEASE_FILE }).toEqual(record.paths);
     expect(ANSWERS).toEqual(record.answers);
+  });
+
+  it("names the carry where every record that names one does", () => {
+    // A runner's `prepare` drops a move's archive whichever runner left it (`CARRY_FILE`).
+    const named = Object.values(PROTOCOLS).flatMap((record) =>
+      record.paths["carry"] === undefined ? [] : [record.paths["carry"]]);
+    expect(named.length).toBeGreaterThan(0);
+    expect(new Set(named)).toEqual(new Set([CARRY_FILE]));
   });
 
   it("launches and cancels each kind of job by a command the Worker sends", () => {
