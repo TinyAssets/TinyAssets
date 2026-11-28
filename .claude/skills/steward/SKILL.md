@@ -57,7 +57,8 @@ Open the PR as a draft with your body file at your first push (`gh api
 repos/<o/r>/pulls -f title=... -f head=<branch> -f base=main -F
 body=@<file> -F draft=true`); mark it ready once the done-check passes (in a
 session, `POST repos/<o/r>/pulls/<n>/ccr/ready_for_review`). CI checks the
-body; the reviewer posts its own review. Until the watch ends, act on what CI and reviews raise:
+body; the reviewer posts its own review with `origin/main`'s poster, never
+your branch's copy. Until the watch ends, act on what CI and reviews raise:
 
 - **A failing check** in code the PR touches: fix it and push. One outside
   it: report it to the coordinator. A job that failed before any test ran,

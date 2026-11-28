@@ -4,31 +4,41 @@
     review_post.py read --repo O/R --pr N --writers FILE
     review_post.py post --repo O/R --pr N --writers FILE --commit SHA --review FILE
 
-`read` lists what a review must answer: the PR's earlier `Important:` findings
-and its comments, each only from an account that counts. `post` builds the
+Run `origin/main`'s copy, never the PR's (`git show origin/main:scripts/review_post.py
+> <dir>/review_post.py`, then `python3 -I <dir>/review_post.py`): a PR must not
+loosen its own review. It imports nothing of the repository.
+
+`read` lists what a review must answer: every earlier `Important:` finding, edit
+and `Founder question:` by a writer, and the PR's comments. `post` builds the
 review from the reviewer's JSON and posts it on `--commit`, which must be the
 PR's head:
 
     {"verdict": "BLOCK",
      "summary": "What was read and how.",
      "findings": [{"severity": "Important", "path": "a.py", "line": 12,
-                   "text": "The input, what happens, what should."},
+                   "text": "One paragraph: the input, what happens, what should."},
                   {"severity": "Nit", "text": "A finding with no line."}],
-     "earlier": [{"id": "comment:123", "status": "fixed", "note": "abc1234"}],
+     "earlier": [{"id": "review:123#1", "status": "fixed", "note": "abc1234"},
+                 {"id": "question:120", "status": "answered",
+                  "answer": "issuecomment:456"}],
      "founder_question": "One sentence a non-engineer can answer."}
 
-The verdict is the body's first line, which `review.yml` reads. A finding goes
-inline when its line is in the PR's diff, else in the body with `path:line`.
-Every earlier Important is listed as `fixed`, `withdrawn` (with its reason in
-`note`) or `standing`; the verdict is `BLOCK` exactly when an Important finding
-or a founder question stands. After posting, the threads of earlier inline
-findings it lists as fixed are resolved. Exit 0 posted, 1 GitHub or the head
-refused it, 2 the input is refused, 3 posted but a thread was not resolved.
+The verdict is the body's first line, which `review.yml` reads. The body is the
+record: it holds every finding, `path:line` first, and one goes inline as well
+when its line is in the PR's diff. Every earlier entry is listed: an Important
+or an edit as `fixed`, `withdrawn` (with its reason in `note`) or `standing`; a
+founder question as `answered`, by a writer's comment posted after it, or
+`standing`. The verdict is `BLOCK` exactly when one stands, or a new Important
+or founder question. After posting, the threads of earlier inline findings it
+lists as fixed are resolved. Exit 0 posted, 1 GitHub or the head refused it, 2
+the input is refused, 3 posted but a thread was not resolved.
 
-Who counts (`REVIEW.md`): a writer from `--writers`, the GitHub MCP's
-`list_repository_collaborators` result saved as JSON (a session's proxy refuses
-GitHub's permission read), and `github-actions[bot]`, which posts the
-queue-handoff ledger. A founder answer counts only from a writer.
+Who counts (`REVIEW.md`): findings, edits, questions and answers only from a
+writer in `--writers`, the GitHub MCP's `list_repository_collaborators` result
+saved as JSON (a session's proxy refuses GitHub's permission read). Comments
+from `github-actions[bot]` (the queue-handoff ledger) are listed apart and
+answer nothing. A base change resets verdicts in `review.yml`, never findings:
+the code a finding names is still in the head.
 """
 from __future__ import annotations
 
@@ -37,24 +47,29 @@ import json
 import re
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import review_checks as checks  # noqa: E402
-
-# The verdicts review.yml reads, and the commit shape it checks.
-VERDICTS = checks._VERDICTS
-_SHA_RE = checks._SHA_RE
-
+# The two verdicts review.yml reads as a review's first line
+# (scripts/tests/test_review_post.py holds them equal to review_checks').
+VERDICTS = ("APPROVE", "BLOCK")
 MARKERS = ("Important", "Nit", "Pre-existing")
 _MARKER_RE = re.compile(r"^\s*(?:[-*+]\s+)?(Important|Nit|Pre-existing):\s*(.*)$")
+_QUESTION_RE = re.compile(r"^Founder question:\s*(.*)$")
+_WHERE_RE = re.compile(r"^`(?P<path>[^`\n]+):(?P<line>\d+)` (?P<text>.*)$")
+_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 _NITS = 5  # REVIEW.md: at most five a review
-_STATUSES = ("fixed", "withdrawn", "standing")
+_STATUSES = {"important": ("fixed", "withdrawn", "standing"),
+             "edited": ("fixed", "withdrawn", "standing"),
+             "question": ("answered", "standing")}
 _WRITER_ROLES = frozenset({"admin", "maintain", "write"})
 _BOTS = frozenset({"github-actions[bot]"})
-_HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+# GitHub stamps `updated_at` up to a second after a record is made with no edit
+# (#5862's read of 249 reviews); past this, it was edited.
+_EDITED_AFTER_S = 10
 
 
 class Refused(Exception):
@@ -86,8 +101,7 @@ def load_writers(path: Path | None) -> frozenset[str]:
         for item in items:
             login = item.get("login") if isinstance(item, dict) else None
             role = item.get("role_name") if isinstance(item, dict) else None
-            if not (isinstance(login, str) and checks._LOGIN_RE.fullmatch(login)
-                    and isinstance(role, str)):
+            if not (isinstance(login, str) and login and isinstance(role, str)):
                 raise Refused(f"the writers file holds {item!r}, not a collaborator")
             if role in _WRITER_ROLES:
                 writers.add(login)
@@ -103,9 +117,30 @@ def _login(record: dict) -> str:
     return login if isinstance(login, str) else ""
 
 
+def _edited(made: object, updated: object) -> bool:
+    if not (isinstance(made, str) and isinstance(updated, str)):
+        return False
+    gap = datetime.fromisoformat(updated) - datetime.fromisoformat(made)
+    return gap.total_seconds() > _EDITED_AFTER_S
+
+
+def edited_reviews(events: list[object]) -> dict[int, str]:
+    """Each edited review's id and edit time, from `GET issues/{n}/timeline`: the
+    reviews listing has no edit time, the `reviewed` events do."""
+    edits: dict[int, str] = {}
+    for event in events:
+        if not isinstance(event, dict):
+            raise ValueError(f"not a timeline event: {event!r}")
+        if (event.get("event") == "reviewed" and isinstance(event.get("id"), int)
+                and _edited(event.get("submitted_at"), event.get("updated_at"))):
+            edits[event["id"]] = str(event["updated_at"])
+    return edits
+
+
 def _text(first: str, rest: list[str]) -> str:
     """A finding's text: its first line and the lines after it, up to a blank
-    line or the next marker."""
+    line or the next marker. The poster refuses a blank line in a text, so this
+    reads back what it wrote."""
     out = [first.strip()]
     for line in rest:
         if not line.strip() or _MARKER_RE.match(line):
@@ -114,86 +149,113 @@ def _text(first: str, rest: list[str]) -> str:
     return " ".join(out)
 
 
+def _marked(text: str) -> bool:
+    """Whether a line of `text` opens with a marker or a founder question, which a
+    later read would take for an entry of its own."""
+    return any(_MARKER_RE.match(line) or _QUESTION_RE.match(line)
+               for line in text.splitlines())
+
+
 @dataclass(frozen=True)
 class Earlier:
-    """An earlier `Important:` finding a later review accounts for."""
+    """An earlier entry a later review accounts for: an `Important:` finding, an
+    edit to a writer's review or finding, or a founder question."""
 
     id: str
+    kind: str  # "important", "edited" or "question"
     login: str
     when: str
     commit: str
     where: str
     text: str
-    comment: int | None  # the inline comment whose thread a fix resolves
+    comment: int | None = None  # the inline comment whose thread a fix resolves
 
 
 def earlier_findings(reviews: list[object], comments: list[object], *,
-                     writers: frozenset[str], since: str | None) -> list[Earlier]:
-    """Every `Important:` in the PR's reviews and inline comments that counts.
+                     writers: frozenset[str],
+                     edits: dict[int, str] | None = None) -> list[Earlier]:
+    """Every earlier entry by a writer, from `GET pulls/{n}/reviews` and
+    `GET pulls/{n}/comments` (outdated ones included), whatever the base did.
 
-    `reviews` is `GET pulls/{n}/reviews`, `comments` `GET pulls/{n}/comments`,
-    outdated ones included. A finding counts from an account that counts, posted
-    after `since`, the last base change; a pending review (no `submitted_at`)
-    and its comments, which nobody else can read, do not count. A reply, a
-    resolve or a dismissal decides nothing.
+    A review's body is the record of its findings. An inline comment that repeats
+    one (same review, line and text) is that finding, and a fix resolves its
+    thread; an inline `Important:` its review's body lacks is a finding of its
+    own. An edited review (`edits`, from `edited_reviews`) or an edited thread's
+    first comment is an entry too: what it said before is gone, so it stands
+    until a review marks it. A pending review (no `submitted_at`) and its
+    comments, which nobody else can read, do not count.
     """
     found: list[Earlier] = []
-    states: dict[int, tuple[str, str | None]] = {}
+    states: dict[int, str] = {}
     for review in reviews:
         if not isinstance(review, dict) or not isinstance(review.get("id"), int):
             raise ValueError(f"not a review: {review!r}")
-        states[review["id"]] = (str(review.get("state")), review.get("submitted_at"))
-        login, when = _login(review), review.get("submitted_at")
-        if (not _counts(login, writers) or not isinstance(when, str)
-                or (since is not None and when <= since)):
+        rid, login, when = review["id"], _login(review), review.get("submitted_at")
+        states[rid] = str(review.get("state"))
+        if login not in writers or not isinstance(when, str):
             continue
+        commit = str(review.get("commit_id"))
         lines = (review.get("body") or "").splitlines()
         k = 0
         for i, line in enumerate(lines):
-            mark = _MARKER_RE.match(line)
+            mark, question = _MARKER_RE.match(line), _QUESTION_RE.match(line)
             if mark and mark.group(1) == "Important":
                 k += 1
-                found.append(Earlier(f"review:{review['id']}#{k}", login, when,
-                                     str(review.get("commit_id")), "",
-                                     _text(mark.group(2), lines[i + 1:]), None))
+                text = _text(mark.group(2), lines[i + 1:])
+                where = _WHERE_RE.match(text)
+                found.append(Earlier(
+                    f"review:{rid}#{k}", "important", login, when, commit,
+                    f"{where['path']}:{where['line']}" if where else "",
+                    where["text"] if where else text))
+            elif question and not any(f.id == f"question:{rid}" for f in found):
+                found.append(Earlier(f"question:{rid}", "question", login, when, commit,
+                                     "", question.group(1).strip()))
+        if rid in (edits or {}):
+            found.append(Earlier(f"review:{rid}:edited", "edited", login, edits[rid],
+                                 commit, "", "this review was edited after it was posted"))
     for comment in comments:
         if not isinstance(comment, dict) or not isinstance(comment.get("id"), int):
             raise ValueError(f"not a review comment: {comment!r}")
-        state, submitted = states.get(comment.get("pull_request_review_id"), ("", None))
-        when = submitted or comment.get("created_at")
-        login, body = _login(comment), comment.get("body") or ""
-        mark = _MARKER_RE.match(body.splitlines()[0] if body else "")
-        if (state == "PENDING" or not mark or mark.group(1) != "Important"
-                or not _counts(login, writers) or not isinstance(when, str)
-                or (since is not None and when <= since)):
+        cid, login = comment["id"], _login(comment)
+        rid = comment.get("pull_request_review_id")
+        when = comment.get("created_at")
+        if (login not in writers or states.get(rid) == "PENDING"
+                or comment.get("in_reply_to_id") is not None or not isinstance(when, str)):
             continue
-        line = comment.get("line")
-        where = (f"{comment.get('path')}:{line}" if line is not None else
-                 f"{comment.get('path')}:{comment.get('original_line')} (outdated)")
-        found.append(Earlier(f"comment:{comment['id']}", login, when,
-                             str(comment.get("original_commit_id") or comment.get("commit_id")),
-                             where, _text(mark.group(2), body.splitlines()[1:]),
-                             comment["id"]))
+        where = f"{comment.get('path')}:{comment.get('original_line')}"
+        commit = str(comment.get("original_commit_id") or comment.get("commit_id"))
+        body = (comment.get("body") or "").splitlines()
+        if _edited(when, comment.get("updated_at")):
+            found.append(Earlier(f"comment:{cid}:edited", "edited", login,
+                                 str(comment["updated_at"]), commit, where,
+                                 "this finding was edited: " + _text(body[0] if body else "",
+                                                                     body[1:])))
+            continue
+        mark = _MARKER_RE.match(body[0]) if body else None
+        if not mark or mark.group(1) != "Important":
+            continue
+        text = _text(mark.group(2), body[1:])
+        twin = next((n for n, f in enumerate(found)
+                     if f.id.startswith(f"review:{rid}#") and f.where == where
+                     and f.text == text and f.comment is None), None)
+        if twin is not None:
+            found[twin] = replace(found[twin], comment=cid)
+        else:
+            found.append(Earlier(f"comment:{cid}", "important", login, when, commit,
+                                 where, text, cid))
     return sorted(found, key=lambda f: (f.when, f.id))
 
 
-def _counts(login: str, writers: frozenset[str]) -> bool:
-    return login in writers or login in _BOTS
-
-
-def pr_comments(comments: list[object], *, writers: frozenset[str],
-                since: str | None) -> tuple[list[dict], list[dict]]:
-    """The PR's comments (`GET issues/{n}/comments`) after `since`: the writers',
-    where a founder answer can be, and the repo's bots', which never answer for
-    him. Anyone else's is left out."""
+def pr_comments(comments: list[object], *,
+                writers: frozenset[str]) -> tuple[list[dict], list[dict]]:
+    """The PR's comments (`GET issues/{n}/comments`): the writers', where a founder
+    answer can be, and the repo's bots', which never answer for him. Anyone
+    else's is left out."""
     by_writers: list[dict] = []
     by_bots: list[dict] = []
     for comment in comments:
         if not isinstance(comment, dict):
             raise ValueError(f"not a comment: {comment!r}")
-        when = comment.get("created_at")
-        if since is not None and isinstance(when, str) and when <= since:
-            continue
         login = _login(comment)
         if login in writers:
             by_writers.append(comment)
@@ -222,12 +284,6 @@ def commentable(files: list[object]) -> dict[str, set[int]]:
     return lines
 
 
-def _marked(text: str) -> bool:
-    """Whether a line of `text` opens with a marker, which a later read would
-    take for a finding of its own."""
-    return any(_MARKER_RE.match(line) for line in text.splitlines())
-
-
 @dataclass(frozen=True)
 class Review:
     body: str
@@ -235,28 +291,32 @@ class Review:
     fixed: list[int]  # earlier inline findings whose threads this review resolves
 
 
-def build_review(spec: object, *, earlier: list[Earlier],
-                 lines: dict[str, set[int]]) -> Review:
-    """The review `spec` asks for, or `Refused` with every reason it cannot be."""
+def build_review(spec: object, *, earlier: list[Earlier], lines: dict[str, set[int]],
+                 answers: dict[str, str] | None = None) -> Review:
+    """The review `spec` asks for, or `Refused` with every reason it cannot be.
+
+    `answers` maps each writer's comment, `issuecomment:<id>`, to when it was
+    posted: a founder question is answered only by one posted after it.
+    """
     if not isinstance(spec, dict):
         raise Refused("the review file is not a JSON object")
     problems: list[str] = []
     verdict = spec.get("verdict")
     if verdict not in VERDICTS:
-        problems.append(f"the verdict is {verdict!r}, not one of {sorted(VERDICTS)}")
+        problems.append(f"the verdict is {verdict!r}, not one of {list(VERDICTS)}")
     summary = spec.get("summary") or ""
     question = spec.get("founder_question") or ""
     if not (isinstance(summary, str) and isinstance(question, str)):
         raise Refused("summary and founder_question are text")
     if _marked(summary):
-        problems.append("a summary line opens with a marker: put it in findings")
+        problems.append("a summary line opens with a marker or a founder question")
     if "\n" in question.strip():
         problems.append("the founder question is one line")
     findings = spec.get("findings") or []
     if not isinstance(findings, list):
         raise Refused("findings is a list")
     inline: list[dict] = []
-    in_body: list[str] = []
+    recorded: list[str] = []
     severities: list[str] = []
     for n, finding in enumerate(findings, 1):
         severity = finding.get("severity") if isinstance(finding, dict) else None
@@ -265,8 +325,8 @@ def build_review(spec: object, *, earlier: list[Earlier],
             problems.append(f"finding {n} needs a severity in {MARKERS} and its text")
             continue
         text = text.strip()
-        if _marked(text):
-            problems.append(f"finding {n}'s text holds a marker line: one finding each")
+        if _marked(text) or any(not line.strip() for line in text.splitlines()):
+            problems.append(f"finding {n}'s text is one paragraph with no marker line")
             continue
         severities.append(severity)
         path, line = finding.get("path"), finding.get("line")
@@ -274,34 +334,39 @@ def build_review(spec: object, *, earlier: list[Earlier],
                                      and line > 0):
             problems.append(f"finding {n}'s line needs its path and a line number")
             continue
+        where = f"`{path}:{line}` " if line else (f"`{path}` " if path else "")
+        recorded.append(f"{severity}: {where}{text}")
         if isinstance(path, str) and line in lines.get(path, ()):
             inline.append({"path": path, "line": line, "side": "RIGHT",
                            "body": f"{severity}: {text}"})
-        else:
-            where = f"`{path}:{line}` " if line else (f"`{path}` " if path else "")
-            in_body.append(f"{severity}: {where}{text}")
     if severities.count("Nit") > _NITS:
         problems.append(f"{severities.count('Nit')} Nits, past REVIEW.md's {_NITS}")
+    known = {f.id: f for f in earlier}
     accounted: dict[str, dict] = {}
     for entry in spec.get("earlier") or []:
         ident = entry.get("id") if isinstance(entry, dict) else None
         status = entry.get("status") if isinstance(entry, dict) else None
-        if status not in _STATUSES or not isinstance(ident, str):
-            problems.append(f"earlier entry {entry!r} needs an id and a status in {_STATUSES}")
+        note = str(entry.get("note") or "") if isinstance(entry, dict) else ""
+        if not isinstance(ident, str) or ident not in known:
+            problems.append(f"earlier {ident!r} is not an earlier entry `read` lists")
         elif ident in accounted:
             problems.append(f"earlier {ident} is listed twice")
-        elif status == "withdrawn" and not str(entry.get("note") or "").strip():
+        elif status not in _STATUSES[known[ident].kind]:
+            problems.append(f"earlier {ident} needs a status in "
+                            f"{_STATUSES[known[ident].kind]}")
+        elif status == "withdrawn" and not note.strip():
             problems.append(f"withdrawing earlier {ident} needs its reason in note")
-        elif _marked(str(entry.get("note") or "")):
+        elif _marked(note):
             problems.append(f"earlier {ident}'s note holds a marker line")
+        elif status == "answered" and not ((answers or {}).get(str(entry.get("answer")), "")
+                                           > known[ident].when):
+            problems.append(f"earlier {ident}'s answer is not a writer's comment "
+                            "posted after the question")
         else:
             accounted[ident] = entry
-    known = {f.id: f for f in earlier}
-    problems += [f"earlier {i} is not an earlier Important finding" for i in accounted
-                 if i not in known]
     problems += [f"earlier {f.id} ({f.where or f.commit[:9]}: {f.text[:80]}) is not "
-                 "listed as fixed, withdrawn or standing" for f in earlier
-                 if f.id not in accounted]
+                 f"listed as {' or '.join(_STATUSES[f.kind])}" for f in earlier
+                 if f.id not in accounted and not any(f.id in p for p in problems)]
     stands = ("Important" in severities or question.strip()
               or any(e["status"] == "standing" for e in accounted.values()))
     if verdict == "APPROVE" and stands:
@@ -315,16 +380,17 @@ def build_review(spec: object, *, earlier: list[Earlier],
         parts.append(summary.strip())
     if question.strip():
         parts.append(f"Founder question: {question.strip()}")
-    if in_body:
-        parts.append("\n\n".join(in_body))
+    if recorded:
+        parts.append("\n\n".join(recorded))
     if earlier:
         rows = []
         for f in earlier:
             entry = accounted[f.id]
-            note = str(entry.get("note") or "").strip()
+            extra = str(entry.get("answer") if entry["status"] == "answered"
+                        else entry.get("note") or "").strip()
             rows.append(f"- {entry['status']}: {f.id} ({f.where or f.commit[:9]}) "
-                        f"{f.text[:120]}" + (f" -- {note}" if note else ""))
-        parts.append("Earlier Important findings:\n\n" + "\n".join(rows))
+                        f"{f.text[:120]}" + (f" -- {extra}" if extra else ""))
+        parts.append("Earlier entries:\n\n" + "\n".join(rows))
     fixed = [f.comment for f in earlier
              if f.comment is not None and accounted[f.id]["status"] == "fixed"]
     return Review("\n\n".join(parts) + "\n", inline, fixed)
@@ -335,9 +401,11 @@ Post = Callable[[str, dict | None], object]
 
 
 def _gh_get(path: str) -> object:
-    """A read, every page (`--paginate --slurp`) for a list; 5xx retried."""
-    text = checks._gh_read(["--paginate", "--slurp", path], 120)
-    pages = json.loads(text)
+    """A read, every page (`--paginate --slurp`) for a list. A failure fails the
+    run; the reviewer runs it again."""
+    done = subprocess.run(["gh", "api", "--paginate", "--slurp", path], capture_output=True,
+                          text=True, timeout=120, check=True)
+    pages = json.loads(done.stdout)
     if isinstance(pages, list) and all(isinstance(p, list) for p in pages):
         return [item for page in pages for item in page]
     return pages[0] if isinstance(pages, list) and len(pages) == 1 else pages
@@ -354,7 +422,6 @@ def _gh_post(path: str, payload: dict | None) -> object:
 @dataclass(frozen=True)
 class PullState:
     head: str
-    since: str | None
     earlier: list[Earlier]
     writer_comments: list[dict]
     bot_comments: list[dict]
@@ -365,19 +432,18 @@ def read_pull(get: Get, repo: str, pr: int, writers: frozenset[str]) -> PullStat
     head = pull.get("head", {}).get("sha") if isinstance(pull, dict) else None
     if not (isinstance(head, str) and _SHA_RE.fullmatch(head)):
         raise ValueError(f"PR {pr} has no head commit")
-    since = checks.last_base_change(get(f"repos/{repo}/issues/{pr}/timeline?per_page=100"))
+    edits = edited_reviews(get(f"repos/{repo}/issues/{pr}/timeline?per_page=100"))
     earlier = earlier_findings(get(f"repos/{repo}/pulls/{pr}/reviews?per_page=100"),
                                get(f"repos/{repo}/pulls/{pr}/comments?per_page=100"),
-                               writers=writers, since=since)
+                               writers=writers, edits=edits)
     by_writers, by_bots = pr_comments(get(f"repos/{repo}/issues/{pr}/comments?per_page=100"),
-                                      writers=writers, since=since)
-    return PullState(head, since, earlier, by_writers, by_bots)
+                                      writers=writers)
+    return PullState(head, earlier, by_writers, by_bots)
 
 
 def _show(state: PullState, writers: frozenset[str]) -> str:
-    out = [f"head {state.head}; base last changed {state.since or 'never'}; "
-           f"writers {', '.join(sorted(writers))}",
-           "", "Earlier Important findings (list each in \"earlier\"):"]
+    out = [f"head {state.head}; writers {', '.join(sorted(writers))}",
+           "", "Earlier entries (list each in \"earlier\"):"]
     out += [f"  {f.id}  {f.login} {f.when} on {f.commit[:9]} {f.where}\n    {f.text}"
             for f in state.earlier] or ["  none"]
     for title, comments in (("Comments by writers (a founder answer counts only here):",
@@ -424,13 +490,16 @@ def run(argv: list[str], *, get: Get = _gh_get, post: Post = _gh_post) -> int:
                   f"read ({args.commit}): nothing posted; review {state.head}",
                   file=sys.stderr)
             return 1
-        review = build_review(spec, earlier=state.earlier, lines=commentable(
+        answers = {f"issuecomment:{c.get('id')}": str(c.get("created_at") or "")
+                   for c in state.writer_comments}
+        review = build_review(spec, earlier=state.earlier, answers=answers, lines=commentable(
             get(f"repos/{args.repo}/pulls/{args.pr}/files?per_page=100")))
     except Refused as exc:
         print(f"review_post: refused: {exc}", file=sys.stderr)
         return 2
     except (subprocess.SubprocessError, OSError, ValueError) as exc:
-        print(f"review_post: cannot read PR {args.pr}: {exc}", file=sys.stderr)
+        why = getattr(exc, "stderr", "") or exc
+        print(f"review_post: cannot read PR {args.pr}: {why}", file=sys.stderr)
         return 1
     try:
         posted = post(f"repos/{args.repo}/pulls/{args.pr}/reviews",

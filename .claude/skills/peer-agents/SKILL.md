@@ -44,11 +44,11 @@ Parallel dispatches are fine once every brief carries the block, each with its o
 
 Claude Ship's Code Review, in a session (`docs/decisions/untangle-2026-11/claude-ship.md`):
 
-1. **Read** `REVIEW.md`, its includes and `CLAUDE.md` at `origin/main` (`git show origin/main:REVIEW.md`), never the PR's copy, and the head in your own detached worktree. `python scripts/review_post.py read --repo <o/r> --pr <n> --writers <file>` lists the earlier `Important:` findings and the comments that count.
+1. **Read** `REVIEW.md`, its includes and `CLAUDE.md` at `origin/main` (`git show origin/main:REVIEW.md`), never the PR's copy, and the head in your own detached worktree. Run main's poster too, from outside that worktree, so the PR cannot change it: `git show origin/main:scripts/review_post.py > <dir>/review_post.py`, then `python3 -I <dir>/review_post.py read --repo <o/r> --pr <n> --writers <file>` lists the earlier entries (findings, edits, founder questions) and the comments that count.
 2. **Find** in parallel: a few finders, each one slice (an area of the diff, or a kind from REVIEW.md's Important list), each returning candidates with `file:line` and the failing case.
 3. **Verify**: one verifier rereads each candidate in the source and drops what the code does not show; duplicates merge.
-4. **Rank** by `REVIEW.md`, and mark each earlier Important `fixed`, `withdrawn` (the reason in `note`) or `standing`.
-5. **Post**: write the review as the JSON `scripts/review_post.py` documents and run its `post` with `--commit <the head you read>`. It refuses a review `REVIEW.md` forbids, and a head past yours: review the new one. It resolves the threads you mark fixed.
+4. **Rank** by `REVIEW.md`, and mark each earlier entry as the poster's docstring says.
+5. **Post**: write the review as the JSON that poster documents and run its `post` with `--commit <the head you read>`. It refuses a review `REVIEW.md` forbids, and a head past yours: review the new one. It resolves the threads you mark fixed.
 
 ## Output and modes
 
