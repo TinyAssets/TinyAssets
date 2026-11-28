@@ -19,6 +19,14 @@ Modes:
             protects linked-worktree Git metadata even when its common
             directory is added. Point --cwd at a worktree, not the live
             checkout; worktree/claim/review gates are the safety boundary.
+  --review DIR  a PR reviewer, claude only, which reads untrusted PR text by
+            design (the peer-agents skill's reviewer procedure). No full agent:
+            `--permission-mode dontAsk` denies every call no rule allows, the
+            tools are the review's alone (`review_claude_args`), reads and
+            writes stay in --cwd (a worktree of origin/main) and DIR, the one
+            place it writes, and no MCP server loads. Its environment is built
+            from an allowlist (`review_env`): no credential reaches it, and
+            GH_TOKEN is a placeholder the session's proxy replaces.
 
 Output contract: on success --out holds all Claude assistant text blocks in
 order (including Stop-hook continuations), or Codex's final message. The wrapper
@@ -162,9 +170,57 @@ def build_claude_cmd(args: argparse.Namespace) -> list[str]:
         cmd.extend(["--effort", args.effort])
     if args.write:
         cmd.append("--dangerously-skip-permissions")
+    if args.review:
+        cmd.extend(review_claude_args(args.cwd, args.review))
     if args.system:
         cmd.extend(["--system-prompt", args.system])
     return cmd
+
+
+# A reviewer's tools: it reads the head as git objects, runs main's poster and
+# untangle check by path, and writes only its review. Everything else, `gh`, the
+# network and the environment included, is refused: in `dontAsk` mode a call no
+# rule allows is denied, and the deny rules cover what Claude Code would otherwise
+# run unasked as read-only. Agent is its finders and verifier.
+_REVIEW_TOOLS = ("Read", "Grep", "Glob", "Bash", "Write", "Edit", "Agent")
+_REVIEW_GIT = ("show", "diff", "log", "grep", "rev-parse", "merge-base")
+_REVIEW_DENY = ("Bash(gh *)", "Bash(curl *)", "Bash(wget *)", "Bash(env*)",
+                "Bash(printenv*)", "Bash(git push *)", "WebFetch", "WebSearch")
+
+
+def review_claude_args(main: str, review_dir: str) -> list[str]:
+    """The flags that make `claude -p` a reviewer: `main` is its working directory,
+    a worktree of origin/main, and `review_dir` the one directory it may write."""
+    allow = ["Read", "Grep", "Glob", "Agent", f"Edit(/{review_dir}/**)",
+             *(f"Bash(git {sub} *)" for sub in _REVIEW_GIT),
+             f"Bash(python3 -I {main}/scripts/review_post.py *)",
+             f"Bash(python3 -I {main}/scripts/review_checks.py --untangle-check *)"]
+    settings = {"permissions": {"blockReadsOutsideWorkingDirectories": True,
+                                "blockWritesOutsideWorkingDirectories": True}}
+    return ["--permission-mode", "dontAsk", "--permission-prompts", "none",
+            "--tools", ",".join(_REVIEW_TOOLS), "--allowedTools", *allow,
+            "--disallowedTools", *_REVIEW_DENY, "--settings", json.dumps(settings),
+            "--add-dir", review_dir, "--strict-mcp-config"]
+
+
+# What a reviewer's process may see of the dispatcher's environment: the shell's
+# basics, the proxy and its certificates. Any credential stays out, because the
+# reviewer reads text a PR wrote and could repeat any value it can read.
+_REVIEW_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "TERM", "TMPDIR", "HTTPS_PROXY",
+               "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy",
+               "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE",
+               "CURL_CA_BUNDLE", "GIT_SSL_CAINFO")
+# gh refuses to run with no token; this session's proxy replaces the header with
+# the real credential (read 2026-11-28), so the reviewer's `gh` never holds it.
+# Where no proxy does, the poster's read fails loudly (401).
+REVIEW_GH_TOKEN = "placeholder-the-proxy-replaces"
+
+
+def review_env(env: dict[str, str]) -> dict[str, str]:
+    """A reviewer's environment from the dispatcher's `env`: `_REVIEW_ENV` only, and
+    `GH_TOKEN` the placeholder."""
+    return {**{name: env[name] for name in _REVIEW_ENV if name in env},
+            "GH_TOKEN": REVIEW_GH_TOKEN}
 
 
 def claude_retained_text(stdout: str) -> str:
@@ -408,8 +464,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--cwd", default=".", help="Working dir the peer operates in.")
     p.add_argument("--timeout", type=int, default=1800, help="Seconds before kill (default 1800).")
-    p.add_argument(
+    modes = p.add_mutually_exclusive_group()
+    modes.add_argument(
         "--write", action="store_true", help="Grant write/exec autonomy (see docstring)."
+    )
+    modes.add_argument(
+        "--review", default=None, metavar="DIR",
+        help="A PR reviewer (claude only): the review's tools, writing only in DIR.",
     )
     p.add_argument(
         "--model", default=None,
@@ -468,8 +529,18 @@ def _main() -> int:
     if not prompt.strip():
         return fail("empty prompt", 2)
 
+    if args.review:
+        if args.provider != "claude":
+            return fail("--review is claude's only: codex cannot be narrowed to a "
+                        "reviewer's tools here", 2)
+        args.review = os.path.abspath(to_native_path(args.review))
+        if not Path(args.review).is_dir():
+            return fail(f"--review is not a directory: {args.review}", 2)
+
     if args.provider == "claude":
         env = subprocess_env_without_api_keys()
+        if args.review:
+            env = review_env(env)
         cmd = build_claude_cmd(args)
     else:
         request = codex_model_request(args)
@@ -511,7 +582,7 @@ def _main() -> int:
             2,
         )
 
-    mode = "write" if args.write else "read-only"
+    mode = "write" if args.write else "review" if args.review else "read-only"
     print(
         f"[peer_agent] dispatching to {args.provider} ({mode}); cwd={args.cwd}",
         file=sys.stderr,

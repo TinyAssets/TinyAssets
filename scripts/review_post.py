@@ -454,6 +454,20 @@ class PullState:
     earlier: list[Earlier]
     writer_comments: list[dict]
     bot_comments: list[dict]
+    checks: list[dict]
+
+
+def check_runs(answer: object) -> list[dict]:
+    """The check runs of `GET commits/{sha}/check-runs`, every page: a reviewer reads
+    CI's results here, since it may run no `gh` of its own."""
+    pages = answer if isinstance(answer, list) else [answer]
+    runs: list[dict] = []
+    for page in pages:
+        found = page.get("check_runs") if isinstance(page, dict) else None
+        if not isinstance(found, list):
+            raise ValueError(f"not a check-runs page: {page!r}")
+        runs += [run for run in found if isinstance(run, dict)]
+    return runs
 
 
 def read_pull(get: Get, repo: str, pr: int, writers: frozenset[str]) -> PullState:
@@ -467,12 +481,16 @@ def read_pull(get: Get, repo: str, pr: int, writers: frozenset[str]) -> PullStat
                                writers=writers, edits=edits)
     by_writers, by_bots = pr_comments(get(f"repos/{repo}/issues/{pr}/comments?per_page=100"),
                                       writers=writers)
-    return PullState(head, earlier, by_writers, by_bots)
+    runs = check_runs(get(f"repos/{repo}/commits/{head}/check-runs?per_page=100"))
+    return PullState(head, earlier, by_writers, by_bots, runs)
 
 
 def _show(state: PullState, writers: frozenset[str]) -> str:
     out = [f"head {state.head}; writers {', '.join(sorted(writers))}",
-           "", "Earlier entries (list each in \"earlier\"):"]
+           "", "Checks on the head (one from a workflow the head edits proves nothing):"]
+    out += [f"  {run.get('name')}: {run.get('status')}/{run.get('conclusion')} "
+            f"({(run.get('app') or {}).get('slug')})" for run in state.checks] or ["  none"]
+    out += ["", "Earlier entries (list each in \"earlier\"):"]
     out += [f"  {f.id}  {f.login} {f.when} on {f.commit[:9]} {f.where}\n    {f.text}"
             for f in state.earlier] or ["  none"]
     for title, comments in (("Comments by writers (a founder answer counts only here):",

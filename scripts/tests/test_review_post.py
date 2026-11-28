@@ -38,9 +38,11 @@ class GitHub:
     """A fake of the reads and writes `review_post` makes."""
 
     def __init__(self, *, reviews=(), comments=(), issue_comments=(), timeline=(),
-                 head=HEAD, fail_post: str | None = None):
+                 head=HEAD, fail_post: str | None = None, checks=None):
         self.answers = {
             f"repos/{REPO}/pulls/{PR}": {"head": {"sha": head}},
+            f"repos/{REPO}/commits/{head}/check-runs?per_page=100":
+                checks if checks is not None else {"total_count": 0, "check_runs": []},
             f"repos/{REPO}/issues/{PR}/timeline?per_page=100": list(timeline),
             f"repos/{REPO}/pulls/{PR}/reviews?per_page=100": list(reviews),
             f"repos/{REPO}/pulls/{PR}/comments?per_page=100": list(comments),
@@ -439,11 +441,21 @@ def test_a_posted_review_whose_thread_will_not_resolve_says_so(tmp_path, writers
 
 
 def test_read_lists_what_the_review_must_answer(writers, capsys):
+    """Every page of the head's check runs too: a reviewer runs no gh of its own."""
+    def page(name):
+        return {"total_count": 2, "check_runs": [
+            {"name": name, "status": "completed", "conclusion": "success",
+             "app": {"slug": "github-actions"}}]}
     gh = GitHub(reviews=[_review(1, "BLOCK\n\nImportant: a bug")],
                 issue_comments=[{"id": 5, "user": {"login": WRITER}, "body": "Founder: yes",
-                                 "created_at": "2026-11-28T11:00:00Z"}])
+                                 "created_at": "2026-11-28T11:00:00Z"}],
+                checks=[page("tests"), page("invariants")])
     assert rp.run(["read", "--repo", REPO, "--pr", str(PR), "--writers", str(writers)],
                   get=gh.get, post=gh.post) == 0
     out = capsys.readouterr().out
     assert "review:1#1" in out and "issuecomment:5" in out and "Founder: yes" in out
+    assert "tests: completed/success (github-actions)" in out
+    assert "invariants: completed/success (github-actions)" in out
     assert gh.posts == []
+    with pytest.raises(ValueError):
+        rp.check_runs({"message": "Not Found"})

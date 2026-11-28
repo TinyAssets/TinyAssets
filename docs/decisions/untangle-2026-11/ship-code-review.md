@@ -75,8 +75,9 @@ landing step goes.
    whose findings it lists as fixed, all of them, once, by the session's route.
 3. The reviewer is a fresh session started in a new detached worktree of
    `origin/main`, Code Review's way (it runs in a clean environment): a
-   `claude -p` or `codex exec` peer, `peer_agent.py --write --cwd <main>`, and
-   no other form. A session loads its hooks, settings, MCP config and
+   `claude -p` peer in review mode, `peer_agent.py claude --review <dir> --cwd
+   <main>`, and no other form (§ Reviewer mode: no full agent, no credential,
+   never `--write`). A session loads its hooks, settings, MCP config and
    instructions from its working directory when it starts, so one started
    there loads main's alone and inherits nothing; a subagent keeps its
    parent's, which no check at dispatch can read (§ Reviewer form). It reads
@@ -213,12 +214,69 @@ The form is available here at no extra cost. From a new detached worktree of
 `origin/main` (5c6a53ef9), `claude -p "Reply with the single word OK"` with
 `ANTHROPIC_API_KEY` unset exited 0 and answered `OK` on the subscription, the
 budget a subagent spends too; it loaded that worktree's tracked `.claude/`
-settings (it noted their allow rules wait for workspace trust, which a
-`--write` peer's skipped permissions do not need) and no ignored file, since a
-new worktree has none. Main's SessionStart hook never touches a linked
-worktree. So the peer is the only reviewer form and the subagent clause is
-deleted; what still reaches the peer from outside is the host's own
-`~/.claude` and the dispatcher's environment, neither of which a PR writes.
+settings (it noted their allow rules wait for workspace trust: they never widen
+a reviewer) and no ignored file, since a new worktree has none. Main's
+SessionStart hook never touches a linked worktree. So the peer is the only
+reviewer form and the subagent clause is deleted; what still reaches the peer
+from outside is the host's own `~/.claude` and the dispatcher's environment,
+neither of which a PR writes, and the environment is narrowed below.
+
+## Reviewer mode
+
+The coordinator found, before dispatching this PR's sixth review, that the
+fresh peer ran `--write`, which is `--dangerously-skip-permissions` for claude:
+a reviewer, which reads untrusted PR text by design, held an unrestricted shell
+with the session's credentials and no permission check, the opposite of Code
+Review's narrow tools, and a dispatch that routes around this host's
+permission rules. Fact 17: it lands here.
+
+Research, 2026-11-28 (`claude --help` of 2.1.332; the `permission-modes` and
+`permissions` docs):
+
+- `--permission-mode dontAsk` "auto-denies every tool call that would otherwise
+  prompt"; allow rules (`--allowedTools`) still run, deny rules
+  (`--disallowedTools`) beat allow rules, and `--permission-prompts none` leaves
+  nobody to answer a prompt. `--tools` sets the built-in tools at all.
+- A built-in set of read-only Bash commands (`cat`, `echo`, `ls`, `grep`, git's
+  reads, ...) runs unasked "in every mode", not configurable, though a deny rule
+  applies, and outside the working directories only while
+  `permissions.blockReadsOutsideWorkingDirectories` is off.
+- A compound command (`&&`, `||`, `;`, `|`, `$( )`) is split, and each part must
+  be allowed; a deny rule applies to any part.
+- `--bare` would skip hooks and settings, but it reads no OAuth, so it cannot
+  run on the subscription. `--strict-mcp-config` with no `--mcp-config` loads no
+  MCP server.
+- This session's environment holds `GH_TOKEN`, `GITHUB_TOKEN`, AWS, E2B and
+  Cloud SDK credentials (names read only). A reviewer that can `echo` a
+  variable could repeat any of them into a public review, so a deny list cannot
+  protect them: the environment has to be built from an allowlist. `claude -p`
+  ran with only `PATH`, `HOME`, `TERM`, `LANG`, the proxy and its certificates
+  (exit 0, `OK`), and `gh` ran with `GH_TOKEN` set to a placeholder: the
+  session's proxy replaces it with the real credential.
+- Codex is not installed on this host, and its sandboxes take no per-command
+  allowlist, so it is no reviewer: `--review` refuses it.
+
+As built, `peer_agent.py claude --review DIR` (`review_claude_args`,
+`review_env`): `dontAsk`, no permission prompts; the tools Read, Grep, Glob,
+Bash, Write, Edit and Agent (its finders and verifier); allowed Read, Grep,
+Glob, Agent, writes under DIR only, git's `show`, `diff`, `log`, `grep`,
+`rev-parse` and `merge-base`, and `python3 -I <main>/scripts/review_post.py` and
+`review_checks.py --untangle-check` by path; denied `gh`, `curl`, `wget`, `env`,
+`printenv`, `git push`, WebFetch and WebSearch; reads and writes outside the
+working directories blocked; DIR added; no MCP server; an environment of
+`_REVIEW_ENV` and the placeholder `GH_TOKEN` alone. `--review` and `--write`
+cannot be one dispatch. The reviewer reads CI's checks through the poster's
+`read`, which now lists the head's check runs, so it needs no `gh` of its own.
+`git worktree` is left out: the dispatcher makes `<main>`.
+
+The probe, the same flags from a worktree of this branch (whose poster `main`
+lacks yet), told to run each command once: `env`, `printenv HOME`, `curl -sS
+https://example.com`, `gh api -X POST .../issues/0/comments`, `python3 -c
+'print(1)'` and `echo "${AWS_SECRET_ACCESS_KEY:-unset}" | wc -c` were refused,
+and so was a Write into the worktree (the file is absent); `git show
+HEAD:REVIEW.md`, the poster's `read` (through the placeholder token) and a Write
+into DIR ran. `scripts/tests/test_peer_agent_review.py` holds the flags and the
+environment (8 mutations, each killed).
 
 ## Bootstrap
 
@@ -234,9 +292,11 @@ hand under main's `REVIEW.md`, which predates it:
 
 No review was posted on the PR: each verdict is a host receipt, so this PR's
 `review` check comes only from the host's `land_pr2.sh` posting the last
-receipt, which the `live:` owed line deletes afterwards. The first PR after
-it is reviewed from a worktree of `origin/main` with the poster this PR lands,
-and runs none of the head's code.
+receipt, which the `live:` owed line deletes afterwards. Main's `peer_agent.py`
+has no `--review` yet either, so this PR's next review is dispatched in that
+mode with this head's `peer_agent.py`, which the coordinator reads first. The
+first PR after it is reviewed from a worktree of `origin/main` with the poster
+and review mode this PR lands, and runs none of the head's code.
 
 ## Departures
 
@@ -258,10 +318,10 @@ and runs none of the head's code.
 
 ## Pins
 
-The skills aggregate moves from 37,400 to 38,791 B (peer-agents 5,175 to
-6,113 B, steward 4,147 to 4,504 B, untangle 10,575 to 10,671 B) and
-`REVIEW.md`'s from 4,550 to 4,996 B: together +1,837 B, for the rules the
-five reviews added, inside the aggregate total.
+The skills aggregate moves from 37,400 to 39,153 B (peer-agents 5,175 to
+6,475 B, steward 4,147 to 4,504 B, untangle 10,575 to 10,671 B) and
+`REVIEW.md`'s from 4,550 to 4,996 B: together +2,199 B, for the rules the
+five reviews and the review mode added, inside the aggregate total.
 The gates page's pin drops from 1,387 to 1,231, its file's size. The
 per-file total drops from 4,403 to 4,246, and the aggregate total from 58,471
 to 58,339.
