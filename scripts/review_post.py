@@ -233,17 +233,19 @@ def earlier_findings(reviews: list[object], comments: list[object], *,
         rid = comment.get("pull_request_review_id")
         when = comment.get("created_at")
         if (login not in writers or states.get(rid) == "PENDING"
-                or comment.get("in_reply_to_id") is not None or not isinstance(when, str)):
+                or not isinstance(when, str)):
             continue
         where = f"{comment.get('path')}:{comment.get('original_line')}"
         commit = str(comment.get("original_commit_id") or comment.get("commit_id"))
         body = (comment.get("body") or "").splitlines()
-        if _edited(comment):
+        # A thread's first comment holds findings; a reply only answers them. A
+        # founder question counts from either, edited or not.
+        finding = comment.get("in_reply_to_id") is None and not _edited(comment)
+        if comment.get("in_reply_to_id") is None and not finding:
             found.append(Earlier(f"comment:{cid}:edited", "edited", login,
                                  str(comment["updated_at"]), commit, where,
                                  "this finding was edited: " + _text(body[0] if body else "",
                                                                      body[1:])))
-            continue
         k = q = 0
         for i, line in enumerate(body):
             mark, question = _MARKER_RE.match(line), _QUESTION_RE.match(line)
@@ -251,7 +253,7 @@ def earlier_findings(reviews: list[object], comments: list[object], *,
                 q += 1
                 found.append(Earlier(f"question:comment:{cid}#{q}", "question", login,
                                      when, commit, where, question.group(1).strip()))
-            if not mark or mark.group(1) != "Important":
+            if not finding or not mark or mark.group(1) != "Important":
                 continue
             k += 1
             text = _text(mark.group(2), body[i + 1:])

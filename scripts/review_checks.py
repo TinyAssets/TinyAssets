@@ -120,8 +120,9 @@ _LOGIN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}(?:\[bot\])?$")
 class PermissionUnread(Exception):
     """Whether a verdict's author can push could not be read: no verdict counts.
 
-    `not_found` when GitHub answered 404, which it gives a login with no account or
-    no grant here, a bot or a deleted account among them."""
+    `not_found` when GitHub answered 404: for a bot (`github-actions[bot]`), an
+    account GitHub no longer finds, or a token that cannot see the repository. None
+    of those is a writer, and the last fails closed: every author reads as none."""
 
     def __init__(self, why: str, *, not_found: bool = False):
         super().__init__(why)
