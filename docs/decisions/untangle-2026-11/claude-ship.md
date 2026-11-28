@@ -56,12 +56,17 @@ Facts measured for this file:
   whatever commit it read, and `carries` rule 1 lets a verdict on one commit
   stand for a later head that is the same change. So a late `APPROVE` of an
   earlier, same-change head voids a newer `BLOCK`: a live bug in today's
-  `review` (Fact 17), fixed first (§ Lanes, 1).
+  `review` (Fact 17), fixed first in its own PR (§ Lanes, `fix/verdict-order`).
+- The writer read `push_reader` makes (`collaborators/{login}/permission`)
+  works in Actions with the workflow's token, but this session type's GitHub
+  proxy refuses it and the collaborator list (HTTP 403); the GitHub MCP's
+  `list_repository_collaborators` works from a session (read 2026-11-28,
+  `Jonnyton admin`).
 - The ruleset's only bypass actor is the admin role, mode `always`, and that
   user is admin. The ruleset has no `pull_request`, `non_fast_forward` or
   `deletion` rule. `main` also has classic branch protection, read 2026-11-28:
   `allow_force_pushes` and `allow_deletions` false, `enforce_admins` false, no
-  status checks. With `enforce_admins` false a classic rule does not bind an
+  status checks and nothing else. With `enforce_admins` false a classic rule does not bind an
   admin, so nothing refuses a force-push to `main` or its deletion by any
   agent, and `docs/host-actions.md`'s "it blocks force pushes and deletion"
   overstates it. No workflow or script force-pushes or deletes `main`.
@@ -87,8 +92,8 @@ since 2026-11-24 (`brief_lane.md`'s "Ship's separation of duties"), which
 | Severities 🔴 Important (fix before merge), 🟡 Nit, 🟣 Pre-existing; `pass` = no open Important | **In effect**: Important/Nit/Pre-existing with `file:line` and the failing case; the first line `BLOCK` while an Important stands, else `APPROVE` | **Adopt**: the untangle skill's reviewer list becomes REVIEW.md's "What Important means here" |
 | Inline comments on the lines, a summary, a neutral check run `Claude Code Review` | One `COMMENT` review whose body is the evidence; `review.yml` turns its first line into the required `review` check | **Adopt** inline comments in that one review. **Keep** `review` as the check: it is our Approvals too (below) |
 | Reads `REVIEW.md` (root, includes `@file`, `@.claude/skills/<folder>/SKILL.md`, ≤8 includes, ≤150,000 bytes) and `CLAUDE.md`, from the default branch, never the PR | The reviewer reads the PR's checkout of the untangle skill, AGENTS.md and a host brief | **Adopt**: `REVIEW.md` in Ship's format, read at `origin/main` |
-| Runs after creation, after every push, or on request; keeps the earlier result only while the PR adds and removes the same lines and nobody has resolved an Important thread since | **In effect**: every new head is reviewed again. `review.yml` still carries a verdict across a prose-only delta, and the untangle skill still says "One review a PR" and "a re-confirm, which reads only its conflicts" | **Adopt**: the prose carry goes; `carries` rule 1 (the same change, so a clean merge of main) is Ship's first condition and stays. Ship's second condition exists because a resolve can close a finding; ours makes thread state decide nothing (next row), so it has nothing to guard |
-| A later review focuses on what changed since the last, but its counts include earlier reviews' findings whose threads are still open | `review_check` asks for "a one-round delta review of only that delta", so a delta review can approve a head whose earlier Important finding is unfixed | **Adopt**, stricter: a later review may focus on the delta, but it lists every earlier Important finding as fixed at this head, withdrawn by this review with its reason, or standing, and its first line is `BLOCK` while one stands. Earlier findings are read from the PR's reviews and their inline comments (outdated ones included), by the fixed `Important:` marker the poster writes, and only from authors who can push, after the last base change. A resolved thread decides nothing: all agents write as one account (decision 2), so a resolve cannot be told apart |
+| Runs after creation, after every push, or on request; keeps the earlier result only while the PR adds and removes the same lines and nobody has resolved an Important thread since | **In effect**: every new head is reviewed again. `review.yml` still carries a verdict across a prose-only delta, and the untangle skill still says "One review a PR" and "a re-confirm, which reads only its conflicts" | **Adopt**: the prose carry goes; `carries` rule 1 (the same change, so a clean merge of main) is Ship's first condition and stays, narrowed to a commit in the head's history: a rebased or force-pushed head no longer carries and waits for a fresh review (we never rebase). Ship's second condition exists because a resolve can close a finding; ours makes thread state decide nothing (next row), so it has nothing to guard |
+| A later review focuses on what changed since the last, but its counts include earlier reviews' findings whose threads are still open | `review_check` asks for "a one-round delta review of only that delta", so a delta review can approve a head whose earlier Important finding is unfixed | **Adopt**, stricter: a later review may focus on the delta, but it lists every earlier Important finding as fixed at this head, withdrawn by this review with its reason, or standing, and its first line is `BLOCK` while one stands. Earlier findings are read from the PR's reviews and their inline comments (outdated ones included), by the fixed `Important:` marker the poster writes, and only from the accounts § Target pipeline's "who counts" names, after the last base change. A resolved thread decides nothing: all agents write as one account (decision 2), so a resolve cannot be told apart |
 | A later review closes its own threads it finds fixed; replies are read by the next review | Not done; the coordinator relays | **Adopt** |
 | Read-only; never builds or runs the code | **In effect**: the reviewer never fixes. The untangle skill still says it "commits its own fixes of up to 50 lines and approves that head" and reruns builder mutations | **Adopt**: the reviewer reads; a test that cannot fail is an Important finding read from the code; mutations are the builder's done-check |
 | Skips drafts | The builder pushes a draft early; CI runs on it; review waits for ready | Matches |
@@ -104,7 +109,7 @@ since 2026-11-24 (`brief_lane.md`'s "Ship's separation of duties"), which
 | Instructions in `.claude/skills/steward/SKILL.md` on the default branch, plus `CLAUDE.md`/`AGENTS.md` | Builder rules live partly in host briefs, lost in the 2026-11-28 restart | **Adopt**, first (§ Where the host rules land) |
 | The skill's example frontmatter sets `user-invocable: false` and `disable-model-invocation: true`: a file only the service reads | n/a | **Differs**: our steward is every builder session, so the skill must load for them; it keeps name and description only |
 | Watch ends at merge or close, or after days with no person commenting ("about a week" before a session restarts) | No watch; the coordinator decides | **Adopt**: a watch ends at merge, at close, or after 7 days with no new head, review or comment (no comment can be told to be a person's, decision 2) |
-| Stop by removing the watching label or commenting `@claude stop`; it stays stopped across later pushes and comments until started again | None | **Adopt**: removing `steward-watching`, or a top-level `/steward stop`, ends the watch, and it stays ended until the label is added back or `/steward` is commented. `/steward`, not `@claude`, because `@claude` is Anthropic's app's trigger. As Ship sends a session only the comments of the author, writers and bots, a command, and any comment the steward acts on, counts only from an account that can push |
+| Stop by removing the watching label or commenting `@claude stop`; it stays stopped across later pushes and comments until started again | None | **Adopt**: removing `steward-watching`, or a top-level `/steward stop`, ends the watch, and it stays ended until the label is added back or `/steward` is commented. `/steward`, not `@claude`, because `@claude` is Anthropic's app's trigger. As Ship sends a session only the comments of the author, writers and bots, a command, and any comment the steward acts on, counts only from the accounts § Target pipeline's "who counts" names |
 | A spend cap per repository's PR session, and a monthly limit | No cap | **Adopt** the per-PR cap as a ceiling with its reason (Fact 15): a steward that pushes three times and leaves the same check failing the same way stops and hands the PR to the coordinator, as `queue-handoff` stops a queue loop after two. The monthly limit maps to the subscription's own usage limits, the vendor's limit (Fact 15): Ship needs its own because usage credits bill without one; ours stops when the subscription does. Another cap is the founder's setting, none set |
 | Opt-out marker in the body, a label while it works | None | **Adopt**: `<!-- steward-disable -->` in the body, and the `steward-watching` label |
 | Starts Manual first, then On | n/a | **Keep ours**: the coordinator already starts a steward per PR; there is no service to switch on |
@@ -126,7 +131,7 @@ since 2026-11-24 (`brief_lane.md`'s "Ship's separation of duties"), which
 | Ship | Ours today | Verdict |
 |---|---|---|
 | Require ≥1 approval; dismiss stale approvals on push | None | **Keep** (decision 5); `review` does the freshness work |
-| Block force pushes where you don't want them (pr-steward-setup step 4) | Classic protection on `main` blocks both, but not for an admin (`enforce_admins` false), and every agent is an admin; no ruleset has either rule | **Adopt**: a second ruleset on the default branch with `non_fast_forward` and `deletion` and no bypass actor, so the admin bypass does not void it. It replaces the classic protection's two settings, which go, so `main`'s protection has one source and drift reads it. Decision 5 covers approvals only; a repo setting is the agent's call (Fact 4) |
+| Block force pushes where you don't want them (pr-steward-setup step 4) | Classic protection on `main` blocks both, but not for an admin (`enforce_admins` false), and every agent is an admin; no ruleset has either rule | **Adopt**: a second ruleset on the default branch with `non_fast_forward` and `deletion` and no bypass actor, so the admin bypass does not void it. It replaces the classic protection, which holds nothing else and is deleted, so `main`'s protection has one source and drift reads it. Decision 5 covers approvals only; a repo setting is the agent's call (Fact 4) |
 | The App off the bypass list; agents act as an App, apart from people | The admin role bypasses the merge-queue ruleset always, and every agent is that admin | **Keep, a known gap** (decision 2) |
 | Warning: no person required + auto-merge or a merge queue merges with nobody acting | That is the founder's intent: `auto-enroll` arms every ready PR | **Keep** (decisions 1 and 5); a PR whose review asks the founder is held by its `BLOCK` until he answers (§ Target pipeline) |
 
@@ -167,26 +172,44 @@ since 2026-11-24 (`brief_lane.md`'s "Ship's separation of duties"), which
    Each finding is inline where it has a line, else in the body, with
    `file:line`, the failing case, and one leading severity marker,
    `Important:`, `Nit:` or `Pre-existing:`, defined once in that script. It
-   reads the earlier reviews' findings as the gap table says (writers only,
-   after the last base change, by that marker) and lists each earlier
-   Important as fixed, withdrawn with its reason, or standing. First line
-   `BLOCK` while an Important finding stands or the founder's question below
-   is unanswered on the PR; else `APPROVE`. A founder question, when there is
-   one, is on its own line `Founder question: <one sentence>`. It never fixes.
-   One review per head, and one more after a founder answer.
+   reads the earlier reviews' findings (who counts, after the last base change,
+   by that marker) and lists each earlier Important as fixed, withdrawn with
+   its reason, or standing. First line `BLOCK` while an Important finding
+   stands or the founder's question below is unanswered on the PR; else
+   `APPROVE`. A founder question, when there is one, is on its own line
+   `Founder question: <one sentence>`. It never fixes. One review per head,
+   and one more after a founder answer or after a `BLOCK` posted late on an
+   earlier head.
 3. **`review.yml`**, unchanged but for the prose carry, its ask text and which
-   verdict governs: among verdicts by accounts that can push, after the last
-   base change, the governing one is the latest on the most recently pushed
-   commit that has a verdict (the order of the PR's commits), never the latest
-   by time; it decides `review` when that commit is the head or the same
-   change.
+   verdict governs. Counted verdicts are those `latest_verdict` counts today
+   (by an account that can push, not voided by a dismissal, after the last
+   base change) on a commit in the head's history (`git merge-base
+   --is-ancestor` on the objects `review.yml` already fetches); a verdict on a
+   commit outside it, force-pushed away, is ignored, so the check waits. A
+   `BLOCK` stands until a counted verdict is submitted after it on the same
+   commit or a descendant. `review` passes only when no `BLOCK` stands and the
+   latest counted verdict on the most descendant reviewed commit is `APPROVE`
+   and carries to the head; a merge group follows its PR's decision. Never the
+   latest by time alone.
+
+**Who counts.** Everything the reviewer and steward read on a PR (earlier
+findings, the founder's answer as the coordinator posts it, `/steward`
+commands, comments the steward acts on) counts only from an account with
+`admin`, `maintain` or `write` on this repository, or from this repository's
+own bots: `github-actions[bot]` (the queue-handoff ledger) and the review App's
+bot. Ship counts the author, writers and bots the same way; an outsider is in
+neither set, and an author's login cannot be forged in the API's record. In
+Actions, `review.yml` keeps `push_reader`. In a session, whose proxy refuses
+that read, the writers come from the GitHub MCP's `list_repository_collaborators`
+(`role_name` `admin`, `maintain` or `write`), passed to `review_post.py` as a
+file; a missing, empty or failed list is refused, never read as "everyone".
 4. **The steward** fixes what the review and CI raise, merging the base in on a
    conflict, and the new head is reviewed again.
 5. **The founder** is asked before the PR lands. A `Founder question:` line
    means the PR's `review` fails, so it waits. The coordinator asks him in
    chat, posts his answer on the PR as a comment quoting it with the date, and
    asks for a fresh review, which reads the answer only from a comment by an
-   account that can push; feedback goes to the steward first.
+   account that counts; feedback goes to the steward first.
 6. **Merge**: `auto-enroll` arms the PR; the queue merges it once `review`,
    `Diff scope declared`, `required-tests` and `invariants` pass.
 
@@ -223,21 +246,35 @@ the session's own commit trailers).
 
 ## Lanes
 
-Three remain. Lanes for an approvals check, its policy and founder fact, the
-gate-path rule, and an approval ruleset change are dropped with decision 5; the
-separate steward lane folds into `process/ship-rules`, since the steward's
-procedure is skill text and the coordinator already starts one per PR.
+Four remain, the first a fix. Lanes for an approvals check, its policy and
+founder fact, the gate-path rule, and an approval ruleset change are dropped
+with decision 5; the separate steward lane folds into `process/ship-rules`,
+since the steward's procedure is skill text and the coordinator already starts
+one per PR.
 
-- [ ] The governing verdict by head, rules into the repo, the steward procedure, the prose carry and the delta-only ask gone: `process/ship-rules`
+- [ ] The live verdict-order bug (Fact 17), its own small PR first: `fix/verdict-order`
+- [ ] Rules into the repo, the steward procedure, the prose carry and the delta-only ask gone: `process/ship-rules`
 - [ ] The reviewer's procedure and poster, the coordinator's founder step, the land step gone: `process/ship-code-review`
 - [ ] No force-push or deletion of `main`, one source for it: `process/ship-main-guard`
-- [ ] live: the main-guard ruleset created from its file and read back with no bypass actor, the classic protection's two settings removed, open PRs armed again (after `process/ship-main-guard` merges)
+- [ ] live: the main-guard ruleset created from its file and read back (`current_user_can_bypass` `never` to the arming token), `main`'s classic protection deleted and read back as 404, open PRs armed again (after `process/ship-main-guard` merges)
 
-1. **`process/ship-rules`** (after this PR). First, the live bug (Fact 17):
-   `review_checks.py`'s governing verdict becomes the latest writer verdict on
-   the most recently pushed commit that has one, read from the PR's commit
-   order, with a test (an `APPROVE` on H1 posted after a `BLOCK` on H2, the
-   same change, leaves `review` failing). Then it adds `REVIEW.md` (includes
+0. **`fix/verdict-order`** (now, alone). `review_checks.py`'s decision becomes
+   § Target pipeline step 3's: counted verdicts on commits in the head's
+   history, a `BLOCK` standing until a counted verdict after it on the same
+   commit or a descendant, then the most descendant commit's latest verdict,
+   carried by `carries`; `carries`' docstring loses "a rebase … carries". Its
+   tests, in `scripts/tests/test_review_check.py`, head H2 unless stated,
+   t1 < t2: (1) `BLOCK@H2` t1, `APPROVE@H1` t2, the same change: fail;
+   (2) `APPROVE@H2` t1, `BLOCK@H1` t2, a code delta: fail; (3) as 2, the same
+   change: fail; (4) `BLOCK@H1` t1, `APPROVE@H2` t2: pass; (5) `APPROVE@H1`
+   only, H2 the same change: pass; (6) on H2, `APPROVE` t1 then `BLOCK` t2:
+   fail, and `BLOCK` t1 then `APPROVE` t2: pass; (7) a dismissed review at t2
+   voids the verdicts at or before it; (8) H1 force-pushed away to H1': its
+   verdict is ignored and the check waits; (9) cases 1 to 6 with
+   `--group-sha`, the group following its PR. Gates: those tests, the existing
+   `test_review_check.py` and `test_review_writers.py`, actionlint and
+   `ci_structural_guards.py` if `review.yml` changes, `--untangle-check`.
+1. **`process/ship-rules`** (after this PR and the fix). Adds `REVIEW.md` (includes
    `@.claude/skills/untangle/SKILL.md`; what Important means here; an
    Important finding stands until fixed in code, whatever its thread; the
    founder question; Nits capped; what CI proves not reported; evidence by
@@ -245,8 +282,9 @@ procedure is skill text and the coordinator already starts one per PR.
    `.claude/skills/steward/` mirror (the PR conventions and the steward's
    procedure: fix in touched code, merge the base, re-run a flaky job once,
    reply on each thread, the watch's end and stop, the three-push ceiling, the
-   opt-out marker and label, and act only on comments and commands from an
-   account that can push), with the rules of § Where the host rules land;
+   opt-out marker and label, and act only on comments and commands from the
+   accounts "who counts" names, read as it says), with the rules of § Where
+   the host rules land;
    rewrites the untangle skill's reviewer lines named there; drops `carries`'
    prose rule and rewrites `review_check`'s ask text and its "needs a delta
    review" title to "a fresh review of this head", with `review.yml`'s header,
@@ -260,17 +298,21 @@ procedure is skill text and the coordinator already starts one per PR.
    line), `check_shapes.py`, actionlint and `ci_structural_guards.py` for
    `review.yml`, `tests/test_live_docs_reference_real_scripts.py`,
    `--untangle-check`. The host briefs shrink to mechanics in the same hour.
-2. **`process/ship-code-review`** (after 1). Adds `scripts/review_post.py`
+2. **`process/ship-code-review`** (after 1). First, before building: from a
+   reviewer session, read the collaborator list with the GitHub MCP's
+   `list_repository_collaborators` (read only) and record what it returns.
+   Adds `scripts/review_post.py`
    (format and post one `COMMENT` review on the commit read: the verdict line,
    each finding with its one severity marker, inline where it has a line, the
    founder question; and list the PR's earlier findings by marker, from the
-   reviews and inline comments of authors `push_reader` passes, after
-   `last_base_change`, outdated ones included; it refuses a body whose first
+   reviews and inline comments of the accounts "who counts" names, the writers
+   given as a file from that list, after `last_base_change`, outdated ones
+   included; it refuses a missing or empty writers file, and a body whose first
    line is not `APPROVE` or `BLOCK`, and a `Founder question:` under `APPROVE`)
    and its tests; rewrites the peer-agents skill's reviewer section to the
    find/verify/rank/post procedure (parallel finders, one verifier, REVIEW.md and
    `CLAUDE.md` at `origin/main`, one review per head and one more after a
-   founder answer, every earlier Important listed as fixed, withdrawn or
+   founder answer or a late `BLOCK` on an earlier head, every earlier Important listed as fixed, withdrawn or
    standing, the founder's answer read only from a writer's comment, its own
    fixed threads resolved), replaces its
    `VERDICT: APPROVE|ADAPT|REJECT` contract with the review's, and writes the
@@ -279,29 +321,42 @@ procedure is skill text and the coordinator already starts one per PR.
    the module (a posted review's first line, inline comments on the commit read,
    the two refusals; an outsider's review or comment is not listed, so it can
    neither withdraw a finding nor answer for the founder; a finding before a
-   base change is not listed; a body-only finding is), `validate_skills.py`,
-   `test_skill_mirrors.py`,
+   base change is not listed; a body-only finding is; the repo's own bots are
+   listed; a missing or empty writers file is refused), the recorded real
+   collaborator read, `validate_skills.py`, `test_skill_mirrors.py`,
    `check_context_budget.py`, `--untangle-check`.
-3. **`process/ship-main-guard`** (beside 1 and 2). Adds
+3. **`process/ship-main-guard`** (beside 1 and 2). First, before building:
+   the drift check runs in `auto-enroll-merge.yml` with
+   `MERGE_ATTRIBUTION_TOKEN`, a fine-grained PAT with Contents and Pull
+   requests only, and GitHub returns `bypass_actors` only to a caller with
+   write access to the ruleset. So the check reads
+   `current_user_can_bypass`, which `GET rulesets/{id}` returns to any reader
+   for the calling user, the user every agent acts as. Verify, read only, that
+   the endpoint returns it (from a session, `GET rulesets/24065294` reads
+   `always` for that user) and record what it returns. If it is not returned to
+   a fine-grained PAT, the lane stops and records the read that can see it;
+   it adds no token with Administration write. Then it adds
    `docs/ops/main-guard-ruleset.json` (named `main guard`; the default branch;
    `non_fast_forward` and `deletion`; no bypass actor). `scripts/ruleset_drift.py`
    compares each ruleset file with the live rules of `main` carrying that
    ruleset's id (`ruleset_id`, found by the file's `name`), and reads
-   `GET rulesets/{id}` for `enforcement` and `bypass_actors`: the guard's must be
-   `active` and `[]`, the merge queue's as its file says. So a guard created with
-   a bypass, disabled, or holding a rule that moved to the other file is drift.
-   `docs/host-actions.md` gains the create command and its read-back beside the
-   24065294 `PUT` row, and its classic-protection row is rewritten: once the
-   guard reads back, the classic protection's force-push and deletion settings
-   are removed (its status-check copy is already off), and the row no longer
-   says it blocks an admin. Between the merge and the create, `auto-enroll`
-   arms nothing (drift reports "file only"), as after a `PUT`: arm open PRs
-   again after the read-back. Both acts are the coordinator's (Fact 4; the
-   `live:` line above). Gates: `scripts/tests/test_ruleset_drift.py` (each file
-   against its own ruleset; a bypass actor or `disabled` on the guard is drift;
-   a rule under the wrong ruleset id is drift; the undeclared-rule case's
-   example changes from `deletion`, which the guard declares, to another
-   type), `ruleset_drift.py` exit 0 after the create, `--untangle-check`.
+   `GET rulesets/{id}`: the guard's `enforcement` must be `active` and its
+   `current_user_can_bypass` `never`; an absent field is drift (exit 1), never
+   a pass. So a guard created with the admin bypass, disabled, or holding a rule
+   that moved to the other file is drift. `docs/host-actions.md` gains the
+   create command and its read-back beside the 24065294 `PUT` row, and its
+   classic-protection row is rewritten: once the guard reads back, `main`'s
+   classic protection, which holds only the two settings the guard replaces, is
+   deleted (`DELETE branches/main/protection`, read back as 404). Between the
+   merge and the create, `auto-enroll` arms nothing (drift reports "file
+   only"), as after a `PUT`: arm open PRs again after the read-back. Both acts
+   are the coordinator's (Fact 4; the `live:` line above). Gates:
+   `scripts/tests/test_ruleset_drift.py` (each file against its own ruleset;
+   `always` or an absent `current_user_can_bypass`, or `disabled`, on the guard
+   is drift; a rule under the wrong ruleset id is drift; the undeclared-rule
+   case's example changes from `deletion`, which the guard declares, to
+   another type), `ruleset_drift.py` exit 0 after the create,
+   `--untangle-check`.
 
 ## Founder decisions
 
