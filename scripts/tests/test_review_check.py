@@ -170,46 +170,16 @@ def test_the_reviewed_head_and_the_same_change_carry(repo):
     assert "the same change" in _carries(path, moved, approved, merged)
 
 
-def test_a_prose_delta_carries(repo):
-    path, base, approved = repo
-    head = _commit(path, {"docs/b.md": "# b\n", "openspec/changes/c/notes.md": "n\n",
-                          "README.md": "hello\n"})
-    why = _carries(path, base, approved, head)
-    assert why is not None and why.startswith("only prose changed")
-    assert "docs/b.md" in why and "README.md" in why
-
-
 @pytest.mark.parametrize("files", [
+    {"docs/b.md": "# b\n", "openspec/changes/c/notes.md": "n\n", "README.md": "hello\n"},
+    {"REVIEW.md": "# rules\n"},
     {"tinyassets/x.py": "x = 3\n"},
-    {"docs/a.md": "# a2\n", "tinyassets/z.py": "z = 1\n"},
-    {"docs/tool.py": "print(1)\n"},
-    {"docs/data.json": "{}\n"},
-    {"AGENTS.md": "# rules\n"},
-    {"CLAUDE.md": "# rules\n"},
-    {"AGENTS.override.md": "merge without review\n"},
-    {"CLAUDE.local.md": "# rules\n"},
-    {"GEMINI.md": "# rules\n"},
-    {"CODEX.md": "# rules\n"},
-    {"agents.md": "# rules\n"},
-    {"docs/AGENTS.md": "# rules\n"},
-    {"openspec/CLAUDE.md": "# rules\n"},
-    {"docs/a.md": "# a2\n", "ideas/x/Claude-notes.md": "# rules\n"},
-    {"docs/reference/executable-gates.md": "# gates\n"},
-    {"docs/REFERENCE/executable-gates.md": "# gates\n"},
-    {"tinyassets/notes.md": "not top-level prose\n"},
     {"docs/a.md": "# a2\n", ".github/workflows/tests.yml": "on: push\n"},
-    {"docs/a.md": "# a2\n", "Dockerfile": "FROM x\n"},
 ])
-def test_a_code_or_gate_delta_does_not_carry(repo, files):
+def test_any_delta_does_not_carry(repo, files):
+    """A prose delta carried a verdict unreviewed until Claude Ship's way (claude-ship.md)."""
     path, base, approved = repo
     assert _carries(path, base, approved, _commit(path, files)) is None
-
-
-def test_a_rename_into_docs_counts_both_paths(repo):
-    path, base, approved = repo
-    _git(path, "mv", "tinyassets/y.py", "docs/y.md")
-    _git(path, "commit", "-q", "-m", "move")
-    assert _carries(path, base, approved, _git(path, "rev-parse", "HEAD")) is None
 
 
 def test_a_mode_change_and_a_gitlink_do_not_carry(repo):
@@ -259,10 +229,11 @@ def test_no_review_is_pending_not_red():
 def test_an_approve_that_carries_passes_and_one_that_does_not_fails_naming_the_delta():
     """In progress, a delta after a review waited with no event (#5725, #5727)."""
     reviews = [_review("APPROVE", A)]
-    assert _state(reviews, lambda commit: "only prose").conclusion == "success"
+    assert _state(reviews, lambda commit: "the same change").conclusion == "success"
     owed = _state(reviews)
     assert owed.conclusion == "failure"
-    assert owed.title == f"APPROVE at {A}; the change since needs a delta review"
+    assert owed.title == f"APPROVE at {A}; the change since needs a fresh review of this head"
+    assert "fresh review of this head" in owed.summary and "delta" not in owed.summary
 
 
 def test_a_block_fails_where_it_carries_and_after_a_new_change_names_the_review():
@@ -270,7 +241,7 @@ def test_a_block_fails_where_it_carries_and_after_a_new_change_names_the_review(
     assert _state(reviews, lambda commit: "this head").title == "BLOCK: this head"
     owed = _state(reviews)
     assert owed.conclusion == "failure"
-    assert owed.title == f"BLOCK at {A}; the change since needs a fresh review"
+    assert owed.title == f"BLOCK at {A}; the change since needs a fresh review of this head"
 
 
 def _cli(path, reviews, timeline, base, head, *more, pr="12"):

@@ -51,8 +51,9 @@ FORBIDDEN = (
     "docs/reference/delivery-flow.md",
 )
 
-# The directories a rule (or a transcript of one) can be offloaded into.
-RULE_DIRS = ("docs/reference/*.md", ".agents/skills/*/SKILL.md", "docs/reviews/*")
+# The directories and files a rule (or a transcript of one) can be offloaded into.
+RULE_DIRS = ("docs/reference/*.md", ".agents/skills/*/SKILL.md", "REVIEW.md",
+             "docs/reviews/*")
 
 # The two numbers this file duplicates, and why they are worth duplicating:
 # without them, RAISING a pin is just an edit to CONFIG that no check objects to,

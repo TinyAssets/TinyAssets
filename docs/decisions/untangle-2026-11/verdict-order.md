@@ -47,7 +47,7 @@ form, and two pre-existing holes of the same kind (items 5 and 6).
      most descendant reviewed commit always stands.
    - `review` fails on the newest standing `BLOCK`, naming whether it carries. With none,
      every standing verdict is an `APPROVE`, and the one on the most descendant commit
-     decides: success when it carries to the head, else the delta review it needs.
+     decides: success when it carries to the head, else a fresh review of the head.
    - Two standing commits neither in the other's history (a force-pushed head merged back
      into the line) have no most descendant one: the check fails, asking a review of the
      head, which descends from both and so answers both.
@@ -134,7 +134,8 @@ form, and two pre-existing holes of the same kind (items 5 and 6).
      here returns. Voiding is the read we have, and it fails safe.
 7. **An intended narrowing:** a rebased or force-pushed head no longer carries a verdict
    (`carries`' docstring loses "a rebase … carries"); it waits for a review. `carries` itself
-   is unchanged and still carries a prose delta until `process/ship-rules` drops it.
+   is unchanged here; #5861 (`process/ship-rules`), merged in while this was built,
+   dropped its prose carry, so it carries the same change only.
 8. **Who counts stays `push_reader`.** The design's "who counts" adds this repo's own bots
    for what the reviewer and steward read; `review.yml` keeps `push_reader` (its step 3
    counts the verdicts `latest_verdict` counted). A bot's review counting as a verdict would

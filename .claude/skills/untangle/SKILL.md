@@ -13,7 +13,8 @@ Untangle the code a change touches, or a whole area, and finish the job.
   building, 3 and 4 while building, 5 on its diff before pushing. It fixes
   problems in scope and adds none: no shim, alias, copy of a value, one-caller
   parameter, test-only hook, optional binding or special case. A stale test,
-  guard or rule never blocks a fix: change or delete it in the same PR.
+  guard or rule never blocks a fix: change or delete it in the same PR. It is
+  the PR's steward (the steward skill).
 - **Process first.** A fix to how we build (CI, gates, guards, skills, briefs,
   tooling, review), a cost every PR pays (`scripts/pr_times.py` times them) or
   rework that repeats goes ahead of product work, whose lanes keep running:
@@ -33,33 +34,14 @@ Untangle the code a change touches, or a whole area, and finish the job.
   (`review_checks.py --owed` lists them). The PR ticks its own `tasks.md`
   line, adding none. Before each push, `review_checks.py --untangle-check`
   on the body allows it; a body edit goes on the open PR, which CI reads.
-- **Every reviewer**, whatever engine built the PR, runs step 5's search on it
-  and checks that section; a missing one, `Test-Removal:` line or decision
-  file is a finding. A problem the PR adds or leaves in scope unexplained
-  blocks, and so does any of these: an import edge the layer table refuses or a
-  new `owed` entry, a literal live name or founder number outside configs and
-  data, a code read from message text, a product parameter or binding only a
-  test uses, a copy of a contract value, a per-module allow-list, an enforcer
-  (hook, gate, sandbox check) reading or started under env or files the
-  agent or its settings can write (`NODE_OPTIONS`), or start-checked in an
-  env it does not enforce in, and a change `platform/deploy/platform.json`
-  `forward` lacks.
-  It asks only for what makes the code more correct or simpler, and calls a
-  departure from the decided design better (the log is updated) or a
-  shortcut. It commits its own fixes of up to 50 lines and approves that
-  head; a bigger fix is a `BLOCK` with its diff. A merge of main touching the
-  PR's code fails `review` until its merger asks a re-confirm, which reads
-  only its conflicts.
+- **Every reviewer**, whatever engine built the PR, follows `REVIEW.md`,
+  which includes this skill: it reviews every head and never fixes.
 - After each batch of merges, a step-5 search across everything merged and
   open looks for drift between PRs; unopened branches wait for it.
 - CI is the one full run; a coordinator's prompt adds or drops no check this
   section names. Push a draft once it compiles, having run once only what the
   diff can break (the done-check: `docs/reference/executable-gates.md`), one
-  mutation per declared change. Read only what applies. A reviewer reruns two
-  or three builder mutations and one of each new guard's, and runs the rest
-  for its own fixes only. One review a PR, a second only after a security
-  block.
-  Merge `origin/main` in; never rebase.
+  mutation per declared change. Read only what applies.
 - **Parallel by default:** every PR sharing no file with open work starts now,
   from `main`, never stacked; one blocked on some files starts now without
   them, naming its part 2.

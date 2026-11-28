@@ -33,7 +33,7 @@ LIVE_ROOTS = (
     "docs/runbooks",
     ".agents/skills",
 )
-LIVE_FILES = ("AGENTS.md", "CLAUDE.md")
+LIVE_FILES = ("AGENTS.md", "CLAUDE.md", "REVIEW.md")
 
 REF = re.compile(r"(?<![\w/.-])((?:scripts|tests)/[A-Za-z0-9_./-]+\.(?:py|ps1|sh))")
 

@@ -92,8 +92,9 @@ The records are not image inputs (`template/image.ts` `tag`: `image.py`, the SDK
 spec, the loader and the engines' locks), so the image stays `sb31f0bce0edffd2a`; the runner
 and probes bundles change, so the pair is new.
 
-- [ ] live: the template's pair check (`sandbox-template.yml`) on the merged head passes all
-      nine pi route probes, then the pin PR records it.
+- [x] live: the template's pair check (`sandbox-template.yml`) on the merged head passes all
+      nine pi route probes, then the pin PR records it. Done: run 46112336531 on main
+      f81d40aa6, recorded by #5863.
 - [ ] fix/route-model: the route verdict (`sandbox/runner/route.ts` `routeVerdict`) also
       checks that each model request names the run's model (its body's `model`, or the
       Generative Language path's), so the pair check proves the CLI runs the model it was
