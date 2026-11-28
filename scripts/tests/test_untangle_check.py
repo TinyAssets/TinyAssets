@@ -35,9 +35,21 @@ def test_a_change_to_more_than_prose_needs_the_check() -> None:
     for body in ("## Untangle check\n\nNothing found.\n", "### untangle check\n",
                  "**Untangle check:** nothing found.\n"):
         assert gate.untangle_check_problems(body, CODE) == [], body
-    assert gate.untangle_check_problems("A typo.\n", ["docs/a.md", "README.md"]) == []
-    # Agents' instructions and the gates' rules bind, so they are not prose.
-    assert gate.untangle_check_problems("A typo.\n", ["AGENTS.md"]) != []
+    assert gate.untangle_check_problems(
+        "A typo.\n", ["docs/a.md", "README.md", "openspec/changes/c/notes.md"]) == []
+
+
+# Agents' and the reviewer's instructions and the gates' rules bind, so they are not
+# prose; nor is anything that runs or loads.
+@pytest.mark.parametrize("path", [
+    "AGENTS.md", "CLAUDE.md", "AGENTS.override.md", "CLAUDE.local.md", "GEMINI.md",
+    "CODEX.md", "agents.md", "docs/AGENTS.md", "openspec/CLAUDE.md",
+    "ideas/x/Claude-notes.md", "REVIEW.md", "review.md", "docs/REVIEW.md",
+    "docs/reference/executable-gates.md", "docs/REFERENCE/executable-gates.md",
+    "tinyassets/notes.md", "docs/tool.py", "docs/data.json", "Dockerfile",
+])
+def test_a_binding_or_running_file_needs_the_check(path: str) -> None:
+    assert gate.untangle_check_problems("A typo.\n", ["docs/a.md", path]) != []
 
 
 @pytest.mark.parametrize("section", [

@@ -470,7 +470,7 @@ HISTORY_DIRS = ("openspec/changes/archive/",)
 # Where an agent takes instructions from. Any path deleted in this diff that one
 # of them still cites fails, so a deletion carries its docs, skills and rules.
 INSTRUCTION_FILES = frozenset({
-    "AGENTS.md", "CLAUDE.md", "README.md", "CONTRIBUTING.md",
+    "AGENTS.md", "CLAUDE.md", "REVIEW.md", "README.md", "CONTRIBUTING.md",
     "openspec/config.yaml",
 })
 INSTRUCTION_DIRS = (

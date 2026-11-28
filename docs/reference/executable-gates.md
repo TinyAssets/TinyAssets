@@ -11,7 +11,7 @@ names runs `guards/cutover.test.ts`.
 
 To land, post the verdict as a `COMMENT` review on the commit read, first
 line `APPROVE` or `BLOCK`; auto-merge, armed at open, queues it. A verdict
-carries across only the same change or a prose delta. Over 8 release-critical
+carries across only the same change. Over 8 release-critical
 files: look for a carried lineage. Two counted queue failures on one head
 disarm auto-merge (`queue-handoff`): fix the head or drop the label.
 Rerunning a `pull_request_target` run (scope guard) replays its old body:

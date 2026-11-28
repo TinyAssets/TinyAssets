@@ -239,13 +239,13 @@ def last_base_change(events: list[object]) -> str | None:
 # Prose: Markdown under docs/, openspec/ and ideas/, and the top-level Markdown
 # files, that no agent reads as instructions. Agents' instruction files bind at any
 # depth and in any variant (Codex reads AGENTS.override.md first; Claude reads
-# CLAUDE.local.md and nested CLAUDE.md), and docs/reference/ binds as the gates'
-# rules (AGENTS.md Fact 4), so none of them is prose. The refusals compare
-# case-insensitively, since a checkout on a case-insensitive disk loads either case.
+# CLAUDE.local.md and nested CLAUDE.md), REVIEW.md binds as the reviewer's, and
+# docs/reference/ binds as the gates' rules (AGENTS.md Fact 4), so none of them is
+# prose. The refusals compare case-insensitively, since a checkout on a
+# case-insensitive disk loads either case.
 _PROSE_DIRS = ("docs/", "openspec/", "ideas/")
-_AGENT_INSTRUCTIONS_RE = re.compile(r"(?i)^(AGENTS|CLAUDE|GEMINI|CODEX)([._-].*)?\.md$")
+_AGENT_INSTRUCTIONS_RE = re.compile(r"(?i)^(AGENTS|CLAUDE|GEMINI|CODEX|REVIEW)([._-].*)?\.md$")
 _BINDING_DIRS = ("docs/reference/",)
-_PROSE_MODES = frozenset({b"000000", b"100644"})
 
 
 def is_prose(path: str) -> bool:
@@ -423,10 +423,6 @@ def changed_paths(base: str, head: str, *, cwd: Path | None = None) -> list[str]
             for p in change_entries(_raw_change(base, head, cwd=cwd))]
 
 
-def _modes(meta: bytes | None) -> set[bytes]:
-    return set() if meta is None else set(meta[1:].split(b" ")[:2])
-
-
 def carries(
     base: str,
     approved: str,
@@ -444,9 +440,9 @@ def carries(
 
     1. no path differs: the same change, so a rebase or a
        merge of main that touched none of the PR's files carries;
-    2. every differing path is prose (`is_prose`: Markdown nothing runs or
-       loads), a regular non-executable file on both sides. A gate, a workflow
-       or any code is never prose, so it always gets a fresh review.
+
+    and only then. Any other delta, prose too, gets a fresh review of the new
+    head, as in Claude Ship (docs/decisions/untangle-2026-11/claude-ship.md).
 
     Any git failure, or a commit that cannot be read, is None: a verdict never
     carries across a change nobody can compare.
@@ -460,16 +456,9 @@ def carries(
         now = change_entries(_raw_change(base, head, cwd=cwd))
     except (subprocess.CalledProcessError, ValueError, OSError):
         return None
-    differing = sorted(p for p in then.keys() | now.keys() if then.get(p) != now.get(p))
-    if not differing:
-        return f"the same change as {approved} (every path's blobs and modes unchanged)"
-    names = [p.decode("utf-8", "surrogateescape") for p in differing]
-    if all(
-        is_prose(name) and (_modes(then.get(raw)) | _modes(now.get(raw))) <= _PROSE_MODES
-        for name, raw in zip(names, differing)
-    ):
-        return f"only prose changed since {approved}: {', '.join(names)}"
-    return None
+    if then != now:
+        return None
+    return f"the same change as {approved} (every path's blobs and modes unchanged)"
 
 
 @dataclass(frozen=True)
@@ -497,8 +486,8 @@ def review_check(
     """
     ask = (
         f"A reviewer who can push posts a PR review on the commit it read ({head}), its "
-        "first line `APPROVE` or `BLOCK`, the evidence below. Any other delta after a "
-        "review gets a one-round delta review of only that delta."
+        "first line `APPROVE` or `BLOCK`, the evidence below (REVIEW.md). A head that is "
+        "not the same change as the one reviewed gets a fresh review of this head."
     )
     try:
         verdict = latest_verdict(reviews, can_push=can_push, since=since)
@@ -513,10 +502,10 @@ def review_check(
         return CheckState(None, title, ask)
     why = carry(verdict.commit)
     if why is None:
-        owed = "a fresh review" if verdict.verdict == "BLOCK" else "a delta review"
         return CheckState(
             "failure",
-            f"{verdict.verdict} at {verdict.commit}; the change since needs {owed}",
+            f"{verdict.verdict} at {verdict.commit}; the change since needs a fresh "
+            "review of this head",
             f"{verdict.url}\n\n{ask}",
         )
     if verdict.verdict == "BLOCK":
