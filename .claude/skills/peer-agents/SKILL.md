@@ -33,7 +33,8 @@ HARD CONSTRAINTS ON HOW YOU WORK:
   subprocess, no worktree beyond your own; a reviewer starts no subagent.
 - Do NOT run the full suite; CI does. A builder runs at most the one test
   file needed; a reviewer runs none of the head's code.
-- Budget ~10 minutes, reading the diff and the cited files.
+- Budget ~10 minutes, reading the diff and the cited files; a reviewer,
+  alone on every slice and its verify, ~25.
 - If this brief shares files with another open PR, or the direction it
   assumes has changed, say so and stop rather than working around it.
 ```
@@ -44,7 +45,7 @@ Parallel dispatches are fine once every brief carries the block, each with its o
 
 Claude Ship's Code Review, in a session (`docs/decisions/untangle-2026-11/claude-ship.md`), which reads only the default branch's instructions and never builds or runs the PR's code. Where it runs, for every dispatch:
 
-- **A fresh session in `<main>`, a new detached worktree of `origin/main`**, and no other form: `python <main>/scripts/peer_agent.py claude --review <review> --cwd <main>` after `git fetch origin main pull/<n>/head`, never `--write`. It reads untrusted text, so it is no full agent: it may read its working directories, run main's poster and nothing else, and write only in `<review>`, a new empty directory; anything else is refused, no credential reaches it, and it loads no settings file, skill, plugin, MCP server, hook, custom agent or auto memory (`review_claude_args`). Each dispatch first self-checks that session and refuses to review unless its transcript shows every forbidden act tried and denied, with no effect. A session loads hooks, settings, MCP config and instructions from its working directory at start, so only one started there has main's alone; never a subagent, which keeps its parent's. It reads `REVIEW.md`, its includes, `CLAUDE.md` and this procedure from `<main>`, and runs `python3 -I <main>/scripts/review_post.py`, never another checkout's copy.
+- **A fresh session in `<main>`, a new detached worktree of `origin/main`**, and no other form: `python <main>/scripts/peer_agent.py claude --review <review> --cwd <main>` after `git fetch origin main pull/<n>/head`, never `--write`. It reads untrusted text, so it is no full agent: it may read its working directories, run main's poster and nothing else, and write only in `<review>`, a new empty directory; anything else is refused, no credential reaches it, and it loads no settings file, skill, plugin, MCP server, hook, custom agent or auto memory (`review_claude_args`). Each dispatch first self-checks that session: its transcript must show every forbidden act tried and denied, with no effect. A session loads hooks, settings, MCP config and instructions from its working directory at start, so only one started there has main's alone. It reads `REVIEW.md`, its includes, `CLAUDE.md` and this procedure from `<main>`, and runs `python3 -I <main>/scripts/review_post.py`, never another checkout's copy.
 - **Never the head's code**: it never builds, installs, runs or imports it (tests, scripts, `npm`, a probe that loads it). CI runs the gates; it reads their results on the head (the poster's `read`), but a check from a workflow, or a script it runs, that the head edits or adds proves nothing about the head (`pull_request_target` jobs run main's files). A test it wants is a finding.
 - **The head as git objects only**, through the poster: `review_post.py diff|show|grep|log --repo <o/r> --pr <n> --commit <sha> [--path <p>] [--pattern=<text>]`, never checked out, added as a directory or read with git itself.
 

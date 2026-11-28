@@ -51,6 +51,8 @@ if act.startswith("skip:"):
 if act == "compound":
     uses = [use for n, use in enumerate(uses) if n not in (0, 4)]
     uses.append(("Bash", {"command": f"cat {home}; python3 -c \\"open('{exec_}', 'w').close()\\""}))
+if act == "sidecat":
+    uses.append(("Bash", {"command": f"cat {home} >/dev/null"}))
 if act == "agent":
     uses.append(("Agent", {"prompt": "do acts 1 and 2", "isolation": "worktree"}))
 ids = [f"toolu_{n}" for n in range(len(uses))]
@@ -72,7 +74,7 @@ elif act == "worktree":
     made = os.path.join(os.environ["FAKE_ROOT"], ".claude", "worktrees", "agent-x")
     os.makedirs(made)
     shutil.rmtree(made)
-denied = ids[1:] if act == "undenied" else ids
+denied = ids[1:] if act == "undenied" else ids[:-1] if act == "sidecat" else ids
 print(json.dumps({"type": "result", "permission_denials": [
     {"tool_name": name, "tool_use_id": ident} for (name, _), ident in zip(uses, ids)
     if ident in denied]}))
@@ -142,6 +144,8 @@ def test_a_session_that_tries_and_is_denied_every_act_passes(setup):
     ("exit", "exited 1"),
     # One compound command names both Bash acts' targets, and is neither act.
     ("compound", "exec (never tried), cat (never tried)"),
+    # An allowed call of another form, beside the denied exact act, is caught.
+    ("sidecat", "home (a call naming it was not denied)"),
     *[(f"skip:{n}", f"{name} (never tried)") for n, name in enumerate(
         ("exec", "write", "memory", "read", "cat", "edit", "scratchpad"))],
 ])

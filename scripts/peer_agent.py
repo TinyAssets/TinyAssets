@@ -277,7 +277,8 @@ _MANAGED_ALLOWED: dict[str, object] = {
     "companyAnnouncements": _ANY,
 }
 _MANAGED_PERMISSIONS: dict[str, object] = {
-    "deny": _ANY, "ask": _ANY, "disableBypassPermissionsMode": "disable"}
+    "deny": _ANY, "ask": _ANY, "disableBypassPermissionsMode": "disable",
+    "disableAutoMode": "disable"}
 
 
 def _managed_keys_problem(data: object, where: Path) -> str | None:
@@ -507,6 +508,13 @@ def review_self_check(cmd: list[str], env: dict[str, str], cwd: str, session: st
                 ran.append(f"{act} (never tried)")
             elif any(str(use.get("id")) not in denied for use in tries):
                 ran.append(f"{act} (not denied)")
+        # Any call that names a canary outside the working directories is an
+        # attempt too, whatever its form, and must be denied. The copy is in main's
+        # worktree, which the reviewer may read; its Edit is the exact act above.
+        for name in ("exec", "write", "memory", "home", "scratchpad"):
+            if any(str(paths[name]) in json.dumps(use.get("input"))
+                   and str(use.get("id")) not in denied for use in uses):
+                ran.append(f"{name} (a call naming it was not denied)")
         if ran:
             return ("the reviewer's self-check found acts review mode must refuse that "
                     f"ran or went untried: {', '.join(ran)}; no review dispatched")
@@ -888,8 +896,10 @@ def _main() -> int:
         )
 
     if args.review:
-        # The review continues the very session the self-check ran in, under the
-        # managed settings first checked: any change since is refused.
+        # The review continues the very session the self-check ran in. The managed
+        # sources must still match what was first checked, and pass again, before
+        # `--resume`; what the server sends the review's own launch after that is
+        # the admin's act, out of the threat model (see _MANAGED_DIR).
         session = str(uuid.uuid4())
         try:
             problem = review_self_check(cmd, env, args.cwd, session,

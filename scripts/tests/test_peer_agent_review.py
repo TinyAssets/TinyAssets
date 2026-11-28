@@ -88,9 +88,11 @@ def managed(tmp_path, monkeypatch):
     ('{"allowManagedHooksOnly": false}', "allowManagedHooksOnly to False"),
     ('{"permissions": {"disableBypassPermissionsMode": "no"}}',
      "permissions.disableBypassPermissionsMode to 'no'"),
-    # Sandbox sub-keys are no top-level keys, and permissions holds no disableAutoMode.
+    # Sandbox sub-keys are no top-level keys. disableAutoMode narrows at either level.
     ('{"allowManagedDomainsOnly": true}', "allowManagedDomainsOnly"),
-    ('{"permissions": {"disableAutoMode": "disable"}}', "permissions.disableAutoMode"),
+    ('{"permissions": {"disableAutoMode": "disable"}}', None),
+    ('{"permissions": {"disableAutoMode": "on"}}', "permissions.disableAutoMode to 'on'"),
+    ('{"disableAutoMode": "on"}', "disableAutoMode to 'on'"),
     ('{"permissions": {"allow": ["Bash(*)"]}}', "permissions.allow"),
     ('{"permissions": {"defaultMode": "acceptEdits"}}', "permissions.defaultMode"),
     ('{"policyHelper": {"path": "/usr/local/bin/policy"}}', "policyHelper"),

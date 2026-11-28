@@ -61,7 +61,7 @@ RULE_DIRS = ("docs/reference/*.md", ".agents/skills/*/SKILL.md", "REVIEW.md",
 # TOTALS makes displacement mechanical — a pin may go up only if another comes
 # down by at least as much — while lowering any pin stays free.
 POST_CUT_TOTAL = 4246         # sum of the per-file pins
-POST_CUT_AGGREGATE_TOTAL = 58317   # sum of the directory pins after review prune
+POST_CUT_AGGREGATE_TOTAL = 58305   # sum of the directory pins after review prune
 
 
 
