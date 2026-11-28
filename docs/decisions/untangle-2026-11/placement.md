@@ -220,7 +220,7 @@ ceiling (`tasks.md` questions 6 and 7).
 The retro-check of Fact 15's change and of ADR-039 2.20's replacement: the built, planned and
 open work that says "simultaneous runs", or assumes the sandbox or a key first.
 
-- [ ] `contract/src/control.ts` (`Tiers`, "Hobby 20"), `owner/src/admission.ts`,
+- [ ] `contract/src/control.ts` (`Tiers`), `owner/src/admission.ts`,
   `owner/src/runs.ts`, `doors/src/app.ts` and `doors/src/api-keys.ts` say "simultaneous runs";
   `limits-audit.md`'s tier row and the owner-object and doors specs say a run past them is
   refused `tier_runs`; the site's plans
