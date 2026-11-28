@@ -22,8 +22,9 @@ import re
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -83,10 +84,10 @@ def change_entries(raw: bytes) -> dict[bytes, bytes]:
 # read, so nothing is repeated in the PR body. A trusted workflow turns the
 # standing verdicts (`standing_verdicts`) into the `review` check run on the head:
 #
-# * no verdict on a commit in the head's history -> in progress, "waiting for
-#   review of <head>" (pending, not red);
+# * no verdict standing -> in progress, "waiting for review of <head>" (pending,
+#   not red);
 # * a BLOCK stands -> failure. It stands until a verdict is posted after it on the
-#   same commit or a descendant;
+#   same commit or a descendant (on the head, for a commit force-pushed away);
 # * else the latest verdict on the most descendant reviewed commit, an APPROVE at
 #   A, with `carries(A, head)` -> success;
 # * an APPROVE that does not carry -> failure, naming the review the change since A
@@ -97,7 +98,8 @@ def change_entries(raw: bytes) -> dict[bytes, bytes]:
 # last is not always the one posted last (#5856's reviews, 2026-11-28). A late
 # APPROVE of an earlier head must not void a newer head's BLOCK, nor a late BLOCK
 # of an earlier head lose to an APPROVE of a newer one. Commit order is git
-# ancestry (docs/decisions/untangle-2026-11/verdict-order.md).
+# ancestry, and a review of a commit shows it existed then
+# (docs/decisions/untangle-2026-11/verdict-order.md).
 #
 # COMMENT, not APPROVE, because the one writer account cannot approve its own
 # PR (ADR-038 decision 2).
@@ -129,7 +131,8 @@ class Verdict:
 def standing_verdicts(reviews: list[object], *, head: str,
                       in_line: Callable[[str, str], bool],
                       can_push: Callable[[str], bool],
-                      since: str | None = None) -> list[Verdict]:
+                      since: str | None = None,
+                      edits: Iterable[tuple[str, str]] = ()) -> list[Verdict]:
     """The verdicts that still stand for `head`, newest first.
 
     `reviews` is `GET /repos/{r}/pulls/{n}/reviews`. A review is a verdict when it is
@@ -144,20 +147,29 @@ def standing_verdicts(reviews: list[object], *, head: str,
     a descendant. So a BLOCK stands until one is, and the latest verdict on the most
     descendant commit reviewed always stands.
 
+    An APPROVE of a commit is late, and ignored, when any review (anyone's, of any
+    kind, dismissed ones too) of a descendant was submitted before it: that newer
+    head existed and the APPROVE read an older one. So nothing that removes a
+    newer head's BLOCK (a dismissal, a base change, an edit) lets a late APPROVE of
+    an earlier head through.
+
     A commit force-pushed away is in no order with the head's: an APPROVE on it is
-    ignored, and a writer's BLOCK on it voids every verdict before it, as a
-    dismissal does, so the check waits for a review posted after it. Ignored, that
-    BLOCK would lose to an earlier APPROVE of the same change pushed again.
+    ignored, and a writer's BLOCK on it stands until a counted verdict on the head
+    itself is submitted after it. It answers and voids nothing.
 
     Verdicts are read newest first, and `can_push(login)` is asked once a login,
-    only for a verdict in the head's history that no newer counted verdict already
-    answers: one that is answered cannot decide, so its author's read never holds a
-    PR. When it raises `PermissionUnread`, so does this: that author may be a writer
-    whose BLOCK stands.
+    only for a BLOCK, or an APPROVE that is not late, that no newer counted verdict
+    already answers (in the head's history, one on its commit or a descendant;
+    outside it, one on the head), and for the author of each edit: an answered
+    verdict cannot decide, so its author's read never holds a PR. When it raises
+    `PermissionUnread`, so does this: that author may be a writer whose BLOCK stands.
 
     A dismissed review, by anyone, voids every verdict at or before it: dismissing
     a BLOCK must not bring back the APPROVE it answered (#3989's failure), so the
-    check goes back to waiting until a newer verdict.
+    check goes back to waiting until a newer verdict. An edit by a writer, `(login,
+    when)` from `review_edits`, voids every verdict at or before its time the same
+    way: an edited first line would otherwise turn a BLOCK into an APPROVE, or into
+    no verdict, with no review after it.
 
     `since` is the time the PR's base last changed (`last_base_change`): a review
     submitted before it read a diff against another base, so it counts for nothing.
@@ -166,23 +178,33 @@ def standing_verdicts(reviews: list[object], *, head: str,
     decision cannot read must not shrink into one it can.
     """
     void: tuple[str, int] | None = None
+    seen: list[tuple[str, int, str]] = []
     for review in reviews:
         if isinstance(review, dict) and review.get("state") == "DISMISSED":
             when, ident = review.get("submitted_at"), review.get("id")
             if not (isinstance(when, str) and isinstance(ident, int)):
                 raise ValueError(f"dismissed review {ident!r} has no time or id")
             void = (when, ident) if void is None or (when, ident) > void else void
+    pushes: dict[str, bool] = {}
+    for login, when in edits:
+        if login not in pushes:
+            pushes[login] = can_push(login)
+        if pushes[login] and (void is None or (when, _AFTER_ALL) > void):
+            void = (when, _AFTER_ALL)
     verdicts: list[tuple[str, int, str, Verdict]] = []
     for review in reviews:
         if not isinstance(review, dict):
             raise ValueError(f"not a review: {review!r}")
         state = review.get("state")
-        if state in {"DISMISSED", "PENDING"}:
-            continue
         body = review.get("body") or ""
         commit = review.get("commit_id")
         when = review.get("submitted_at")
         ident = review.get("id")
+        if (state != "PENDING" and isinstance(commit, str) and _SHA_RE.fullmatch(commit)
+                and isinstance(when, str) and isinstance(ident, int)):
+            seen.append((when, ident, commit))
+        if state in {"DISMISSED", "PENDING"}:
+            continue
         if not isinstance(body, str):
             raise ValueError(f"review {ident!r} has no body")
         first = next((line.strip() for line in body.splitlines() if line.strip()), "")
@@ -207,20 +229,62 @@ def standing_verdicts(reviews: list[object], *, head: str,
             lines[older, newer] = in_line(older, newer)
         return lines[older, newer]
 
-    pushes: dict[str, bool] = {}
-    standing: list[Verdict] = []
-    for _, _, login, verdict in sorted(verdicts, key=lambda v: v[:2], reverse=True):
-        outside = not line(verdict.commit, head)
-        if (outside and verdict.verdict == "APPROVE") or any(
-                line(verdict.commit, newer.commit) for newer in standing):
+    def late(when: str, ident: int, commit: str) -> bool:
+        return any((then, other) < (when, ident) and read != commit
+                   and line(read, head) and line(commit, read)
+                   for then, other, read in seen)
+
+    standing: list[tuple[Verdict, bool]] = []
+    for when, ident, login, verdict in sorted(verdicts, key=lambda v: v[:2], reverse=True):
+        inside = line(verdict.commit, head)
+        if inside:
+            answered = any(within and line(verdict.commit, newer.commit)
+                           for newer, within in standing)
+        else:
+            answered = verdict.verdict == "APPROVE" or any(
+                newer.commit == head for newer, _ in standing)
+        if answered or (verdict.verdict == "APPROVE" and late(when, ident, verdict.commit)):
             continue
         if login not in pushes:
             pushes[login] = can_push(login)
-        if pushes[login] and outside:
-            break
         if pushes[login]:
-            standing.append(verdict)
-    return standing
+            standing.append((verdict, inside))
+    return [verdict for verdict, _ in standing]
+
+
+# An edit's time from the timeline (`review_edits`) voids every verdict submitted at
+# or before it, whatever its id.
+_AFTER_ALL = 2**63
+# GitHub sets a review's `updated_at` a second after its `submitted_at` with no edit:
+# of the 249 reviews on #5662 to #5862, read 2026-11-28, 231 had a 0 s gap and 18 had
+# 1 s (docs/decisions/untangle-2026-11/verdict-order.md).
+_EDITED_AFTER_S = 10
+
+
+def review_edits(events: list[object]) -> list[tuple[str, str]]:
+    """Each edited review, `(login, updated_at)`, from `GET /issues/{n}/timeline`.
+
+    The reviews listing has no edit time; the timeline's `reviewed` events carry
+    `updated_at`. A review is edited when that is more than `_EDITED_AFTER_S` after
+    its `submitted_at`. A dismissed one is skipped: its dismissal already voids it.
+    Raises on a `reviewed` event not the API's shape.
+    """
+    edits: list[tuple[str, str]] = []
+    for event in events:
+        if not isinstance(event, dict):
+            raise ValueError(f"not a timeline event: {event!r}")
+        if event.get("event") != "reviewed" or event.get("state") in {"dismissed", "pending"}:
+            continue
+        user = event.get("user")
+        login = user.get("login") if isinstance(user, dict) else None
+        submitted, updated = event.get("submitted_at"), event.get("updated_at")
+        if not (isinstance(login, str) and isinstance(submitted, str)
+                and isinstance(updated, str)):
+            raise ValueError(f"review event {event.get('id')!r} has no author or times")
+        gap = datetime.fromisoformat(updated) - datetime.fromisoformat(submitted)
+        if gap.total_seconds() > _EDITED_AFTER_S:
+            edits.append((login, updated))
+    return edits
 
 
 def in_line(older: str, newer: str, *, cwd: Path | None = None) -> bool:
@@ -556,16 +620,19 @@ def review_check(
     in_line: Callable[[str, str], bool],
     can_push: Callable[[str], bool],
     since: str | None = None,
+    edits: Iterable[tuple[str, str]] = (),
 ) -> CheckState:
     """The `review` check for `head`, from the PR's reviews, `carry(commit)`,
     `in_line(older, newer)` and `can_push(login)` (`standing_verdicts`).
 
-    The newest standing BLOCK fails it. With none, the standing verdict on the most
-    descendant commit decides: all the others are APPROVEs on its ancestors. With no
-    one such commit (two reviewed commits neither in the other's history, after a
-    force-push merged back), the head needs a review. Only reviews after `since`,
-    the PR's last base change, count. A permission that cannot be read is no
-    verdict, its reason in the title and summary: never a pass.
+    The newest standing BLOCK fails it, named; one on a commit outside the head's
+    history names that, and the review of the head that answers it. With none, the
+    standing verdict on the most descendant commit decides: all the others are
+    APPROVEs on its ancestors. With no one such commit (two reviewed commits neither
+    in the other's history, after a force-push merged back), the head needs a
+    review. Only reviews after `since`, the PR's last base change, count, and an
+    edit voids the verdicts before it (`edits`, `review_edits`). A permission that
+    cannot be read is no verdict, its reason in the title and summary: never a pass.
     """
     ask = (
         f"A reviewer who can push posts a PR review on the commit it read ({head}), its "
@@ -574,7 +641,7 @@ def review_check(
     )
     try:
         standing = standing_verdicts(reviews, head=head, in_line=in_line,
-                                     can_push=can_push, since=since)
+                                     can_push=can_push, since=since, edits=edits)
     except PermissionUnread as exc:
         return CheckState(None, f"no verdict counts: {exc}",
                           f"A verdict counts only from an account that can push, and {exc}. "
@@ -585,7 +652,12 @@ def review_check(
             title += f" (the base changed at {since})"
         return CheckState(None, title, ask)
     blocks = [v for v in standing if v.verdict == "BLOCK"]
-    tops = [v for v in standing if all(in_line(o.commit, v.commit) for o in standing)]
+    if blocks and not in_line(blocks[0].commit, head):
+        return CheckState("failure", f"BLOCK at {blocks[0].commit}, which is not in "
+                          f"{head}'s history; a review of {head} after it answers it",
+                          f"{blocks[0].url}\n\n{ask}")
+    tops = [] if blocks else [
+        v for v in standing if all(in_line(o.commit, v.commit) for o in standing)]
     if not (blocks or tops):
         commits = ", ".join(sorted({v.commit for v in standing}))
         return CheckState("failure", f"reviewed commits {commits} are not one line of "
@@ -680,6 +752,7 @@ def _review_check(argv: list[str]) -> int:
             raise ValueError("the reviews or the timeline is not a JSON array")
         state = review_check(
             reviews, base=args.base, head=args.head, since=last_base_change(events),
+            edits=review_edits(events),
             carry=lambda commit: carries(args.base, commit, args.head),
             in_line=in_line, can_push=push_reader(args.repo),
         )
