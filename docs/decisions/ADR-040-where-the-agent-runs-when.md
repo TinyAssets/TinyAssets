@@ -111,8 +111,8 @@ those ADRs' bodies are not edited: only their Status lines point here.
      never what the owner happens to hold. So a vendor withdrawing a path, or the kill
      switch failing a source closed, moves no agent onto a key unless its fallback covers it:
      its runs wait with the offer. A fallback or pin for agent A never runs agent B.
-   - **A newly connected subscription** takes every agent with no pin that its definition
-     allows, at that agent's next input, a fallback agent included. The move is announced once
+   - **A newly connected subscription** takes every agent with no pin whose work's `needs`
+     it meets, at that agent's next input, a fallback agent included. The move is announced once
      per agent: "Your research agent now runs on your Claude plan." A pinned agent stays on
      its pin.
    - So a model that only an API key reaches runs only when the owner chose it. Otherwise
@@ -148,14 +148,22 @@ those ADRs' bodies are not edited: only their Status lines point here.
        stays the last place in every order (decision 5). The owner may leave the sandbox out
        of an order, or reorder the others.
      - `agents[agent].places`: the places one agent may use, under the same check;
+     - `default_places`: the places an agent with no entry of its own may use, under the same
+       check; left out, the platform's orders;
      - `sources[agent]`: a pin (decision 2), naming the source, and for a key its connection;
      - `metered`: `fallback` and `fallback_agents` (decision 2), both off by default (Fact 15).
 
      The default document leaves the table out, so every default above holds. An agent asks
      for a change with `policy_propose`, which the owner answers as a card.
-   - **Keyed by agent, cleared with it.** An agent's entries are keyed by its folder name.
-     They are cleared, as a narrowing that needs no owner session, when that folder is
-     deleted or renamed. So a new agent of the same name starts with none.
+   - **Keyed by a stable agent id.** Every per-agent entry is keyed by an id the owner's
+     object assigns when the agent's folder is first made, never by its folder name.
+     - A rename keeps the id, so it keeps every entry: a run that renames a device-only
+       agent's folder and back changes nothing.
+     - A delete retires the id for good, and its entries with it. No later agent gets that
+       id, so nothing is widened: a new agent of the same name is a new id, under the owner's
+       `default_places` and no grant.
+     - When a delete retires an entry, the owner is told what went: "Your research agent was
+       deleted: its pin to your OpenAI key and its device-only limit went with it."
    - **What an agent's files hold, and what they cannot do.**
      - `agent.json` keeps `needs` (decision 4), and the `engine` and `model` its definition
        is written for.
@@ -206,8 +214,8 @@ those ADRs' bodies are not edited: only their Status lines point here.
    - **How the source order and the place order combine.** The rule is: *the first place in
      the order that can run an acceptable source wins, and the strongest acceptable source
      runs there.*
-     - An acceptable source is one the agent's definition allows, from the subscription
-       group. A metered source is acceptable only by the owner's choice (decision 2). An owner
+     - An acceptable source is one that meets the work's `needs` at the place, from the
+       subscription group, and that the agent's own places allow. A metered source is acceptable only by the owner's choice (decision 2). An owner
        who wants one source for an agent pins it.
      - The places are tried in the rule's order. At each place, the strongest acceptable
        source that place can take runs.

@@ -253,13 +253,14 @@ open work that says "simultaneous runs", or assumes the sandbox or a key first.
 - [ ] Whether a Claude scheduled task loads the owner's custom TinyAssets connector (ADR-034's
   owed #106037 probe), before the rule offers it own-agent work (`untangle/place-rule`).
 - [ ] `agent.json`'s `credential` and `connection` (`contract/src/agent-definition.ts`,
-  honoured at `owner/src/runs.ts` `choose`) pin a source or a key in a file any full-grant run
-  writes. They are retired, and the owner policy document gains the `places` table with its
-  check keeping `sandbox` last (`untangle/place-shapes`).
+  honoured at `owner/src/runs.ts` `choose`, written today by the owner app's form,
+  `doors/app/app.js`, and its end-to-end test) pin a source or a key in a file any
+  full-grant run writes. They are retired with the form's fields, and the owner policy
+  document gains the `places` table: its check keeping `sandbox` last, stable agent ids a
+  rename keeps, and a delete retiring an id's entries with a notice (`untangle/place-shapes`).
 - [ ] `choose` reads an engine or model that `agent.json` names as a preference among the
-  sources the policy allows, judges "no subscription can take the run" by the work's
-  `needs`, and clears an agent's `places` entries when its folder is deleted or renamed, with
-  the tests `tasks.md`'s PL2 lists (`untangle/place-rule`).
+  sources the policy allows, and judges "no subscription can take the run" by the work's
+  `needs`, with the tests `tasks.md`'s PL2 lists (`untangle/place-rule`).
 - [ ] `cli.unattended`'s `read_note` has no record using it now that Codex's page was read
   directly; the rewrite by place keeps or deletes it (`untangle/place-shapes`).
 - [ ] The owner app's sources screen offers each vendor's own connect first and an API key
