@@ -893,8 +893,10 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       }
       const created = await this.#create(network!, ceilings, route);
       // Named before anything else awaits, as a move's is: a fault reading its window after
-      // leaves it the authority's, never unnamed.
-      this.#replaced(authority, created.sandboxID, Date.now(), 0);
+      // leaves it the authority's, never unnamed. Its window is the create's own timeout until
+      // E2B's read says it to the moment.
+      this.#replaced(authority, created.sandboxID,
+                     Date.now() + ceilings.runtime_ceiling_s * 1000, 0);
       const info = await e2b.info(created.sandboxID);
       if (info !== null) {
         this.#sql.exec("UPDATE sandboxes SET end_at = ? WHERE sandbox_id = ?",
