@@ -127,13 +127,17 @@ import { CONTROL_MIGRATIONS } from "./schema";
 import type { SandboxEnv } from "./env";
 import { SLOTS, type SandboxSlots } from "./slots";
 
-/** A runner command answered 0 or 3, and its output: any other exit is a fault, thrown. */
+/**
+ * A runner command answered 0 or 3, its output and what it said why (its last line on stderr,
+ * past any of Node's own warnings): any other exit is a fault, thrown.
+ */
 function answered(command: WorkerCommand | OwnCommand, done: Exec):
-    { code: number; out: string } {
+    { code: number; out: string; why: string } {
   if (done.exitCode !== EXIT.ok && done.exitCode !== EXIT.no) {
     throw new Error(`ta-runner ${command} failed (${done.exitCode}): ${done.stderr}`);
   }
-  return { code: done.exitCode, out: done.stdout };
+  return { code: done.exitCode, out: done.stdout,
+           why: done.stderr.trim().split("\n").at(-1) ?? "" };
 }
 
 /**
@@ -271,8 +275,9 @@ const MOVE_STUCK_TRIES = 3;
  * of the owner's run at once: 16 MiB, an eighth of the isolate's 128 MiB, since other owners'
  * objects may share the isolate and move at once (each owner's moves run one at a time on its
  * own chain). A carry is the engines' sign-ins and the session copies the owner's files lack
- * (the rest a resume fetches), the mirror's session rows and the workspace's links, empty
- * folders and unnamed entries; a larger one fails the try, counted.
+ * (the rest a resume fetches), the mirror's session rows, the workspace's folders, and what of
+ * it no sync holds (its links, its unnamed entries, a run user's own `0700` folders and `0600`
+ * files); a larger one fails the try, counted.
  */
 const CARRY_MAX_BYTES = 16 * 1024 * 1024;
 
@@ -779,7 +784,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   }
 
   async #run(box: Box, argv: readonly [WorkerCommand, ...string[]], timeoutMs = COMMAND_MS):
-      Promise<{ code: number; out: string }> {
+      Promise<{ code: number; out: string; why: string }> {
     return answered(argv[0], await this.#exec(box, argv, timeoutMs));
   }
 
@@ -788,7 +793,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    * to a runner it keeps, whatever that one speaks.
    */
   async #own(box: Box, argv: readonly [OwnCommand, ...string[]], timeoutMs = COMMAND_MS):
-      Promise<{ code: number; out: string }> {
+      Promise<{ code: number; out: string; why: string }> {
     if (box.runner !== this.#digest) {
       throw new Error(`${argv[0]} goes to this Worker's own runner alone`);
     }
@@ -1202,8 +1207,9 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       const out = await this.#own(old, [COMMAND.carryOut, authority, budget(carryUntil)],
                                   carryUntil - Date.now()).finally(() => { this.#until = until; });
       if (out.code === EXIT.no) {
-        this.#moveFailed(authority, tries,
-                         "a job lives in it, or its workspace holds what no sync has sent");
+        // Named as its runner names it: a job living, an unsent change, an entry not carried.
+        this.#moveFailed(authority, tries, out.why === "" ? "its runner carried nothing"
+          : out.why);
         return;
       }
       const carry = answerOf<CarryAnswer>(out.out, ANSWERS[COMMAND.carryOut]);

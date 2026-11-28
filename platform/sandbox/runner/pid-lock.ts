@@ -1,9 +1,11 @@
 /**
  * The one lock the runner takes (an engine's store, a pool user, the sync agent's turn): a
- * file naming its holder, `<pid> <boot>`, made whole beside its name and linked into place,
- * so no lock is ever seen half made. A lock is taken over once its holder is gone: its
- * process dead, or of another boot or an unknown one (a pid repeats after a reboot, which a
- * lock on disk outlives), by one taker alone (`takeOver`). A taker that cannot read its own
+ * file naming its holder, `<pid> <boot> <start>` (`holderLine`; a lock of an earlier runner's
+ * names no start), made whole beside its name and linked into place, so no lock is ever seen
+ * half made. A lock is taken over once its holder is gone: its process dead, of another boot
+ * or an unknown one (a pid repeats after a reboot, which a lock on disk outlives), or begun at
+ * another time than it names (a pid used again within the boot), by one taker alone
+ * (`takeOver`). A taker that cannot read its own
  * boot's id takes nothing and fails loudly. A wait sleeps, so the waiter's event loop goes
  * on (a run's heartbeats), at `FIRST_MS` and backing off to at most `MOST_MS`, and fails
  * loudly past its bound.
@@ -57,9 +59,28 @@ function held(path: string, boot: string): boolean {
   return holderOf(path, boot) !== null;
 }
 
-/** The pid a file of the lock's form (`<pid> <boot>`) names while it lives in this boot. */
+/**
+ * The pid a file of the lock's form (`holderLine`) names while that process lives in this boot,
+ * begun when the file says.
+ */
 export function liveHolder(path: string): number | null {
   return holderOf(path, bootId());
+}
+
+/** This process as a lock names its holder: its pid, this boot's id and its start. */
+export function holderLine(): string {
+  return `${process.pid} ${bootId()} ${String(startOf(process.pid))}`;
+}
+
+/** A process's start, in clock ticks since boot (`/proc/<pid>/stat`, its 22nd field), or null. */
+function startOf(pid: number): string | null {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    // The fields after the command's name, which may hold spaces, closed by its last `)`.
+    return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19] ?? null;
+  } catch {
+    return null;
+  }
 }
 
 function holderOf(path: string, boot: string): number | null {
@@ -72,8 +93,9 @@ function holderOf(path: string, boot: string): number | null {
     }
     throw error;
   }
-  const [pid, of] = text.split(" ");
-  return of === boot && alive(Number(pid)) ? Number(pid) : null;
+  const [pid, of, began] = text.split(" ");
+  return of === boot && alive(Number(pid))
+    && (began === undefined || startOf(Number(pid)) === began) ? Number(pid) : null;
 }
 
 /** The identity of the file at `path` (its inode), or null when there is none. */
@@ -132,7 +154,7 @@ export function tryLock(path: string): boolean {
   const temp = `${path}.${randomBytes(6).toString("hex")}`;
   const fd = openSync(temp, "wx", 0o600);
   try {
-    writeSync(fd, `${process.pid} ${boot}`);
+    writeSync(fd, holderLine());
   } finally {
     closeSync(fd);
   }

@@ -51,10 +51,9 @@
  *   (`/scratch`, `scratch.ts`) is outside `/workspace`, so never synced.
  */
 import { sha256Hex } from "../../contract/src/digest";
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, readdirSync,
-         readFileSync, renameSync, type Stats } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, renameSync,
+         type Stats } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -1406,53 +1405,51 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
  * sync agent's own), and refused (false, its caller dropping `dir`) while the workspace holds
  * anything sync-out would send or remove, by sync-out's own rules: a file it would offer
  * (`differs`, against its row: a file with no row or another identity) or a row it would remove
- * (`rowOut`). The workspace's files are not carried: the next sandbox's first sync-in reads
- * them from the owner's files, as a new sandbox's does. What is carried:
+ * (`rowOut`). The workspace's files the sync holds are not carried: the next sandbox's first
+ * sync-in reads them from the owner's files, as a new sandbox's does. What is carried:
  * - `dir/mirror.db`, a mirror of every session row (what the owner's files hold of each store
  *   copy, carried with the store), its cursor 0;
- * - `dir/workspace.tar`, what no sync can hold and the walk meets (`walkTree`, the sync-ignore's
- *   own `skip`): each link (its target as it is), each empty directory, and each entry whose
- *   name is not UTF-8 (whatever it is, its tree with it), by `tar`, which keeps a link as one
- *   and a name as its bytes; `dir/odd.list` names them, so the next sandbox gives each
- *   sync-in's own modes (`carryIn`).
- * What the sync-ignore keeps out is the working copy's own, never carried; nor is a mode
- * alone, which no row keeps; nor a socket or a device, which `tar` passes over; nor what this
- * user may not read (a folder it may not list, a file or an unnamed entry it may not read: a
- * run user's own, `0700` or `0600`), which no sync-out sends either.
+ * - `dir/dirs.json`, every folder the walk met (`walkTree`, the sync-ignore's own `skip`), so
+ *   each comes back, an empty one or one whose entries no sync holds among them;
+ * - `dir/entries.list`, what of the workspace no sync can hold, by each path's bytes from its
+ *   top, NUL-ended, for the root runner to pack with its owner and mode: each link (but the
+ *   projection's own, `made`, which the next sync-in makes again), each entry whose name is not
+ *   UTF-8, and each this user may not read (a folder it may not list, a file it may not read: a
+ *   run user's own, `0700` or `0600`), whole.
+ * What the sync-ignore keeps out is the working copy's own, never carried; nor is a mode alone
+ * of a file the sync holds, which no row keeps; nor a socket, which no run's state is.
  */
 export async function carryOut(place: Pick<Place, "local" | "authority">, mirror: Mirror,
-                               dir: string, withinMs: number): Promise<boolean> {
-  const until = performance.now() + withinMs;  // this process's own clock: no guest skew
+                               dir: string, made: ReadonlySet<string>): Promise<boolean> {
   const { ignored, skip } = selection(place, mirror);
-  const odd: Buffer[] = [];
   const top = Buffer.from(`${place.local}/`);
-  let last: Buffer | null = null;
-  // A folder this user may not list is no empty one: the walk tells it, and it is passed over.
+  const dirs: string[] = [];
+  const whole: Buffer[] = [];
+  // A folder this user may not list is no empty one: the walk tells it, and it goes whole.
   const unlisted = new Set<string>();
   for (const met of walkTree(place.local, { skip, unlisted: (rel) => unlisted.add(rel) })) {
-    const at = typeof met.at === "string" ? Buffer.from(met.at) : met.at;
     if (met.kind === "unnamed") {
-      if (readable(met.at)) {
-        odd.push(at);
-      }
+      whole.push(met.at.subarray(top.length));
     } else if (met.kind === "file") {
-      // One sync-out would send: another identity than its row's, and readable (one it may not
-      // read it skips, `offer`).
+      // One this user may not read is no sync's (it skips it, `offer`): it goes whole. One it
+      // may read and sync-out would send holds the carry.
       const path = `${WORKSPACE}/${met.rel}`;
       const stat = fileStat(localOf(place, path));
-      if (stat !== null && await differs(place, path, stat, mirror.get(path))
-          && readable(met.at)) {
+      if (!readable(met.at)) {
+        whole.push(Buffer.from(met.rel));
+      } else if (stat !== null && await differs(place, path, stat, mirror.get(path))) {
         return false;
       }
     } else if (met.kind === "passed") {
       if (lstatSync(met.at, { throwIfNoEntry: false })?.isSymbolicLink() === true
-          && !skip(met.rel, false)) {
-        odd.push(at);
+          && !skip(met.rel, false) && !made.has(met.at)) {
+        whole.push(Buffer.from(met.rel));
       }
-    } else if (!unlisted.has(met.rel) && (last === null || !under(last, at))) {
-      odd.push(at);  // a directory left with nothing met in it: empty
+    } else if (unlisted.has(met.rel)) {
+      whole.push(Buffer.from(met.rel));
+    } else {
+      dirs.push(met.rel);
     }
-    last = at;
   }
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   // The rows a page at a time, each session row written as it comes.
@@ -1472,19 +1469,9 @@ export async function carryOut(place: Pick<Place, "local" | "authority">, mirror
   } finally {
     out.close();
   }
-  // Each name by its bytes from the workspace's top, NUL-ended, as `tar` reads a list.
-  const list = join(dir, "odd.list");
-  safeWrite(dir, list, Buffer.concat(odd.flatMap((at) => [at.subarray(top.length),
-                                                           Buffer.from([0])])), 0o600);
-  // What under an unnamed tree this user may not read is passed over, as the walk passes it.
-  const done = spawnSync("tar", ["-c", "-f", join(dir, "workspace.tar"), "-C", place.local,
-                                 "--ignore-failed-read", "--null", "-T", list],
-                         { encoding: "utf8",
-                           timeout: Math.max(1, Math.floor(until - performance.now())) });
-  if (done.status !== 0) {
-    throw new Error(`the workspace's links, empty folders and unnamed entries could not be ${
-      ""}packed (${String(done.status ?? done.signal)}): ${done.stderr}`);
-  }
+  safeWrite(dir, join(dir, "dirs.json"), new TextEncoder().encode(JSON.stringify(dirs)), 0o600);
+  safeWrite(dir, join(dir, "entries.list"),
+            Buffer.concat(whole.flatMap((rel) => [rel, Buffer.from([0])])), 0o600);
   return true;
 }
 
@@ -1499,66 +1486,16 @@ function readable(at: string | Buffer): boolean {
   }
 }
 
-/** Whether `inner`'s path is under `outer`'s (each a path's bytes). */
-function under(inner: Buffer, outer: Buffer): boolean {
-  return inner.length > outer.length + 1 && inner[outer.length] === 0x2f
-    && inner.subarray(0, outer.length).equals(outer);
-}
-
 /**
  * A move's carry (`carryOut`'s `dir`, in a new sandbox) put in place: the carried mirror as this
- * sandbox's (`mirrorPath`), and the workspace's links, empty folders and unnamed entries into
- * `local` under GNU tar's stated defaults (a member's leading `/` stripped and one whose name
- * holds `..` refused, so nothing lands outside it; a link it makes that could lead out is made
- * last, so no member is written through one), each then given sync-in's own modes
- * (`syncModes`). A sandbox that already holds a mirror is no new one, and is refused, changing
- * nothing.
+ * sandbox's (`mirrorPath`); the root runner puts back the workspace's folders and entries. A
+ * sandbox that already holds a mirror is no new one, and is refused, changing nothing.
  */
-export function carryIn(local: string, dir: string, mirrorPath: string, withinMs: number): void {
+export function carryIn(dir: string, mirrorPath: string): void {
   if (existsSync(mirrorPath)) {
     throw new Error("this sandbox holds a mirror already: a carry goes into a new sandbox only");
   }
-  const done = spawnSync("tar", ["-x", "-f", join(dir, "workspace.tar"), "-C", local,
-                                 "--no-same-owner"],
-                         { encoding: "utf8", timeout: Math.max(1, withinMs) });
-  if (done.status !== 0) {
-    throw new Error(`the workspace's carry could not be put in place (${
-      String(done.status ?? done.signal)}): ${done.stderr}`);
-  }
-  syncModes(local, readFileSync(join(dir, "odd.list")));
   renameSync(join(dir, "mirror.db"), mirrorPath);
-}
-
-/**
- * The entries a carry put back (`list`, each by its path's bytes from `local`, NUL-ended) given
- * sync-in's own modes (`theirs`), which `tar` made under this process's umask: each folder on
- * the way and in its tree `02775`, a file `0664`, or `0775` where it ran, so the run users
- * (group `ta`) write into them as before the move; a link as it is. Only what this user made is
- * touched, its own and nothing else running in the sandbox. The walk never carries a client's
- * read-only trees, so none is here.
- */
-function syncModes(local: string, list: Buffer): void {
-  const top = Buffer.from(`${local}/`);
-  for (let from = 0, end = list.indexOf(0); end >= 0; from = end + 1, end = list.indexOf(0, from)) {
-    const rel = list.subarray(from, end);
-    for (let slash = rel.indexOf(0x2f); slash > 0; slash = rel.indexOf(0x2f, slash + 1)) {
-      syncMode(Buffer.concat([top, rel.subarray(0, slash)]), false);
-    }
-    syncMode(Buffer.concat([top, rel]), true);
-  }
-}
-
-function syncMode(at: Buffer, tree: boolean): void {
-  const stat = lstatSync(at, { throwIfNoEntry: false });
-  if (stat === undefined || stat.isSymbolicLink() || stat.uid !== process.getuid!()) {
-    return;
-  }
-  chmodSync(at, stat.isDirectory() ? 0o2775 : (stat.mode & 0o111) !== 0 ? 0o775 : 0o664);
-  if (tree && stat.isDirectory()) {
-    for (const name of readdirSync(at, { encoding: "buffer" })) {
-      syncMode(Buffer.concat([at, Buffer.from("/"), name]), true);
-    }
-  }
 }
 
 /**

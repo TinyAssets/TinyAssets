@@ -97,7 +97,7 @@ import { binPath, dispatcherArgv, HOMES, type Invocation, invocation, isKept,
 import { DECIDE_ENV, DECIDE_MS, helperArgv, helperCommand, hookTools } from "./decide";
 import { FLUSH_MS, HEARTBEAT_MS, lineEvent, Outbox, Poster } from "./frames";
 import { remove, safeDirs, safePieces, safeRead, safeWrite, walkFiles } from "./fsafe";
-import { alive, bootId, liveHolder, withLock } from "./pid-lock";
+import { alive, holderLine, liveHolder, withLock } from "./pid-lock";
 import { ancestorEnvFile, definitionRefusal, envScanReach, homeEnvFile, projectEnvFile,
          projectEnvRefusal, secretAtoms } from "./guards";
 import { project, skillsOf } from "./project";
@@ -122,7 +122,8 @@ import { type Bounded, dropHome, engineEnv, GENERATIONS, homeOf, keepHome, KILLE
          loginFiles, nextGeneration, readJson, record, shared, sortedWalk, spawnBounded, STORE,
          systemOf, withRunUser, withStore } from "./session";
 import { checkFormat, dropRunners } from "./state-format";
-import { asUser, E2B_USER, killAll, POOL_PREFIX, SYNC_HOME, SYNC_USER, user } from "./users";
+import { asUser, E2B_USER, group, killAll, POOL_PREFIX, SHARED_GROUP, SYNC_HOME, SYNC_USER, user,
+         users } from "./users";
 
 const STATE = STATE_DIR;
 /** Each agent's stamp of its scratch's last use (`scratch.ts`), and the runner's reserve. */
@@ -778,14 +779,98 @@ function ownTree(dir: string, owner: { uid: number; gid: number }): void {
 }
 
 /**
+ * The workspace's entries no sync holds, as a carry packs them (`carry-out`, from the sync
+ * agent's `entries.list`), root's: each link, each entry whose name is not UTF-8, and each the
+ * sync agent may not read, with its owner and mode.
+ */
+const CARRY_WORKSPACE = `${STATE}/carry-workspace.tar`;
+/** The list `carry-out` packs `CARRY_WORKSPACE` from, read into root's own directory. */
+const CARRY_ENTRIES = `${STATE}/carry.entries`;
+
+/**
+ * Whom what a carry packs of the workspace may belong to, and so be put back as: the run users
+ * and the sync agent, and of groups theirs and `ta`, the only ones a sandbox's runs write as.
+ */
+function carriedOwners():
+    { readonly uids: ReadonlySet<number>; readonly gids: ReadonlySet<number> } {
+  const ours = users().filter((each) => each.name.startsWith(POOL_PREFIX)
+    || each.name === SYNC_USER);
+  return { uids: new Set(ours.map((each) => each.uid)),
+           gids: new Set([...ours.map((each) => each.gid), group(SHARED_GROUP)]) };
+}
+
+/** A workspace path's bytes as a person reads it, a name not UTF-8 escaped. */
+function shown(at: Buffer): string {
+  return JSON.stringify(at.toString("latin1"));
+}
+
+/**
+ * Why the workspace's entry at `rel` (its path's bytes from the workspace's top) is not packed
+ * as it is, or null: a link or no folder on its path; or, in it or anywhere in its tree, which
+ * `tar` takes whole, a device, or an owner outside `carriedOwners`. Read by `lstat` alone, no
+ * link followed: nothing else runs in the sandbox while a carry does (`carry-out` stops what a
+ * run left behind first), so nothing changes it between this and the pack.
+ */
+function notCarried(rel: Buffer, owners: ReturnType<typeof carriedOwners>): string | null {
+  const parts: Buffer[] = [];
+  for (let from = 0, at = rel.indexOf(0x2f); ; from = at + 1, at = rel.indexOf(0x2f, from)) {
+    parts.push(rel.subarray(from, at < 0 ? rel.length : at));
+    if (at < 0) {
+      break;
+    }
+  }
+  let at = Buffer.from(WORKSPACE);
+  for (const part of parts) {
+    if (part.length === 0 || part.equals(Buffer.from("..")) || part.equals(Buffer.from("."))) {
+      return `${shown(rel)} is no path under the workspace`;
+    }
+    if (at.length > WORKSPACE.length
+        && lstatSync(at, { throwIfNoEntry: false })?.isDirectory() !== true) {
+      return `${shown(at)} is no folder, on ${shown(rel)}'s path`;
+    }
+    at = Buffer.concat([at, Buffer.from("/"), part]);
+  }
+  return treeNotCarried(at, owners);
+}
+
+function treeNotCarried(at: Buffer, owners: ReturnType<typeof carriedOwners>): string | null {
+  const stat = lstatSync(at, { throwIfNoEntry: false });
+  if (stat === undefined) {
+    return `${shown(at)} is gone`;
+  }
+  if (stat.isBlockDevice() || stat.isCharacterDevice()) {
+    return `${shown(at)} is a device`;
+  }
+  if (!owners.uids.has(stat.uid) || !owners.gids.has(stat.gid)) {
+    return `${shown(at)} is ${stat.uid}:${stat.gid}'s, outside the run users and group ta`;
+  }
+  if (stat.isDirectory()) {
+    for (const name of readdirSync(at, { encoding: "buffer" })) {
+      const why = treeNotCarried(Buffer.concat([at, Buffer.from("/"), name]), owners);
+      if (why !== null) {
+        return why;
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * `carry-out <authority> <ms>` (a template move, `control.ts` `#moveIdle`, in the sandbox it
  * leaves): what lives in this sandbox alone and no sync holds packed into `CARRY_FILE`, root's
- * alone: `CARRIED` (each session copy the owner's files hold as it is left out, by the sync
- * mirror's rows of them), and the sync's carry (`carryOut`, by the sync agent as itself, for
- * that authority's sandbox); answered by the archive's size and SHA-256. Refused (3), packing
- * nothing, while a job lives or the workspace holds what sync-out would send. Every step stops
- * within `ms`, on this process's own clock, and a carry that does not end by then leaves no
- * archive. Nothing else changes, so a move that goes no further leaves the sandbox as it was
+ * alone, answered by the archive's size and SHA-256:
+ * - `CARRIED`, each session copy the owner's files hold as it is left out (by the sync
+ *   mirror's rows of them);
+ * - the sync agent's carry (`carryOut`, as itself, for that authority's sandbox): its session
+ *   rows, the workspace's folders, and the list of its entries no sync holds;
+ * - those entries (`CARRY_WORKSPACE`), packed by root with their owner and mode.
+ * Every process a run left behind is stopped first (every run user's, as `take` stops a run
+ * user's before a run), so nothing of a run's writes in the workspace while it is walked and
+ * packed; the sync agent's own are ordered by its lock, and make no link on a carried path. Refused (3), packing
+ * nothing and naming why, while a job lives, the workspace holds what sync-out would send, or
+ * an entry no sync holds cannot be carried as it is (`notCarried`). Every step stops within
+ * `ms`, on this process's own clock, and a carry that does not end by then leaves no archive.
+ * Nothing else changes, so a move that goes no further leaves the sandbox as it was
  * (`carry-drop`, or its next `prepare`, stops it and drops an archive).
  */
 async function carryOutCommand(authority: string, withinArg: string): Promise<number> {
@@ -798,32 +883,52 @@ async function carryOutCommand(authority: string, withinArg: string): Promise<nu
     return NO;
   }
   await stopCarry();
+  for (const each of users().filter((one) => one.name.startsWith(POOL_PREFIX))) {
+    await killAll(each);  // what a run's runner that died left behind, as `take` kills it
+  }
   for (const dir of CARRIED) {
     safeDirs("/", dir, 0o700);
   }
-  safeWrite(STATE, CARRY_PID, new TextEncoder().encode(
-    `${process.pid} ${bootId()} ${String(startOf(process.pid))}`), 0o600);
+  safeWrite(STATE, CARRY_PID, new TextEncoder().encode(holderLine()), 0o600);
   const list = `${STATE}/carry.list`;
   try {
     const { sessions, seen } = storeSessions(authority);
     keepSeen(seen);  // what it hashed kept, so a try cut short hashes no copy twice
     const { report } = await syncAgent({ direction: "carry-out", authority,
-                                         paths: sessions.map((each) => each.path),
-                                         within: left(until) }, atUntil(until));
+                                         paths: sessions.map((each) => each.path) },
+                                       atUntil(until));
     if (report?.["carried"] !== true) {
       process.stderr.write("ta-runner: the workspace holds what no sync has sent; nothing is " +
                            "carried\n");
       return NO;
     }
+    // The workspace's entries no sync holds, as the sync agent listed them, each checked.
+    const entries = safeRead(SYNC_HOME, join(SYNC_CARRY, "entries.list"));
+    if (entries === null) {
+      throw new Error("the sync agent's carry holds no list of the workspace's entries");
+    }
+    const owners = carriedOwners();
+    for (let from = 0, end = entries.indexOf(0); end >= 0;
+         from = end + 1, end = entries.indexOf(0, from)) {
+      const why = notCarried(entries.subarray(from, end), owners);
+      if (why !== null) {
+        process.stderr.write(`ta-runner: ${why}: nothing is carried\n`);
+        return NO;
+      }
+    }
+    safeWrite(STATE, CARRY_ENTRIES, entries, 0o600);
+    tarUntil(["-c", "-f", CARRY_WORKSPACE, "-C", WORKSPACE, "--numeric-owner", "--null", "-T",
+              CARRY_ENTRIES], until, "packed");
     const known = (report["known"] ?? {}) as Record<string, Held>;
-    const owners = new Set(sessions.filter((each) => synced(each, known[each.path]))
+    const held = new Set(sessions.filter((each) => synced(each, known[each.path]))
       .map((each) => `${STORE}/${each.rec.id}/${each.rel}`));
     // Each entry by its path in the state directory, NUL-ended, as `tar` reads a list: the two
-    // directories, then each file of theirs the carry holds.
-    const entries = [...CARRIED.map((dir) => relative(STATE, dir)),
-                     ...CARRIED.flatMap((dir) => [...walkFiles(dir)].map((rel) => join(dir, rel))
-                       .filter((path) => !owners.has(path)).map((path) => relative(STATE, path)))];
-    safeWrite(STATE, list, new TextEncoder().encode(entries.map((each) => `${each}\0`).join("")),
+    // directories, each file of theirs the carry holds, and the workspace's entries.
+    const state = [...CARRIED.map((dir) => relative(STATE, dir)),
+                   ...CARRIED.flatMap((dir) => [...walkFiles(dir)].map((rel) => join(dir, rel))
+                     .filter((path) => !held.has(path)).map((path) => relative(STATE, path))),
+                   relative(STATE, CARRY_WORKSPACE)];
+    safeWrite(STATE, list, new TextEncoder().encode(state.map((each) => `${each}\0`).join("")),
               0o600);
     tarUntil(["-c", "-f", CARRY_FILE, "-C", STATE, "--no-recursion", "--null", "-T", list],
              until, "packed");
@@ -840,22 +945,24 @@ async function carryOutCommand(authority: string, withinArg: string): Promise<nu
     throw error;
   } finally {
     remove(list);
+    remove(CARRY_ENTRIES);
+    remove(CARRY_WORKSPACE);
     remove(SYNC_CARRY);
     remove(CARRY_PID);
   }
 }
 
 /**
- * A carry-out under way stopped (`CARRY_PID`: its process, while it lives in this boot and
- * began when the file says, so a pid used again names no other), its own `tar` first, then
- * itself, then its sync agent: nothing lives in a sandbox a carry runs in, so every process of
- * the sync agent's user is the carry's. Then what a carry leaves: its pid, its sync agent's
- * carry and the archive, a copy of the sign-ins.
+ * A carry-out under way stopped (`CARRY_PID`, its process while it lives in this boot as begun
+ * when the file says, `liveHolder`, so a pid used again names no other): its own `tar` first,
+ * then itself, then its sync agent (nothing lives in a sandbox a carry runs in, so every
+ * process of the sync agent's user is the carry's). Then what a carry leaves: its pid, its
+ * lists, its sync agent's carry and the archives, copies of the sign-ins and the workspace's
+ * own.
  */
 async function stopCarry(): Promise<void> {
   const pid = liveHolder(CARRY_PID);
-  const began = existsSync(CARRY_PID) ? readFileSync(CARRY_PID, "utf8").split(" ")[2] : null;
-  if (pid !== null && pid !== process.pid && began !== undefined && startOf(pid) === began) {
+  if (pid !== null && pid !== process.pid) {
     for (const child of childrenOf(pid)) {
       process.kill(child, "SIGKILL");
     }
@@ -865,19 +972,10 @@ async function stopCarry(): Promise<void> {
     }
   }
   remove(CARRY_PID);
+  remove(CARRY_ENTRIES);
+  remove(CARRY_WORKSPACE);
   remove(SYNC_CARRY);
   remove(CARRY_FILE);
-}
-
-/** A process's start, in clock ticks since boot (`/proc/<pid>/stat`, its 22nd field), or null. */
-function startOf(pid: number): string | null {
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    // The fields after the command's name, which may hold spaces, closed by its last `)`.
-    return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19] ?? null;
-  } catch {
-    return null;
-  }
 }
 
 /** The processes whose parent is `pid` (`/proc/<pid>/stat`, its 4th field). */
@@ -897,10 +995,13 @@ function childrenOf(pid: number): number[] {
  * `carry-in <sha256> <ms>` (a template move, in the sandbox it makes, its runner installed;
  * every step stopped within `ms`): the archive the Worker put at `CARRY_FILE` checked to be those
  * bytes, unpacked root's into a directory of root's own, held to what a carry holds
- * (`ownTree`), then `CARRIED` put in place and the sync's carry handed to the sync agent
- * (`carryIn`). Refused, changing nothing, in a sandbox that already holds a store or a
- * generation (or a mirror, `carryIn`): a carry goes into a new sandbox only. The archive and
- * what was unpacked go whatever follows.
+ * (`ownTree`), then `CARRIED` put in place, the sync's carry handed to the sync agent
+ * (`carryIn`), and the workspace's own put back: each folder the walk met made as sync-in makes
+ * one (`02775`, the sync agent's, of group `ta`), then the entries no sync holds, each with its
+ * owner and mode (`--same-owner`, as packed and checked, `notCarried`), into a workspace that
+ * holds nothing else yet, so no member is written through a link. Refused, changing nothing, in
+ * a sandbox that already holds a store or a generation (or a mirror, `carryIn`): a carry goes
+ * into a new sandbox only. The archive and what was unpacked go whatever follows.
  */
 async function carryInCommand(sha: string, withinArg: string): Promise<number> {
   if (!HEX64.test(sha)) {
@@ -920,16 +1021,26 @@ async function carryInCommand(sha: string, withinArg: string): Promise<number> {
     // `ownTree`, which sets every owner and mode.
     tarUntil(["-x", "-f", CARRY_FILE, "-C", stage, "--no-same-owner"], until, "unpacked");
     const workspace = join(stage, relative(SYNC_HOME, SYNC_CARRY));
+    const packedWorkspace = join(stage, relative(STATE, CARRY_WORKSPACE));
     for (const dir of CARRIED) {
       ownTree(join(stage, relative(STATE, dir)), { uid: 0, gid: 0 });
     }
     ownTree(workspace, user(SYNC_USER));
+    ownTree(packedWorkspace, { uid: 0, gid: 0 });
+    const folders = JSON.parse(readFileSync(join(workspace, "dirs.json"), "utf8")) as string[];
+    const sync = user(SYNC_USER);
+    for (const rel of folders) {
+      safeDirs(WORKSPACE, join(WORKSPACE, rel), 0o2775,
+               { uid: sync.uid, gid: group(SHARED_GROUP) });
+    }
+    tarUntil(["-x", "-f", packedWorkspace, "-C", WORKSPACE, "--numeric-owner", "--same-owner",
+              "--same-permissions", "--no-overwrite-dir"], until, "put back");
     for (const dir of CARRIED) {
       renameSync(join(stage, relative(STATE, dir)), dir);
     }
     remove(SYNC_CARRY);
     renameSync(workspace, SYNC_CARRY);
-    await syncAgent({ direction: "carry-in", within: left(until) }, atUntil(until));
+    await syncAgent({ direction: "carry-in" }, atUntil(until));
   } finally {
     remove(stage);
     remove(CARRY_FILE);
@@ -1052,8 +1163,8 @@ interface SyncJob {
  * `carryOut`), `carry-in` puts the one found there in place (`carryIn`).
  */
 type CarryJob = { readonly direction: "carry-out"; readonly authority: string;
-                  readonly paths: readonly string[]; readonly within: number }
-  | { readonly direction: "carry-in"; readonly within: number };
+                  readonly paths: readonly string[] }
+  | { readonly direction: "carry-in" };
 
 /** The sync agent's mirror, and a move's carry in its own directory. */
 const SYNC_MIRROR = `${SYNC_HOME}/mirror.db`;
@@ -1125,15 +1236,18 @@ async function syncCommand(): Promise<number> {
 
 async function syncLocked(job: SyncJob | CarryJob): Promise<number> {
   if (job.direction === "carry-in") {
-    carryIn(WORKSPACE, SYNC_CARRY, SYNC_MIRROR, job.within);
+    carryIn(SYNC_CARRY, SYNC_MIRROR);
     process.stdout.write(JSON.stringify({ ok: true }));
     return OK;
   }
   if (job.direction === "carry-out") {
     const mirror = openMirror(SYNC_MIRROR);
     try {
+      // The projection's own links, which the next sync-in makes again, never carried.
+      const made = new Set(readdirSync(SYNC_HOME).filter((name) => name.startsWith("projection-"))
+        .flatMap((name) => readJson<string[]>(join(SYNC_HOME, name))));
       const carried = await carryOut({ local: WORKSPACE, authority: job.authority }, mirror,
-                                     SYNC_CARRY, job.within);
+                                     SYNC_CARRY, made);
       process.stdout.write(JSON.stringify({ carried, known: heldOf(mirror, job.paths) }));
     } finally {
       mirror.close();

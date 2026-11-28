@@ -246,13 +246,19 @@ whole, backs off and counts.**
 3. **What is carried is the runner's to say** (it owns the disk's format): the engines' stores
    and generations, less each session copy the owner's files hold as it is (`synced`, by the
    mirror's rows, the rule `stageSessions` sends by); the mirror's session rows, its cursor 0;
-   and what of the workspace no sync can hold, its links, empty directories and entries whose
-   names are not UTF-8, as one archive (`sync.ts` `carryOut`). Refused while a job lives or the
-   workspace holds what sync-out would send or remove (`differs`, `rowOut`: sync-out's own). The
-   first sync-in in the new sandbox reads the workspace's files from the owner's files, and each
-   session's resume fetches it. Not carried: the workspace's files, the sync-ignore's kept-out
-   paths and the agents' scratch (the owner's files', the working copy's own, a cache), sockets
-   and devices, the caches, the finished jobs' state.
+   every folder the walk met, made again as sync-in makes one; and what of the workspace no sync
+   holds, each with its owner and mode, packed by root (`CARRY_WORKSPACE`) from the sync agent's
+   list (`sync.ts` `carryOut`): its links, its entries whose names are not UTF-8, and what the
+   sync agent may not read (a run user's `0700` folder or `0600` file, which every solo run, the
+   pool's first user, reads again), each checked first (`notCarried`: no link on its path, no
+   device, an owner among the run users and the sync agent and a group among theirs and `ta`).
+   Refused, naming why, while a job lives, the workspace holds what sync-out would send or
+   remove (`differs`, `rowOut`: sync-out's own), or an entry fails its check. The first sync-in
+   in the new sandbox reads the workspace's files from the owner's files, and each session's
+   resume fetches it. Not carried: the workspace's files the sync holds, the sync-ignore's
+   kept-out paths and the agents' scratch (the owner's files', the working copy's own, a
+   cache), sockets, the projection's own links (made again at the next sync-in), the caches, the
+   finished jobs' state.
 4. **The protocol**: three Worker commands, sent to this Worker's own runner alone (`#own`):
    `carry-out <authority> <ms>`, `carry-in <sha256> <ms>` and `carry-drop`, protocol 6's
    (#5860, which the stage serves), its record naming the commands, the carry's path and
@@ -309,21 +315,47 @@ run is lost, and a start that comes during a move waits for it inside its lease;
 billed twice; nothing is orphaned; every try that does not move counts, and a move that cannot
 is named. Zero hosts: the Worker alone moves it.
 
+## Review findings (#5857, at 27369c3ee), with the fix above each
+
+- **What the sync agent may not read is carried, with its owner and mode, never dropped**: the
+  sync agent lists it, root checks each (`notCarried`) and packs it (`CARRY_WORKSPACE`, `tar` as
+  root, numeric owners), and the new sandbox's root puts it back as it was (`--same-owner`,
+  `--same-permissions`) into a workspace holding only the folders it made. "carries what the
+  sync agent may not read, with its owner and mode, for the run user that reads it in the next
+  sandbox" moves a deploy key in a `0700` `.ssh`, a `0600` `.netrc`, a temporary folder, a
+  folder holding only a `0700` gpg home and unnamed ones, and the run user reads each after.
+  Dropping them fails it. An owner outside the run users is refused by name ("refuses, naming
+  it, an entry no sync holds whose owner is outside the run users"); the move's
+  `sandbox_move_failed` and `sandbox_move_stuck` say the runner's reason.
+  - At 27369c3ee they were passed over and lost at every move, though `take` hands every solo
+    run the pool's first user, which reads them again.
+- Nits:
+  - `--ignore-failed-read` is gone: root reads every entry it packs, so any read failure fails
+    the try, loudly;
+  - every run user's process a dead runner left behind is stopped before the walk ("stops what a
+    run left behind before it walks the workspace"), so no writer is in the tree between the walk
+    and the pack, and root's check (`notCarried`, `lstat` alone) holds to the pack;
+  - every folder the walk met comes back (`dirs.json`), one holding only what no sync holds or
+    only kept-out paths among them;
+  - the lock's form is one: `pid-lock.ts` writes `<pid> <boot> <start>` for every lock and the
+    carry's pid (`holderLine`), and `liveHolder` checks the start where one is named ("is taken
+    over from a holder whose pid another process took since").
+  - Found here and fixed: the projection's own links were carried, so a stale skill link would
+    have outlived the next projection; they are left out (the sync agent's `projection-*.json`).
+
 ## Review findings (#5857, at 20c662fbc), with the fix above each
 
-- **What the carry puts back takes sync-in's own modes** (`syncModes`, after the extract: a
-  folder `02775`, a file `0664` or `0775`, a link as it is), so a run user writes into a carried
-  link's folder and a carried empty folder as before: the first carry test does, as a run user
-  of group `ta`. Dropping `syncModes` fails it.
+- **What the carry puts back is writable by the run users as before**: at 20c662fbc by
+  sync-in's own modes after the extract; since 27369c3ee each folder is made as sync-in makes
+  one and each entry keeps its owner and mode. The first carry test writes into a carried link's
+  folder and a carried empty folder as a run user of group `ta`.
   - `carryIn`'s `tar` ran as `ta-sync` under root's umask (022): folders `02755`, files `0644`,
     which no run user writes, and sync-in's `safeDirs` keeps a folder's mode.
 - **What the sync agent may not read is passed over, as sync-out passes it**: the walk tells a
   folder it may not list (`Walk.unlisted`), so it is never taken as empty; a named file or an
   unnamed entry it may not read is not counted unsent nor packed; and `tar` passes over what it
-  may not read under an unnamed tree (`--ignore-failed-read`). "passes over what the sync agent
-  may not read" moves a run user's 0700 folder, its 0600 file, an unnamed 0600 file and an
-  unnamed folder holding one, carrying the rest. Dropping the readable check, or `tar`'s pass,
-  fails it.
+  may not read under an unnamed tree (`--ignore-failed-read`). Superseded at 27369c3ee: what
+  it may not read is carried, with its owner and mode (above).
   - A run user's `0700` folder (`mkdir -m 700`, `mkdtemp`, a gpg home) was taken as empty, and
     the carry's `tar` failed on it at every try.
 - **The slot a move's wake owes is given back in the move** (Important 3, the red CI): below.
@@ -434,9 +466,14 @@ is named. Zero hosts: the Worker alone moves it.
   time (`secret_bytes`, past the owner's storage) holds the move, each try counted, named stuck
   from the third. The owner is told of the refusal at each run's end already
   (`ta.sync_refused`); once it is sent or removed, the next try moves.
-- **What the sync agent may not read is not carried**: a run user's own `0700` folder (a gpg
-  home, a `mkdtemp`) and its `0600` files, named or not, which no sync-out sends either (it skips
-  them, `gone`). They are that run user's alone, and go with the old sandbox, as at its loss.
+- **An entry no sync holds whose owner is outside the run users and the sync agent** (one root
+  or E2B's `user` made in the workspace), or a device, holds the move, refused by name, each try
+  counted, named stuck from the third. No run writes as them.
+- **A file the sync agent may not read is reported "gone" at each run's end** (`offer`,
+  `ta.sync_skipped`), as before this change: the move carries it, but the run-end report still
+  words it so. Owed: `untangle/sync-unreadable`.
+  - [ ] untangle/sync-unreadable: sync-out says a file it may not read as such, not "gone", and
+    a folder it may not list.
 - **A workspace whose walk outlasts `carry-out`'s budget** (some 235,000 files at the measured
   rate) never moves, each try counted, named stuck from the third. Its time on E2B is owed to
   the `live:` wait below.
@@ -446,8 +483,9 @@ is named. Zero hosts: the Worker alone moves it.
 - **A cold sessions cache** (a deploy that changes the state format drops `sessions-seen.json`)
   makes `carry-out` hash every store copy once; a try cut short there keeps what it hashed
   (`keepSeen`), so the next hashes on from it.
-- **Sockets and devices in the workspace** are not carried: `tar` passes over a socket, and
-  neither is a run's state.
+- **Sockets in the workspace** are not carried: `tar` passes over a socket (a gpg agent's, a
+  run's own), which no run's state is. A folder's setgid bit is its parent's to give (Linux): a
+  carried `0700` folder made under the workspace's `02775` comes back `02700`.
 - **A mode alone changed is not sent or carried**: the mirror keeps no mode, so neither a sync
   nor the unsent check can tell one, and the new sandbox's first sync-in takes the owner's.
   Holding it needs a mode in the mirror, a format change of its own in two deploys.
@@ -491,19 +529,19 @@ is named. Zero hosts: the Worker alone moves it.
   waits for it (at most about 26 s) and runs in the new sandbox.
 - Signed-in engines stay signed in; the conversations resume, each fetched from the owner's
   files at its first resume.
-- The workspace's links, empty folders and files whose names are not UTF-8 come across, with
-  the modes sync-in gives (a run user writes into them as before).
-- A folder or file of a run user's own that the sync agent may not read (`0700`, `0600`: a gpg
-  home, a temporary folder) does not come across, as no sync sends it.
+- The workspace's folders come across as sync-in makes them (a run user writes into them as
+  before); its links, its files whose names are not UTF-8 and a run user's own `0700` folders and
+  `0600` files (keys, a `.netrc`, a gpg home) come across with their owner and mode.
 - The run's first sync-in reads every file again (a new sandbox's own), so a large workspace's
   first run takes longer.
 - The working files the sync-ignore keeps out (`node_modules`, build outputs, a custom line's
   paths) and the agents' scratch (clones, installs, caches) are gone; the agent rebuilds them. A
   file's mode changed alone is the owner's again.
-- A move refuses nothing and loses nothing but what the sync-ignore keeps out, the agents'
-  scratch, a mode alone, sockets and what the sync agent may not read (above): one that cannot finish leaves the old sandbox
-  paused with everything it had, and is tried again later; one whose workspace holds what no
-  sync has sent waits for a run's end to send it.
+- A move loses nothing but what the sync-ignore keeps out, the agents' scratch, a mode alone
+  of a synced file, sockets and the projection's links, which the next sync-in makes again. One
+  that cannot finish leaves the old sandbox paused with everything it had, and is tried again
+  later; one whose workspace holds what no sync has sent waits for a run's end to send it; one
+  holding an entry no run's user owns is refused by name until it is removed.
 
 ## As built
 
@@ -525,13 +563,13 @@ is named. Zero hosts: the Worker alone moves it.
   `runner-speaks.json` 6.
 - `sandbox/runner/runner.ts`: `carry-out` (refused while a job lives or the workspace holds what
   no sync has sent; each synced session copy left out), `carry-in` and `carry-drop` (`CARRIED`,
-  `CARRY_PID`, `stopCarry` (`startOf`, `childrenOf`), also at `prepare`; `ownTree`, `fileSha`,
-  `withinOf`, `tarUntil`),
+  `CARRY_PID`, `stopCarry` (`childrenOf`), also at `prepare`; `CARRY_WORKSPACE`,
+  `carriedOwners`, `notCarried`; `ownTree`, `fileSha`, `withinOf`, `tarUntil`),
   each carry stopped within its budget on the runner's own clock and leaving no archive past
   it; `syncAgent` taking the lapse it stops on; `session.ts` `GENERATIONS`; `pid-lock.ts`
-  `liveHolder`; `sync.ts` `carryOut` (sync-out's own rules for what is unsent, `differs` and
-  `rowOut`, and what it may read; the session rows; the workspace's links, empty folders and
-  unnamed entries), `carryIn` (`syncModes`); `fsafe.ts` `Walk.unlisted`;
+  `holderLine` and `liveHolder` (the lock's one form); `sync.ts` `carryOut` (sync-out's own rules
+  for what is unsent, `differs` and `rowOut`; the session rows; the folders; the list of what no
+  sync holds), `carryIn`; `fsafe.ts` `Walk.unlisted`;
   `synced` (`stageSessions`' rule) and `heldOf`.
 - Tests: `test/sandbox.test.ts` "a template move" (a start runs at once in a sandbox of another
   template, and the look moves it once it has been paused with nothing in it for its quiet
@@ -547,7 +585,11 @@ is named. Zero hosts: the Worker alone moves it.
   try counted; a leased row arming no look; no move while another sandbox needs the look within
   the bound; none after a failed look); `runner.test.ts` "a template move's carry" (the real
   runner, as root: the sign-in, generation and session row carried, a link, an empty folder and
-  a name that is not UTF-8 carried, no workspace file, every mode the new runner's; a store past
+  a name that is not UTF-8 carried with their owners, no workspace file, every mode the new
+  runner's, and a run user writing into the folders; what the sync agent may not read carried
+  with owner and mode and read again by the run user; an owner outside the run users refused by
+  name; a run user's leftover process stopped before the walk; a stale carry pid never killing
+  another process; a store past
   16 MiB of synced sessions carried under 1 MiB, the one unsent copy carried, and the resume
   fetching the other from the owner's files; refused while the workspace holds a changed file, a
   file never sent or a removal not sent, kept-out paths and unread rows aside; a client's
@@ -556,7 +598,10 @@ is named. Zero hosts: the Worker alone moves it.
   budget, of another carry's bytes, and into a sandbox with a store; the archive dropped).
 
 - [ ] live: the stage owner's sandbox moves to the pin at the look half an hour after its next
-  use once this deploys (envd takes the file read and write; the move's time and `carry-out`'s,
-  against the workspace's file count, the store's size and the carry's bytes, recorded here),
+  use once this deploys (before it, what the sync agent may not read listed, `find /workspace
+  \( -type f ! -perm -g+r ! -perm -o+r \) -o \( -type d ! -perm -g+rx ! -perm -o+rx \)`, and
+  checked to come across; envd takes the file read and write; the move's time and
+  `carry-out`'s, against the workspace's file count, the store's size and the carry's bytes,
+  recorded here),
   and one `auto` pi run on an OpenRouter
   connection sealed with the Messages API then answers on pi 1.6.0.
