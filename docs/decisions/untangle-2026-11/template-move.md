@@ -120,26 +120,40 @@ that cannot finish leaves the old sandbox serving the run, untouched.**
    and the unsent changes go out against their bases at the next sync-out, as they would have.
    Not carried: the sync-ignore's kept-out paths and the agents' scratch (the working copy's
    own and a cache, unbounded), the caches, the finished jobs' state.
-4. **The protocol**: two Worker commands, `carry-out` (the old sandbox's runner packs the carry
-   into the root-only state directory and answers its size and SHA-256, or refuses while
-   anything lives) and `carry-in <sha256>` (the new sandbox's runner checks the archive is
-   those bytes, refuses a sandbox that already holds a store or a mirror, and puts each part
-   in place by its owner's rules). They are protocol 6: protocol 5 plus the two commands, no
-   document, answer of 5 or read of the owner's changed. The Worker speaks 5 and 6.
-5. **The Worker's steps** (`#moved`, on the serial chain, inside the start): `carry-out`; make
-   the new sandbox from the pin with the start's network and route, its runner installed and
-   prepared; copy the archive from the old sandbox to the new one through envd, streamed, its
-   length known (no copy in the Worker's memory or storage); `carry-in`; kill the old sandbox;
-   then the row names the new one (the meter logs the old one's kill and the new one's start).
-   Any fault or refusal before the kill (E2B with no room, the carry's checks, a full disk)
-   kills the new sandbox if one was made, logs `sandbox_move_failed` loudly, and the start goes
-   on in the old sandbox: it is asked again at the next idle start. A move never makes a run
-   wait that the old sandbox could serve, so the room it needs is E2B's count and refusal
-   alone, not a turn in the line.
+4. **The protocol**: three Worker commands, sent to this Worker's own runner alone (`#own`):
+   `carry-out <authority>` (the old sandbox's runner packs the carry into the root-only state
+   directory and answers its size and SHA-256, or refuses while anything lives), `carry-in
+   <sha256>` (the new sandbox's runner checks the archive is those bytes, refuses a sandbox that
+   already holds a store or a mirror, and puts each part in place by its owner's rules, every
+   owner and mode set by it), and `carry-drop` (the old sandbox's archive dropped where the move
+   went no further). They are protocol 6: protocol 5 plus the three, no document, answer of 5
+   or read of the owner's changed. It ships in the rule's two deploys: #5860
+   (`untangle/template-move-protocol`) records 6 and has the Worker speak 5 and 6 with its
+   runner on 5, and deploys first; this change moves the runner to 6 and adds the move, so its
+   rollback lands on a Worker that speaks 6.
+5. **The Worker's steps** (`#moved` and `#move`, on the serial chain, inside the start), each
+   one's state kept before the next: the room for one more sandbox, by the line's own rule
+   (`roomForOne`, a renewal's held slot counted, shared with a start's create); `carry-out`;
+   the new sandbox made from the pin with the start's network and route, and named on the row
+   (`move_to`) before anything else awaits, so while it holds nothing of the owner's; its runner
+   installed and prepared; the archive copied through envd, streamed, its length known (no copy
+   in the Worker's memory or storage); `carry-in`. From there the new sandbox is the owner's: in
+   one transaction the row names it (the create path's own `#replaced`) and the old one is
+   marked to be killed (`retiring`); only then is the old one killed, and a kill that fails or
+   whose reply is lost leaves it marked, for the look, never the new one. Any fault before that
+   transaction, at any step, is no refusal of the start: it is logged `sandbox_move_failed`,
+   what the move made is killed by its id (`move_to`), the old sandbox's archive dropped, and
+   the start goes on in the old sandbox; the move is tried again past a back-off (`moveBackoff`:
+   a lease's TTL, doubling, at most a day). An object that ends at any step leaves `move_to` or
+   `retiring` set, which the next call on the chain or the look (armed at once while either is
+   set) settles (`#settle`), and an erasure kills too. A move never makes a run wait that the
+   old sandbox could serve: past the room, or while anything lives, it moves nothing now.
 6. **No credential lost or exposed**: the sign-ins move VM to VM as bytes through envd, by the
    key that already reaches every sandbox's envd as root (the Worker's one secret), so no new
    holder. The archive stays in each sandbox's root-only state directory and is deleted once
-   taken (and at `prepare`); nothing is logged or stored on the way.
+   taken, dropped in the old sandbox where the move went no further (and at `prepare`); nothing
+   is logged or stored on the way. The new sandbox holds the sign-ins only from the copy on,
+   after the row names it.
 
 Checked against the intent: a new pin reaches every owner's sandbox at its next start with
 nothing living (for the stage owner, its next `auto` pi run), the run that brings it runs on the
@@ -158,20 +172,57 @@ Zero hosts: the Worker alone moves it.
   - `state-format.ts` named what is durable, but nothing could take it out of a sandbox: the
     disk was the record, so a sandbox could never be replaced on purpose.
 
+## Review findings (#5857, at 01eadda3e), with the fix above each
+
+- **A move is never a start's refusal.**
+  - `carry-out` and E2B's count were read outside the move's fallback: a fault there (or an old
+    disk that cannot hold the archive, every try) refused the start.
+- **A move keeps its state before each step; the new sandbox is never killed once it holds the
+  carry, and the old one only after the row names the new one.**
+  - A kill of the old sandbox whose reply was lost had the fallback kill the new one too: both
+    gone, the sign-ins with them.
+  - A Worker ending between the create and the row left the new sandbox unnamed, a copy of the
+    sign-ins kept paused until erasure.
+- **One room rule for one more sandbox** (`roomForOne`).
+  - The move's own check ignored renewals' held slots.
+- **The rule's two deploys** (#5860 first).
+  - Protocol 6 shipped with its runner in one deploy while the stage owner has a sandbox.
+- **A failing move backs off**, and its archive is dropped in the old sandbox.
+- **The carry sets every mode** (`ownTree`), and says GNU tar's defaults it keeps.
+- **A carry hashes every file with a row**: an edit of the same size inside the change time's
+  tick, which no sync finds, is carried.
+- **The create path names its sandbox before reading its window**, as the move does: a fault
+  reading it after made a second sandbox at the next start (found in an outside rehearsal on
+  the PR's body, folded here).
+- **The carry tests' CI time**: they ran the real `prepare`, five times in two tests. Its
+  lockdown walks the whole disk, over a GitHub host's `/usr` 47.7 s a call (its own tests are
+  tagged `large`), so one case ran 54 to 59 s against the medium budget of 47 s, the other 11 to
+  20 s. The carry needs no `prepare`; those calls are gone (CI: 0.6 s and 1.6 s), and the large
+  prepare test holds that it drops an archive a failed move left.
+
 ## Left, with reasons
 
-- **The rule's two deploys.** Protocol 6 adds two commands to 5 and changes nothing a Worker
-  of 5 sends or reads, so this Worker speaks 5 and 6 and its runner 6, in one deploy. A rollback
-  of this one deploy meets a sandbox it adopted onto runner 6: one nothing lives in adopts the
-  rolled-back Worker's own runner at its next start, as today; one a run lives in is refused new
-  starts (`sandbox_runner_protocol`) until that run ends, and is killed only if the run is still
-  live at its window's end (`foreign-runner-reap.md`). Holding the move one more deploy would
-  keep every sandbox on its old engines, the stage's broken pi runs among them, for that long.
+- **A mode alone changed is not carried**: the mirror keeps no mode, so neither a sync nor the
+  carry can tell one, and the move's first sync-in takes the owner's. Holding it needs a mode
+  in the mirror, a format change of its own in two deploys.
+  - [ ] untangle/sync-mode: the mirror keeps each file's exec bit, so sync-out sends a mode
+    alone changed and a carry keeps it.
+- **A create whose reply is lost** (E2B made it, the Worker never heard its id) leaves an
+  unnamed sandbox, fresh and holding nothing of the owner's, until erasure; the move's create is
+  the same. Naming one before its reply needs an id of the Worker's own on its metadata, read
+  back by E2B's list.
+  - [ ] untangle/create-reply: a create names its sandbox by a token of the Worker's own before
+    it is sent, and a start or the look finds one whose reply was lost by it.
 - **Kept-out paths and scratch start empty after a move**: unbounded working files and caches;
   a run rebuilds them, as after disk pressure. What the owner sees is below.
+- **A move is no clean room**: what the old sandbox's store holds (an engine's config, its hooks
+  and MCP config among a CLI's kept paths) comes across as it was, so a pin that fixes the image
+  fixes nothing an attacker with root in the old sandbox planted in the store. That attacker
+  already holds the same sign-ins; a store kept is no worse than the sandbox kept.
 - **Whether envd takes a streamed upload of known length**, as a body copied from its own
   download: the transport's upload was probed with whole bytes (`transport.ts` header). The
-  first live move shows it; until then a move that fails there leaves the old sandbox serving.
+  first live move shows it; until then a move that fails there leaves the old sandbox serving,
+  tried again a day at most later.
 
 ## What an owner sees
 
@@ -182,33 +233,40 @@ Zero hosts: the Worker alone moves it.
 - The run's first sync-in reads every file again (a new sandbox's own), so a large workspace's
   first run takes longer.
 - The working files the sync-ignore keeps out (`node_modules`, build outputs, a custom line's
-  paths) and the agents' scratch (clones, installs, caches) are gone; the agent rebuilds them.
-- Nothing is refused: a move that cannot finish leaves the run on the old sandbox, and the move
-  is tried at the next idle start.
+  paths) and the agents' scratch (clones, installs, caches) are gone; the agent rebuilds them. A
+  file's mode changed alone, with its bytes as synced, is the owner's again.
+- A move refuses nothing: one that cannot finish leaves the run on the old sandbox, which keeps
+  everything it had, and the move is tried again past its back-off.
 
 ## As built
 
 - `sandbox/src/control.ts`: `#create` (the one create, its metadata naming the pin,
-  `TEMPLATE_METADATA`); `#moved`, called by `#ensure` for a start that opens the lease on a
-  running or resumed sandbox; `#own`, which sends `OWN_COMMANDS` to this Worker's runner alone.
-  The header's start step 2 says it.
+  `TEMPLATE_METADATA`) and `#replaced` (its row, a move's too); `#moved` and `#move`, called by
+  `#ensure` for a start that opens the lease on a running or resumed sandbox; `#settle`, run on
+  the chain by `#ensure` and the look, `#arm` at once while it has work; `#own`, which sends
+  `OWN_COMMANDS` to this Worker's runner alone; `roomForOne`; `moveBackoff`. The header's start
+  step 2 says it. `src/schema.ts` migration 8 (`move_to`, `move_tries`, `move_after`,
+  `retiring`), pinned.
 - `sandbox/src/e2b.ts` `copy` and `sandbox/e2b/transport.ts` `download` and a streamed `upload`:
   the carry through envd, its length fixed (`FixedLengthStream`), never whole in the isolate.
-- `sandbox/runner/protocol.ts`, `protocol.json` 6 (5 and the two commands, the `carry` path,
-  the `carry-out` answer, and the start's `model` as `string`, as the Worker writes it since
-  #5852), `speaks.json` `[5, 6]`, `state-format.test.ts` its pin and the own-runner commands.
-- `sandbox/runner/runner.ts`: `carry-out` and `carry-in` (`CARRIED`, `ownTree`, `fileSha`),
-  `prepare` dropping a carry left behind, `syncAgent` taking the lapse it stops on (a run's
-  heartbeat, or a carry's deadline); `session.ts` `GENERATIONS`; `sync.ts` `carryOut`,
-  `carryIn`.
+- `sandbox/runner/protocol.ts` (`PROTOCOL` 6, `OWN_COMMANDS`, `CARRY_FILE`, `CarryAnswer`), on
+  #5860's record.
+- `sandbox/runner/runner.ts`: `carry-out`, `carry-in` and `carry-drop` (`CARRIED`, `ownTree`,
+  `fileSha`), `prepare` dropping a carry left behind, `syncAgent` taking the lapse it stops on (a
+  run's heartbeat, or a carry's deadline); `session.ts` `GENERATIONS`; `sync.ts` `carryOut`
+  (every file with a row hashed), `carryIn`.
 - Tests: `test/sandbox.test.ts` "a template move" (moved at the next idle start that opens a
   lease, its carry in the new one and the row naming it; one that named no template moved once;
-  one a job lives in left until it is idle; a failed move leaving the run in the old sandbox,
-  the new one killed; no move past E2B's count), and the create's metadata; `runner.test.ts`
-  "a template move's carry" (the real runner, as root: the sign-in, generation, session row,
-  unsent change, unsent new file and unsent removal carried, and nothing synced, kept out or
-  scratch; refused while a job lives, of another carry's bytes, and into a sandbox with a
-  store).
+  one a job lives in left until it is idle; five faults, `carry-out`'s and `carry-in`'s broken or
+  their replies lost and the install's, each leaving the run in the old sandbox, the new one
+  killed, the archive dropped and the move backed off; the old one's kill reply lost, the new
+  one kept and the old one killed by the look; one a move made that no row names, killed; no
+  move past E2B's count with a renewal's slot held), the create naming its sandbox before
+  reading its window, and the create's metadata; `runner.test.ts` "a template move's carry"
+  (the real runner, as root: the sign-in, generation, session row, unsent change, unsent new
+  file, same-size edit and unsent removal carried, every mode the new runner's, and nothing
+  synced, kept out or scratch; refused while a job lives, of another carry's bytes, and into a
+  sandbox with a store; the archive dropped), and the prepare test's dropped archive.
 
 - [ ] live: the stage owner's sandbox moves to the pin at its next idle start after this
   deploys (envd takes the streamed copy), and one `auto` pi run on an OpenRouter connection

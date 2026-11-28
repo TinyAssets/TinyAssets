@@ -892,9 +892,14 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         }
       }
       const created = await this.#create(network!, ceilings, route);
+      // Named before anything else awaits, as a move's is: a fault reading its window after
+      // leaves it the authority's, never unnamed.
+      this.#replaced(authority, created.sandboxID, Date.now(), 0);
       const info = await e2b.info(created.sandboxID);
-      this.#replaced(authority, created.sandboxID,
-                     info === null ? Date.now() : Date.parse(info.endAt), 0);
+      if (info !== null) {
+        this.#sql.exec("UPDATE sandboxes SET end_at = ? WHERE sandbox_id = ?",
+                       Date.parse(info.endAt), created.sandboxID);
+      }
       await this.#took();
       // The template holds no runner: this Worker's, installed before its first command.
       const box = { ...created, runner: this.#digest };

@@ -294,6 +294,20 @@ describe("a start", () => {
     expect(look!).toBeLessThanOrEqual(Date.now() + LEASE_TTL_S * 1000);
   });
 
+  it("names the sandbox it made before reading its window: a fault there makes no second one",
+     async () => {
+    await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 0, quiet: true },
+                           down: 1 });
+    const who = owner();
+    expect((await faulted(() => stub(who).start(start()))).got).toBe("sandbox_start_failed");
+    expect(await stub(who).start(start({ run: `run_${hex(32, "3")}` })))
+      .toEqual({ started: true });
+    const state = await seen();
+    expect(state.sandboxes).toHaveLength(1);
+    expect(state.calls.filter((call) => call.path === "/v2/sandboxes" && call.method === "POST"))
+      .toHaveLength(1);
+  });
+
   it("refuses a run whose doors are not https on the egress host, or that names no model",
      async () => {
     const who = owner();
