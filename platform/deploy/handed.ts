@@ -35,7 +35,13 @@
  * (`sandbox/runner/speaks.json`), so the owner answers each one's record of what it reads
  * (`sandbox/runner/protocol.json` `relayed`) the same way; a protocol recorded nowhere, or a
  * sandbox version that records none it speaks, is held by nothing, and the plan names it. The
- * kit's and the tests' reads are not a pairing, and no row holds them.
+ * runner protocol rule's two deploys are held too: this tree's runner speaks a protocol the
+ * serving sandbox Worker speaks (a new one is spoken first, by a deploy of its own, so a
+ * rollback lands on a Worker that speaks the new runner; a Worker from before `speaks.json`
+ * spoke at most the protocols its tree recorded, and one that records none is refused), and
+ * this tree's Worker speaks the serving runner's (`sandbox/runner/runner-speaks.json`; a release
+ * that records none is not held to this second rule). The kit's and the tests' reads are not a
+ * pairing, and no row holds them.
  *
  * The one exception is the cutover's: the doors and shapes the version before's manifest
  * (`cutover.json`) names in its `cutover` phase's edits of the two files may go at once, since
@@ -46,6 +52,7 @@
 import tree from "../contract/handed.json" with { type: "json" };
 import table from "../contract/doors.json" with { type: "json" };
 import protocols from "../sandbox/runner/protocol.json" with { type: "json" };
+import runnerSpeaks from "../sandbox/runner/runner-speaks.json" with { type: "json" };
 import speaks from "../sandbox/runner/speaks.json" with { type: "json" };
 import { type Answer, type Args, type DoorArgs, type DoorRow, fieldTypes, takesType }
   from "../contract/src/doors.ts";
@@ -58,6 +65,7 @@ const DOORS_JSON = "platform/contract/doors.json";
 const CUTOVER_JSON = "platform/cutover.json";
 const PROTOCOL_JSON = "platform/sandbox/runner/protocol.json";
 const SPEAKS_JSON = "platform/sandbox/runner/speaks.json";
+const RUNNER_SPEAKS_JSON = "platform/sandbox/runner/runner-speaks.json";
 
 /** Each runner protocol's record of the owner's answers its runner reads, by door. */
 type Relayed = Readonly<Record<string, Answer>>;
@@ -69,11 +77,17 @@ type Relayed = Readonly<Record<string, Answer>>;
  */
 export type Spoken = Readonly<Record<string, Relayed | null>> | null;
 
-/** What one release hands and takes: its shapes, its door table and the runners it speaks. */
+/**
+ * What one release hands and takes: its shapes, its door table, the runners its sandbox Worker
+ * speaks, the protocols its tree records (null where it records none), and the protocol its own
+ * runner speaks (null where the release records none).
+ */
 export interface Side {
   readonly shapes: Readonly<Record<string, Shape>>;
   readonly doors: readonly DoorRow[];
   readonly runners: Spoken;
+  readonly recorded: readonly number[] | null;
+  readonly runner: number | null;
 }
 
 /** A release before, as held: its side, and the doors and shapes its cutover manifest takes out. */
@@ -92,6 +106,8 @@ function spoken(speaks: readonly number[],
 export const TREE: Side = Object.freeze({
   shapes: tree.shapes as Record<string, Shape>, doors: table.doors as unknown as DoorRow[],
   runners: spoken(speaks, protocols as Readonly<Record<string, { relayed?: Relayed }>>),
+  recorded: Object.keys(protocols).map(Number),
+  runner: runnerSpeaks,
 });
 
 /**
@@ -116,6 +132,7 @@ export function sideAt(commit: string, read: FileAt): Before {
     ? (entry.names ?? []).map((name) => name.replace(/^"(.*)"$/, "$1")) : []));
   const speaking = read(commit, SPEAKS_JSON);
   const records = read(commit, PROTOCOL_JSON);
+  const own = read(commit, RUNNER_SPEAKS_JSON);
   if (speaking !== null && records === null) {
     throw new Error(`${commit} holds ${SPEAKS_JSON} and no ${PROTOCOL_JSON}: what its runners ` +
                     "read is unknown");
@@ -125,6 +142,9 @@ export function sideAt(commit: string, read: FileAt): Before {
            runners: speaking === null || records === null ? null
              : spoken(JSON.parse(speaking) as number[],
                       JSON.parse(records) as Record<string, { relayed?: Relayed }>),
+           recorded: records === null ? null
+             : Object.keys(JSON.parse(records) as Record<string, unknown>).map(Number),
+           runner: own === null ? null : JSON.parse(own) as number,
            cutover: { doors: cut(DOORS_JSON), shapes: cut(HANDED_JSON) } };
 }
 
@@ -404,6 +424,7 @@ function runnerProblems(then: Side | null, now: Side): Hold {
   return joined([
     ...then !== null && then.runners === null
       ? [{ ...HELD, unrecorded: ["the sandbox's version before"] }] : [],
+    ...ordered(then, now),
     ...[...protocols].sort((a, b) => Number(a) - Number(b)).map((protocol): Hold => {
       const record = now.runners?.[protocol] ?? then?.runners?.[protocol] ?? null;
       if (record === null) {
@@ -419,6 +440,43 @@ function runnerProblems(then: Side | null, now: Side): Hold {
       }));
     }),
   ]);
+}
+
+/**
+ * The protocols a release's sandbox Worker speaks: its `speaks.json`, or before there was one,
+ * at most the protocols its tree recorded (a Worker spoke none its tree did not); null where it
+ * records neither, so what it speaks is unknown.
+ */
+function spokenBy(side: Side): readonly number[] | null {
+  return side.runners !== null ? Object.keys(side.runners).map(Number) : side.recorded;
+}
+
+/**
+ * The runner protocol rule's two deploys, held: this tree's runner speaks a protocol the serving
+ * sandbox Worker speaks, and this tree's Worker the serving runner's. Either refused, a run
+ * living across the deploy, or across its rollback, meets a Worker that does not speak its
+ * runner. A serving Worker that records nothing it speaks is refused (Fact 8); nothing serving
+ * holds nothing, nor a serving release that records no runner of its own (the second rule).
+ */
+function ordered(then: Side | null, now: Side): Hold[] {
+  if (then === null) {
+    return [];
+  }
+  const serving = spokenBy(then);
+  const ours = spokenBy(now);
+  return [
+    ...now.runner === null || serving?.includes(now.runner) === true ? [] : [{ ...HELD, problems: [
+      serving === null
+        ? `this tree's runner speaks protocol ${now.runner}, and what the sandbox's version ` +
+          "before speaks is unknown (it records no runner protocol): deploy a sandbox Worker " +
+          "that records what it speaks first"
+        : `this tree's runner speaks protocol ${now.runner}, which the sandbox's version before ` +
+          "does not speak: deploy a sandbox Worker that speaks it first, alone, so a rollback " +
+          "of this one lands on a Worker that speaks this tree's runner"] }],
+    ...then.runner === null || ours?.includes(then.runner) === true ? [] : [{ ...HELD, problems: [
+      `the sandbox's version before runs protocol ${then.runner}, which this tree's Worker does ` +
+      "not speak: keep speaking it until no runner of it serves"] }],
+  ];
 }
 
 // --- The whole hold --------------------------------------------------------------------------
