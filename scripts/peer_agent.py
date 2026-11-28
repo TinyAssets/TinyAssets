@@ -191,17 +191,33 @@ _REVIEW_DENY = ("Bash(git *)", "Bash(gh *)", "Bash(curl *)", "Bash(wget *)",
                 "Bash(env*)", "Bash(printenv*)", "WebFetch", "WebSearch")
 
 
+# Every other source of rules, tools, hooks or instructions a session loads is shut
+# (`docs/decisions/untangle-2026-11/ship-code-review.md`, "Reviewer sources"):
+# `--restricted` reads no user, project or local settings file, so no allow rule,
+# hook, plugin, output style or status line from them, whatever trust a host has
+# accepted; `--disable-slash-commands` loads no skill or command, a skill's
+# `allowed-tools` among them; `--strict-mcp-config` loads no MCP server; the
+# settings below turn off auto memory (one directory every worktree's sessions
+# load), every hook and claude.ai connectors. Managed settings stay: the
+# organization's, which no PR writes.
+_REVIEW_SETTINGS = {"permissions": {"blockReadsOutsideWorkingDirectories": True,
+                                    "blockWritesOutsideWorkingDirectories": True},
+                    "autoMemoryEnabled": False, "disableAllHooks": True,
+                    "disableClaudeAiConnectors": True}
+
+
 def review_claude_args(main: str, review_dir: str) -> list[str]:
     """The flags that make `claude -p` a reviewer: `main` is its working directory,
-    a worktree of origin/main, and `review_dir` the one directory it may write."""
+    a worktree of origin/main, and `review_dir` the one directory it may write,
+    never its `.claude/`, which `--add-dir` would load agents and skills from."""
     allow = ["Read", "Grep", "Glob", "Agent", f"Edit(/{review_dir}/**)",
              f"Bash(python3 -I {main}/scripts/review_post.py *)"]
-    settings = {"permissions": {"blockReadsOutsideWorkingDirectories": True,
-                                "blockWritesOutsideWorkingDirectories": True}}
-    return ["--permission-mode", "dontAsk", "--permission-prompts", "none",
+    deny = [*_REVIEW_DENY, f"Edit(/{review_dir}/.claude/**)"]
+    return ["--restricted", "--disable-slash-commands", "--strict-mcp-config",
+            "--permission-mode", "dontAsk", "--permission-prompts", "none",
             "--tools", ",".join(_REVIEW_TOOLS), "--allowedTools", *allow,
-            "--disallowedTools", *_REVIEW_DENY, "--settings", json.dumps(settings),
-            "--add-dir", review_dir, "--strict-mcp-config"]
+            "--disallowedTools", *deny, "--settings", json.dumps(_REVIEW_SETTINGS),
+            "--add-dir", review_dir]
 
 
 # What a reviewer's process may see of the dispatcher's environment: the shell's
@@ -217,11 +233,23 @@ _REVIEW_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "TERM", "TMPDIR", "HTTPS_PROXY"
 REVIEW_GH_TOKEN = "placeholder-the-proxy-replaces"
 
 
+def review_dir_problem(path: str) -> str | None:
+    """Why `path` cannot be a reviewer's DIR, or None: it must be a real, empty
+    directory, since `--add-dir` loads the agents, skills and commands of any
+    `.claude/` it holds. The writers file the reviewer names goes outside it."""
+    real = Path(os.path.realpath(to_native_path(path)))
+    if not real.is_dir() or Path(path).is_symlink():
+        return f"--review is not a directory: {path}"
+    if any(real.iterdir()):
+        return f"--review must be a new, empty directory: {path} holds files"
+    return None
+
+
 def review_env(env: dict[str, str]) -> dict[str, str]:
-    """A reviewer's environment from the dispatcher's `env`: `_REVIEW_ENV` only, and
-    `GH_TOKEN` the placeholder."""
+    """A reviewer's environment from the dispatcher's `env`: `_REVIEW_ENV` only,
+    `GH_TOKEN` the placeholder, and auto memory off, as the settings say too."""
     return {**{name: env[name] for name in _REVIEW_ENV if name in env},
-            "GH_TOKEN": REVIEW_GH_TOKEN}
+            "GH_TOKEN": REVIEW_GH_TOKEN, "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
 
 
 def claude_retained_text(stdout: str) -> str:
@@ -534,9 +562,10 @@ def _main() -> int:
         if args.provider != "claude":
             return fail("--review is claude's only: codex cannot be narrowed to a "
                         "reviewer's tools here", 2)
-        args.review = os.path.abspath(to_native_path(args.review))
-        if not Path(args.review).is_dir():
-            return fail(f"--review is not a directory: {args.review}", 2)
+        problem = review_dir_problem(args.review)
+        if problem:
+            return fail(problem, 2)
+        args.review = os.path.realpath(to_native_path(args.review))
 
     if args.provider == "claude":
         env = subprocess_env_without_api_keys()

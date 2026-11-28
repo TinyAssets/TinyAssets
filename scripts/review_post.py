@@ -68,6 +68,7 @@ _MARKER_RE = re.compile(_LEAD + r"(Important|Nit|Pre-existing):\s*(.*)$")
 _QUESTION_RE = re.compile(_LEAD + r"Founder question:\s*(.*)$")
 _WHERE_RE = re.compile(r"^`(?P<path>[^`\n]+):(?P<line>\d+)` (?P<text>.*)$")
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$")
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 _NITS = 5  # REVIEW.md: at most five a review
 _STATUSES = {"important": ("fixed", "withdrawn", "standing"),
@@ -279,7 +280,7 @@ def earlier_findings(reviews: list[object], comments: list[object], *,
     states: dict[int, str] = {}
     for review in reviews:
         if not isinstance(review, dict) or not isinstance(review.get("id"), int):
-            raise ValueError(f"not a review: {review!r}")
+            raise ValueError("a review is not the API's shape")
         rid, login, when = review["id"], _login(review), review.get("submitted_at")
         states[rid] = str(review.get("state"))
         if login not in writers or not isinstance(when, str):
@@ -306,7 +307,7 @@ def earlier_findings(reviews: list[object], comments: list[object], *,
                                  commit, "", "this review was edited after it was posted"))
     for comment in comments:
         if not isinstance(comment, dict) or not isinstance(comment.get("id"), int):
-            raise ValueError(f"not a review comment: {comment!r}")
+            raise ValueError("a review comment is not the API's shape")
         cid, login = comment["id"], _login(comment)
         rid = comment.get("pull_request_review_id")
         when = comment.get("created_at")
@@ -355,7 +356,7 @@ def pr_comments(comments: list[object], *,
     by_bots: list[dict] = []
     for comment in comments:
         if not isinstance(comment, dict):
-            raise ValueError(f"not a comment: {comment!r}")
+            raise ValueError("a comment is not the API's shape")
         login = _login(comment)
         if login in writers:
             by_writers.append(comment)
@@ -371,7 +372,7 @@ def commentable(files: list[object]) -> dict[str, set[int]]:
     lines: dict[str, set[int]] = {}
     for entry in files:
         if not isinstance(entry, dict) or not isinstance(entry.get("filename"), str):
-            raise ValueError(f"not a PR file: {entry!r}")
+            raise ValueError("a PR file is not the API's shape")
         shown = lines.setdefault(entry["filename"], set())
         number = 0
         for line in (entry.get("patch") or "").splitlines():
@@ -543,7 +544,7 @@ def check_runs(answer: object) -> list[dict]:
     for page in pages:
         found = page.get("check_runs") if isinstance(page, dict) else None
         if not isinstance(found, list):
-            raise ValueError(f"not a check-runs page: {page!r}")
+            raise ValueError("a check-runs page is not the API's shape")
         runs += [run for run in found if isinstance(run, dict)]
     return runs
 
@@ -600,6 +601,10 @@ def run(argv: list[str], *, get: Get | None = None, post: Post | None = None,
     parser.add_argument("--path", help="show, diff, grep, log: one repository path")
     parser.add_argument("--pattern", help="grep: the pattern")
     args = parser.parse_args(argv)
+    if not _REPO_RE.fullmatch(args.repo):
+        # It goes into every gh api path.
+        print("review_post: refused: --repo is owner/name", file=sys.stderr)
+        return 2
     if args.command in _GIT_READS:
         try:
             path = checked_path(args.path) if args.path is not None else None

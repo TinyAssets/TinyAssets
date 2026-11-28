@@ -459,3 +459,15 @@ def test_read_lists_what_the_review_must_answer(writers, capsys):
     assert gh.posts == []
     with pytest.raises(ValueError):
         rp.check_runs({"message": "Not Found"})
+
+
+@pytest.mark.parametrize("repo", ["o/r/../../user", "o", "o/r?x=1", "./r", "o/r#a", "o/ r"])
+def test_a_repo_that_is_not_owner_and_name_is_refused_before_any_read(writers, repo, capsys):
+    """--repo goes into every gh api path."""
+    def get(path: str) -> object:
+        raise AssertionError(f"read {path}")
+    for command in ("read", "show"):
+        argv = [command, "--repo", repo, "--pr", str(PR), "--writers", str(writers),
+                "--commit", HEAD, "--path", "a.py"]
+        assert rp.run(argv, get=get, post=get, git=get) == 2
+        assert "--repo is owner/name" in capsys.readouterr().err

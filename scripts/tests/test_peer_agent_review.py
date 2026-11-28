@@ -37,10 +37,36 @@ def test_a_reviewer_denies_what_no_rule_allows_and_skips_no_permission():
     assert _values(cmd, "--permission-mode") == ["dontAsk"]
     assert _values(cmd, "--permission-prompts") == ["none"]
     assert "--strict-mcp-config" in cmd and _values(cmd, "--add-dir") == [DIR]
-    settings = json.loads(_values(cmd, "--settings")[0])["permissions"]
-    assert settings == {"blockReadsOutsideWorkingDirectories": True,
-                        "blockWritesOutsideWorkingDirectories": True}
+    settings = json.loads(_values(cmd, "--settings")[0])
+    assert settings["permissions"] == {"blockReadsOutsideWorkingDirectories": True,
+                                       "blockWritesOutsideWorkingDirectories": True}
     assert "WebFetch" not in _values(cmd, "--tools")[0].split(",")
+
+
+def test_a_reviewer_loads_no_other_source_of_rules_tools_hooks_or_memory():
+    """No user, project or local settings file, whatever trust a host accepted
+    (`--restricted`); no skill, whose `allowed-tools` would widen it; no MCP server;
+    no hook; and no auto memory, one directory every worktree's sessions load."""
+    cmd = _cmd("--review", DIR)
+    assert {"--restricted", "--disable-slash-commands", "--strict-mcp-config"} <= set(cmd)
+    assert "--setting-sources" not in cmd and "--plugin-dir" not in cmd
+    settings = json.loads(_values(cmd, "--settings")[0])
+    assert (settings["autoMemoryEnabled"], settings["disableAllHooks"],
+            settings["disableClaudeAiConnectors"]) == (False, True, True)
+    assert f"Edit(/{DIR}/.claude/**)" in _values(cmd, "--disallowedTools")
+    assert peer_agent.review_env({})["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1"
+
+
+def test_a_reviewers_directory_is_new_and_empty(tmp_path):
+    assert peer_agent.review_dir_problem(str(tmp_path)) is None
+    (tmp_path / ".claude").mkdir()
+    assert "empty" in peer_agent.review_dir_problem(str(tmp_path))
+    assert "not a directory" in peer_agent.review_dir_problem(str(tmp_path / "absent"))
+    link = tmp_path.parent / f"{tmp_path.name}-link"
+    empty = tmp_path.parent / f"{tmp_path.name}-empty"
+    empty.mkdir()
+    link.symlink_to(empty)
+    assert "not a directory" in peer_agent.review_dir_problem(str(link))
 
 
 def test_a_reviewers_one_command_is_mains_poster_and_it_writes_only_its_review():
@@ -64,7 +90,8 @@ def test_a_reviewer_sees_no_credential_of_the_dispatchers():
                                  "GH_TOKEN": "real", "GITHUB_TOKEN": "real",
                                  "AWS_SECRET_ACCESS_KEY": "real", "E2B_API_KEY": "real"})
     assert env == {"PATH": "/bin", "HOME": "/h", "HTTPS_PROXY": "http://p",
-                   "GH_TOKEN": peer_agent.REVIEW_GH_TOKEN}
+                   "GH_TOKEN": peer_agent.REVIEW_GH_TOKEN,
+                   "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
     assert "real" not in env.values()
 
 
