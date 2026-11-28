@@ -51,8 +51,10 @@ probes among them. `passed.json` is that run's `passed-json` artifact byte for b
     its callees, and refuses a record whose count is not the tag's.
   - The stage loader called `doUnmock` on the identity, so every later load in the file saw the
     real host. `kitOver` sets both mocks on every load.
-  - `FORWARD == forwardCounts(platform.forward.changes)` in the facts case cannot fail under the
-    fixture. `forward.test.ts` checks it against the real tree, so the line goes.
+  - `FORWARD == forwardCounts(platform.forward.changes)` in the facts case duplicated
+    `deploy/guards/forward.test.ts:64`. Under the fixture it only repeats `facts.ts`'s own
+    expression over the mocked list, and `forward.test.ts:64` keeps the same check over the
+    real tree, so the line goes.
 
 ## Left, with reasons
 
