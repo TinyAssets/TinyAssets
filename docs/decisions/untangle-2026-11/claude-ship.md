@@ -182,13 +182,13 @@ since 2026-11-24 (`brief_lane.md`'s "Ship's separation of duties"), which
    earlier head.
 3. **`review.yml`**, unchanged but for the prose carry, its ask text and which
    verdict governs. Counted verdicts are those `standing_verdicts` counts
-   (by an account that can push, not voided by a dismissal or a writer's edit,
+   (by an account that can push, not voided by a dismissal or an edit of a writer's review,
    after the last base change, and not a late `APPROVE`: one of a commit
    whose descendant was already reviewed) on a commit in the head's history (`git merge-base
    --is-ancestor` on the objects `review.yml` already fetches); an `APPROVE` on
    a commit outside it, force-pushed away, is ignored, and a writer's `BLOCK`
    there stands, red and named, until a counted verdict on the head is
-   submitted after it (`verdict-order.md` item 4). A
+   submitted after it, each later head needing its own (`verdict-order.md` item 4). A
    `BLOCK` stands until a counted verdict is submitted after it on the same
    commit or a descendant. `review` passes only when no `BLOCK` stands and the
    latest counted verdict on the most descendant reviewed commit is `APPROVE`

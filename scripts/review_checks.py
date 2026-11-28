@@ -118,7 +118,14 @@ _LOGIN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}(?:\[bot\])?$")
 
 
 class PermissionUnread(Exception):
-    """Whether a verdict's author can push could not be read: no verdict counts."""
+    """Whether a verdict's author can push could not be read: no verdict counts.
+
+    `not_found` when GitHub answered 404, which it gives a login with no account or
+    no grant here, a bot or a deleted account among them."""
+
+    def __init__(self, why: str, *, not_found: bool = False):
+        super().__init__(why)
+        self.not_found = not_found
 
 
 @dataclass(frozen=True)
@@ -155,21 +162,25 @@ def standing_verdicts(reviews: list[object], *, head: str,
 
     A commit force-pushed away is in no order with the head's: an APPROVE on it is
     ignored, and a writer's BLOCK on it stands until a counted verdict on the head
-    itself is submitted after it. It answers and voids nothing.
+    itself is submitted after it. That answer is the head's alone, so each later head
+    needs its own, for the PR's life. It answers and voids nothing.
 
     Verdicts are read newest first, and `can_push(login)` is asked once a login,
     only for a BLOCK, or an APPROVE that is not late, that no newer counted verdict
     already answers (in the head's history, one on its commit or a descendant;
-    outside it, one on the head), and for the author of each edit: an answered
-    verdict cannot decide, so its author's read never holds a PR. When it raises
-    `PermissionUnread`, so does this: that author may be a writer whose BLOCK stands.
+    outside it, one on the head), and then for the author of each review edited at
+    or after it: an answered verdict cannot decide, so neither its author's read nor
+    an older edit's ever holds a PR. When it raises `PermissionUnread`, so does
+    this: that author may be a writer whose BLOCK stands.
 
     A dismissed review, by anyone, voids every verdict at or before it: dismissing
     a BLOCK must not bring back the APPROVE it answered (#3989's failure), so the
-    check goes back to waiting until a newer verdict. An edit by a writer, `(login,
-    when)` from `review_edits`, voids every verdict at or before its time the same
-    way: an edited first line would otherwise turn a BLOCK into an APPROVE, or into
-    no verdict, with no review after it.
+    check goes back to waiting until a newer verdict. An edit of a writer's review,
+    `(author, when)` from `review_edits`, voids every verdict at or before its time
+    the same way: an edited first line would otherwise turn a BLOCK into an APPROVE,
+    or into no verdict, with no review after it. An edited review whose author
+    GitHub does not find (404: a bot, a deleted account) is no writer's, so its edit
+    voids nothing; any other failed read raises as above.
 
     `since` is the time the PR's base last changed (`last_base_change`): a review
     submitted before it read a diff against another base, so it counts for nothing.
@@ -185,12 +196,6 @@ def standing_verdicts(reviews: list[object], *, head: str,
             if not (isinstance(when, str) and isinstance(ident, int)):
                 raise ValueError(f"dismissed review {ident!r} has no time or id")
             void = (when, ident) if void is None or (when, ident) > void else void
-    pushes: dict[str, bool] = {}
-    for login, when in edits:
-        if login not in pushes:
-            pushes[login] = can_push(login)
-        if pushes[login] and (void is None or (when, _AFTER_ALL) > void):
-            void = (when, _AFTER_ALL)
     verdicts: list[tuple[str, int, str, Verdict]] = []
     for review in reviews:
         if not isinstance(review, dict):
@@ -234,6 +239,19 @@ def standing_verdicts(reviews: list[object], *, head: str,
                    and line(read, head) and line(commit, read)
                    for then, other, read in seen)
 
+    pushes: dict[str, bool] = {}
+    editors: dict[str, bool] = {}
+
+    def edited_by_writer(author: str) -> bool:
+        if author not in editors:
+            try:
+                editors[author] = can_push(author)
+            except PermissionUnread as exc:
+                if not exc.not_found:
+                    raise
+                editors[author] = False
+        return editors[author]
+
     standing: list[tuple[Verdict, bool]] = []
     for when, ident, login, verdict in sorted(verdicts, key=lambda v: v[:2], reverse=True):
         inside = line(verdict.commit, head)
@@ -245,6 +263,8 @@ def standing_verdicts(reviews: list[object], *, head: str,
                 newer.commit == head for newer, _ in standing)
         if answered or (verdict.verdict == "APPROVE" and late(when, ident, verdict.commit)):
             continue
+        if any(edited >= when and edited_by_writer(author) for author, edited in edits):
+            break
         if login not in pushes:
             pushes[login] = can_push(login)
         if pushes[login]:
@@ -252,22 +272,22 @@ def standing_verdicts(reviews: list[object], *, head: str,
     return [verdict for verdict, _ in standing]
 
 
-# An edit's time from the timeline (`review_edits`) voids every verdict submitted at
-# or before it, whatever its id.
-_AFTER_ALL = 2**63
-# GitHub sets a review's `updated_at` a second after its `submitted_at` with no edit:
-# of the 249 reviews on #5662 to #5862, read 2026-11-28, 231 had a 0 s gap and 18 had
-# 1 s (docs/decisions/untangle-2026-11/verdict-order.md).
+# Measured on #5862 (2026-11-28): editing a review's body moved its timeline
+# `updated_at` to the edit's second; resolving its thread, replying in it and
+# editing its inline comment left it alone. With no edit it reads `submitted_at` or
+# one second after: 231 and 18 of the 249 reviews on #5662 to #5862
+# (docs/decisions/untangle-2026-11/verdict-order.md item 6).
 _EDITED_AFTER_S = 10
 
 
 def review_edits(events: list[object]) -> list[tuple[str, str]]:
-    """Each edited review, `(login, updated_at)`, from `GET /issues/{n}/timeline`.
+    """Each edited review, `(author, updated_at)`, from `GET /issues/{n}/timeline`.
 
     The reviews listing has no edit time; the timeline's `reviewed` events carry
-    `updated_at`. A review is edited when that is more than `_EDITED_AFTER_S` after
-    its `submitted_at`. A dismissed one is skipped: its dismissal already voids it.
-    Raises on a `reviewed` event not the API's shape.
+    `updated_at`, which an edit of the body moves (above). A review is edited when it
+    is more than `_EDITED_AFTER_S` after its `submitted_at`. A dismissed one is
+    skipped: its dismissal already voids it. The timeline names the review's author,
+    not its editor. Raises on a `reviewed` event not the API's shape.
     """
     edits: list[tuple[str, str]] = []
     for event in events:
@@ -320,7 +340,8 @@ def push_reader(repo: str) -> Callable[[str], bool]:
     """`can_push` for `standing_verdicts`, from GitHub's permission read with `gh`.
 
     `admin` and `write` (maintain among them) can push; `read` and `none` cannot.
-    Anything else, a failed read included, raises `PermissionUnread` with its reason.
+    Anything else, a failed read included, raises `PermissionUnread` with its reason,
+    `not_found` when gh's error is GitHub's 404 (gh prints `(HTTP 404)`).
     """
     def can_push(login: str) -> bool:
         if not _LOGIN_RE.fullmatch(login):
@@ -329,7 +350,8 @@ def push_reader(repo: str) -> Callable[[str], bool]:
             answer = _gh_json(f"repos/{repo}/collaborators/{login}/permission")
         except subprocess.CalledProcessError as exc:
             why = (exc.stderr or "").strip()[:200] or f"gh exited {exc.returncode}"
-            raise PermissionUnread(f"could not read {login}'s permission: {why}") from exc
+            raise PermissionUnread(f"could not read {login}'s permission: {why}",
+                                   not_found="(HTTP 404)" in (exc.stderr or "")) from exc
         except (subprocess.SubprocessError, OSError, ValueError) as exc:
             raise PermissionUnread(f"could not read {login}'s permission: {exc}") from exc
         permission = answer.get("permission") if isinstance(answer, dict) else None
@@ -626,7 +648,8 @@ def review_check(
     `in_line(older, newer)` and `can_push(login)` (`standing_verdicts`).
 
     The newest standing BLOCK fails it, named; one on a commit outside the head's
-    history names that, and the review of the head that answers it. With none, the
+    history says so, and that each head needs a review of it posted after the BLOCK,
+    for the rest of the PR's life. With none, the
     standing verdict on the most descendant commit decides: all the others are
     APPROVEs on its ancestors. With no one such commit (two reviewed commits neither
     in the other's history, after a force-push merged back), the head needs a
@@ -654,8 +677,11 @@ def review_check(
     blocks = [v for v in standing if v.verdict == "BLOCK"]
     if blocks and not in_line(blocks[0].commit, head):
         return CheckState("failure", f"BLOCK at {blocks[0].commit}, which is not in "
-                          f"{head}'s history; a review of {head} after it answers it",
-                          f"{blocks[0].url}\n\n{ask}")
+                          f"{head}'s history; each head needs a review of it after that",
+                          f"{blocks[0].url}\n\nNothing orders that commit against this "
+                          "head's, so only a review of the head itself, posted after the "
+                          "BLOCK, answers it, and every later head needs its own.\n\n"
+                          f"{ask}")
     tops = [] if blocks else [
         v for v in standing if all(in_line(o.commit, v.commit) for o in standing)]
     if not (blocks or tops):

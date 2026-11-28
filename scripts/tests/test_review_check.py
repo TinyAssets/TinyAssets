@@ -306,8 +306,9 @@ def test_the_cli_prints_the_check_run_for_its_pr(tmp_path, repo):
 # not in H1's line; H1'+ is H1' and an empty commit; `c` is a commit never fetched.
 # A row is (verdict, commit, submitted, [login]); DISMISSED is a dismissed BLOCK
 # (optionally with its dismissal's time), EDITED a review edited at its fourth field
-# to the body in its fifth, BASE the base changing. Each case runs as the PR's
-# decision and as its merge group's, which follows it.
+# to the body in its fifth, by the author in its sixth, BASE the base changing;
+# `stranger`'s permission read answers 404. Each case runs as the PR's decision and
+# as its merge group's, which follows it.
 
 _T1, _T2, _T3, _T4 = (f"2026-11-04T1{hour}:00:00Z" for hour in range(4))
 _T1_1S = "2026-11-04T10:00:01Z"
@@ -400,6 +401,11 @@ _VERDICT_ROWS = {"APPROVE", "BLOCK"}
                  id="an update 1 s after submitting is not an edit"),
     pytest.param("same", [("APPROVE", "H2", _T1), ("EDITED", "H2", _T2, _T3, "x", "reader")],
                  "success", id="a reader's edit voids nothing"),
+    pytest.param("same", [("EDITED", "H2", _T1, _T2, "looks odd", "stranger"),
+                          ("APPROVE", "H2", _T3)], "success",
+                 id="an edit a newer verdict on the head answers is never read"),
+    pytest.param("same", [("APPROVE", "H2", _T1), ("EDITED", "H2", _T2, _T3, "odd", "stranger")],
+                 "success", id="an edit whose author GitHub does not find voids nothing"),
     pytest.param("H1'", [("APPROVE", "H1", _T1)], "in_progress",
                  id="8 an APPROVE of H1, force-pushed away, is ignored"),
     pytest.param("H1'", [("BLOCK", "H1", _T1), ("APPROVE", "H2", _T2)], "success",
@@ -446,7 +452,7 @@ def test_a_block_outside_the_history_reads_red_and_names_itself(tmp_path, heads)
     run = json.loads(_cli(path, data, timeline, base, head).stdout)
     assert run["conclusion"] == "failure"
     assert run["output"]["title"] == (f"BLOCK at {c['c']}, which is not in {head}'s "
-                                      f"history; a review of {head} after it answers it")
+                                      f"history; each head needs a review of it after that")
 
 
 def test_an_edit_is_read_from_the_timeline():
@@ -458,6 +464,13 @@ def test_an_edit_is_read_from_the_timeline():
                               {"event": "committed"}]) == []
     assert gate.review_edits([event("2026-11-04T10:00:11Z")]) == [
         ("writer", "2026-11-04T10:00:11Z")]
+    # Review 6096259332 on #5862, read live (verdict-order.md item 6): as submitted, then
+    # after its body's edit. Resolving its thread, replying in it and editing its inline
+    # comment afterwards left `updated_at` at the edit.
+    submitted = {"submitted_at": "2026-11-28T06:24:05Z"}
+    assert gate.review_edits([event("2026-11-28T06:24:05Z", **submitted)]) == []
+    assert gate.review_edits([event("2026-11-28T06:24:37Z", **submitted)]) == [
+        ("writer", "2026-11-28T06:24:37Z")]
     with pytest.raises(ValueError):
         gate.review_edits([{"event": "reviewed", "state": "commented"}])
 

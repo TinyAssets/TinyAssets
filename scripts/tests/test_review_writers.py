@@ -109,6 +109,33 @@ def test_a_permission_that_cannot_be_read_is_no_verdict_and_says_why(monkeypatch
     assert group.conclusion == "failure" and "unknown's permission" in group.title
 
 
+@pytest.mark.parametrize(("answer", "standing"), [
+    # GitHub finds no such account or grant: no writer's review, so the edit voids nothing.
+    (None, ["APPROVE"]),
+    # Any other failure may hide a writer whose edit removed a BLOCK: no verdict counts.
+    (subprocess.TimeoutExpired(["gh"], 60), gate.PermissionUnread),
+])
+def test_an_edited_reviews_author_is_read_only_when_it_could_matter(monkeypatch, answer,
+                                                                     standing):
+    gh_json, asked = _github({"writer": {"permission": "write"},
+                              **({"gone": answer} if answer is not None else {})})
+    monkeypatch.setattr(gate, "_gh_json", gh_json)
+    approve = _review("APPROVE", "writer", ident=1)
+    decide = lambda edits: gate.standing_verdicts(  # noqa: E731
+        [approve], head=A, in_line=lambda older, newer: True,
+        can_push=gate.push_reader("o/r"), edits=edits)
+    # An edit before the APPROVE cannot void it, so its author is never read.
+    assert decide([("gone", "2026-11-17T10:00:00Z")]) == [
+        gate.Verdict("APPROVE", A, approve["html_url"])]
+    assert asked == ["repos/o/r/collaborators/writer/permission"]
+    after = [("gone", "2026-11-17T12:00:00Z")]
+    if standing is gate.PermissionUnread:
+        with pytest.raises(gate.PermissionUnread, match="gone"):
+            decide(after)
+    else:
+        assert [v.verdict for v in decide(after)] == standing
+
+
 def test_a_writers_newest_verdict_needs_no_older_authors_read(monkeypatch):
     """Asked newest first, once a login: an older verdict a writer's newer one answers
     (on its commit or a descendant), its author readable or not, cannot change it."""

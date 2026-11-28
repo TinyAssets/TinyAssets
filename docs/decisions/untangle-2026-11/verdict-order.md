@@ -58,9 +58,9 @@ form, and two pre-existing holes of the same kind (items 5 and 6).
    - The merge group follows: `--group-sha` makes the same decision and `group_check` passes
      only its success. Unchanged.
 4. **Departure: a writer's `BLOCK` on a commit outside the head's history stands**, red and
-   named ("BLOCK at X, which is not in H's history; a review of H after it answers it"),
-   until a counted verdict on the head itself is submitted after it. It answers and voids
-   nothing. An `APPROVE` there is ignored, as the design says.
+   named ("BLOCK at X, which is not in H's history; each head needs a review of it after
+   that"), until a counted verdict on the head itself is submitted after it. It answers
+   and voids nothing. An `APPROVE` there is ignored, as the design says.
    - Ignored, as the design said, the BLOCK would reopen case 3 across a force-push:
      `APPROVE@H1'` t1, then a late `BLOCK@H1` t2, H1' the same change pushed again, would
      pass with the finding unfixed.
@@ -71,9 +71,11 @@ form, and two pre-existing holes of the same kind (items 5 and 6).
      reviewer's other finding (N-3) was that this one read "waiting for review". Standing
      is the same rule every BLOCK follows, with one difference: nothing orders X against
      the head's commits, so only the head is known to be later.
-   - The cost: after a force-push, a review of the head is needed even if the head's next
-     commit is the same change. Force-pushes are refused here by rule, so this is rare,
-     and it never jams: a review of the head always answers it.
+   - The cost lasts the PR's life: the answer is the head's alone, so every later head,
+     even the same change or a clean merge of main, needs its own review posted after the
+     BLOCK, and no verdict carries past it (#5862's second review, N-2). Force-pushes are
+     refused here by rule, so this is rare, and it never jams: a review of each head
+     answers it there.
 5. **A late `APPROVE` is ignored.** An `APPROVE` of commit C is late when any review of a
    strict descendant of C, in the head's history, was submitted before it: that head
    existed, and the APPROVE read an older one. It neither stands nor answers anything.
@@ -86,23 +88,48 @@ form, and two pre-existing holes of the same kind (items 5 and 6).
      wrote it, and ignoring an APPROVE only ever makes the check wait.
    - An APPROVE of H1 posted while H2 exists, with nobody having reviewed H2 yet, is not
      late and still carries.
-6. **An edit by a writer voids every verdict submitted at or before it**, as a dismissal
-   does, so the check waits for a verdict after the edit. Before this, a writer could edit
-   a `BLOCK`'s first line to `APPROVE` (or delete it), and the next decision passed with
-   no review after it (`review-signal.yml` fires on `edited`; #5862's review, P-2).
-   - Research: the reviews listing has no edit time (its fields, read 2026-11-28:
-     `_links author_association body commit_id html_url id node_id pull_request_url state
-     submitted_at user` and two Copilot fields). The issue timeline, which `review.yml`
-     already reads, has `updated_at` on each `reviewed` event. GraphQL's `lastEditedAt`
-     is refused from these sessions, and a second shape of the review list was rejected
-     before (`p2-review-writers.md` item 3).
-   - `updated_at` moves without an edit: of the 249 reviews on #5662 to #5862, 231 had a
-     0 s gap after `submitted_at` and 18 had 1 s. An edit is a gap over 10 s
-     (`review_edits`). An edit within 10 s of submitting goes unseen; the decision then
-     reads the edited body as the verdict.
-   - Only a writer's edit voids, so an outsider editing their own review cannot hold a PR.
-     A dismissed review's `updated_at` is its dismissal, which voids from the dismissed
-     review's own time, as before, so it is skipped.
+6. **An edit of a writer's review voids every verdict submitted at or before it**, as a
+   dismissal does, so the check waits for a verdict after the edit. Before this, a writer
+   could edit a `BLOCK`'s first line to `APPROVE` (or delete it), and the next decision
+   passed with no review after it (`review-signal.yml` fires on `edited`; #5862's review,
+   P-2).
+   - Research, the fields. REST's review object (GitHub's docs, and the listing read
+     2026-11-28: `_links author_association body commit_id html_url id node_id
+     pull_request_url state submitted_at user` and two Copilot fields) has no edit time;
+     its only time is `submitted_at`. The issue timeline's `reviewed` event, which
+     `review.yml` already reads, adds `updated_at`, which the docs list ("string or null")
+     but do not define. GraphQL's `PullRequestReview` has `lastEditedAt`,
+     `includesCreatedEdit` and `updatedAt`, but these sessions are refused GraphQL ("GitHub
+     GraphQL is not available from Claude Code sessions"), so it cannot be measured here.
+     A second shape of the review list was also rejected before (`p2-review-writers.md`
+     item 3). So the candidate is the timeline's `updated_at`, measured live below.
+   - Measured on #5862 itself, 2026-11-28: one `COMMENT` review whose first line is not a
+     verdict (6096259332), with one inline comment (4725827968, thread
+     `PRRT_kwDOSAQuCc69A83P`). The review's timeline `updated_at` after each step:
+
+     | Step | When | `submitted_at` | `updated_at` |
+     |---|---|---|---|
+     | submitted | 06:24:05 | 06:24:05 | 06:24:05 |
+     | body edited (`PUT pulls/5862/reviews/6096259332`) | 06:24:36 | 06:24:05 | **06:24:37** |
+     | thread resolved | about 06:25:05 | 06:24:05 | 06:24:37 |
+     | reply in the thread (`POST .../comments/4725827968/replies`) | 06:25:15 | 06:24:05 | 06:24:37 |
+     | inline comment edited (`PATCH pulls/comments/4725827968`) | 06:25:21 | 06:24:05 | 06:24:37 |
+
+     So an edit of the body moves it to the edit's second, and resolving, replying and
+     editing an inline comment do not; `submitted_at` never moves. The reply became a
+     review of its own (6096262997, empty body, not in the timeline as `reviewed`), which
+     is an ordinary comment here. The reviews listing never changed but for the body.
+   - With no edit it still moves a second: of the 249 reviews on #5662 to #5862, 231 had
+     a 0 s gap and 18 had 1 s. An edit is a gap over 10 s (`review_edits`). An edit
+     within 10 s of submitting goes unseen, and the decision reads the edited body as
+     the verdict.
+   - The timeline names the review's author, not its editor. Only an edit of a writer's
+     review voids: an outsider's review is no verdict either way, so an outsider
+     editing their own cannot hold a PR. A dismissed review's `updated_at` is its
+     dismissal, which voids from the dismissed review's own time, as before, so it is
+     skipped. An edited review whose author GitHub does not find (404: a bot, a deleted
+     account) is no writer's, so its edit voids nothing; any other failed read is no
+     verdict, as before (#5862's second review, I-1).
    - Counting a review "as of its submission" would need its first body, which no read
      here returns. Voiding is the read we have, and it fails safe.
 7. **An intended narrowing:** a rebased or force-pushed head no longer carries a verdict
@@ -113,8 +140,11 @@ form, and two pre-existing holes of the same kind (items 5 and 6).
    counts the verdicts `latest_verdict` counted). A bot's review counting as a verdict would
    let any workflow holding `pull-requests: write`, a PR's own among them, approve it.
 9. **Reads stay lazy.** `can_push` is asked newest first, once a login, only for a BLOCK
-   or a not-late APPROVE that no newer counted verdict answers, and for each edit's author:
-   an answered verdict cannot decide, so its author's read never holds a PR.
+   or a not-late APPROVE that no newer counted verdict answers, and then for the author
+   of each review edited at or after it: an answered verdict cannot decide, so neither
+   its author's read nor an older edit's ever holds a PR. The first form read every
+   edited review's author up front, so one 404 (a bot's, a deleted account's) held the
+   PR for good, even after a writer approved the head (#5862's second review, I-1).
    `p2-review-writers.md` item 5's "only authors newer than the deciding writer are read"
    is now this: a writer's late APPROVE of an earlier head no longer stops the reads, since
    an older BLOCK on the newer head may stand.
@@ -133,9 +163,14 @@ form, and two pre-existing holes of the same kind (items 5 and 6).
     - a dismissal voiding from the dismissed review's time, not its own;
     - an edit: to APPROVE, out of its verdict, followed by a verdict, a 1 s update, and a
       reader's edit;
+    - an edit by an author whose read 404s: never read once a newer verdict on the head
+      answers it (E1), and voiding nothing when read;
     - two reviewed commits in no line.
-    Also tested: `review_edits`, the outside BLOCK's title, `in_line`'s ancestry and
-    refusals, and case 3 through `review.yml`'s own script, as a PR and as a merge group.
+    Also tested: `review_edits`, on the values item 6 measured too; the outside BLOCK's
+    title; an edited review's author read only when its edit could matter, a 404 as no
+    writer and a timeout as no verdict (`test_review_writers.py`); `in_line`'s ancestry
+    and refusals; and case 3 through `review.yml`'s own script, as a PR and as a merge
+    group.
 11. **Mutations**, each killed by the tests named in the PR body:
     - the old latest-by-time rule;
     - the naive most-descendant rule with a standing BLOCK ignored;
@@ -149,6 +184,8 @@ form, and two pre-existing holes of the same kind (items 5 and 6).
       newer verdict;
     - late APPROVEs counted;
     - edits ignored, a reader's edit voiding, a 0 s edit threshold, and a dismissal read
-      as an edit.
+      as an edit;
+    - every edited review's author read up front (the first form), and a 404 for an
+      edited review's author read as no verdict.
 
 - [ ] live: the first PR reviewed after this merges reads its `review` run's title as before (`APPROVE: reviewed at this head (...)`), and the first one with two reviewed heads names the standing verdict
