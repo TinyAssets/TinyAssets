@@ -40,7 +40,11 @@ def test_a_reviewer_denies_what_no_rule_allows_and_skips_no_permission():
     settings = json.loads(_values(cmd, "--settings")[0])
     assert settings["permissions"] == {"blockReadsOutsideWorkingDirectories": True,
                                        "blockWritesOutsideWorkingDirectories": True}
-    assert "WebFetch" not in _values(cmd, "--tools")[0].split(",")
+    tools = _values(cmd, "--tools")[0].split(",")
+    # No Agent: a subagent can run in a git worktree Claude Code makes in the main
+    # checkout, and it is one more session to keep narrow.
+    assert "WebFetch" not in tools and "Agent" not in tools and "Task" not in tools
+    assert "Agent" not in _values(cmd, "--allowedTools")
 
 
 def test_a_reviewer_loads_no_other_source_of_rules_tools_hooks_or_memory():
@@ -75,8 +79,18 @@ def managed(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize(("content", "refused"), [
     ("{}", None),
-    ('{"permissions": {"deny": ["Bash"], "ask": []}, "disableAllHooks": true,'
-     ' "allowManagedPermissionRulesOnly": true, "enableArtifact": false}', None),
+    ('{"permissions": {"deny": ["Bash"], "ask": [], "disableBypassPermissionsMode": "disable"},'
+     ' "disableAllHooks": true, "allowManagedPermissionRulesOnly": true,'
+     ' "disableAutoMode": "disable", "enableArtifact": false}', None),
+    # A narrowing key passes only with its narrowing value.
+    ('{"disableAllHooks": false}', "disableAllHooks to False"),
+    ('{"disableClaudeAiConnectors": false}', "disableClaudeAiConnectors to False"),
+    ('{"allowManagedHooksOnly": false}', "allowManagedHooksOnly to False"),
+    ('{"permissions": {"disableBypassPermissionsMode": "no"}}',
+     "permissions.disableBypassPermissionsMode to 'no'"),
+    # Sandbox sub-keys are no top-level keys, and permissions holds no disableAutoMode.
+    ('{"allowManagedDomainsOnly": true}', "allowManagedDomainsOnly"),
+    ('{"permissions": {"disableAutoMode": "disable"}}', "permissions.disableAutoMode"),
     ('{"permissions": {"allow": ["Bash(*)"]}}', "permissions.allow"),
     ('{"permissions": {"defaultMode": "acceptEdits"}}', "permissions.defaultMode"),
     ('{"policyHelper": {"path": "/usr/local/bin/policy"}}', "policyHelper"),
@@ -85,6 +99,7 @@ def managed(tmp_path, monkeypatch):
     ('{"otelHeadersHelper": "/bin/x"}', "otelHeadersHelper"),
     ('{"aKeyNobodyListedYet": 1}', "aKeyNobodyListedYet"),
     ('{"autoMemoryEnabled": true}', "autoMemoryEnabled to True"),
+    ('{"syncClaudeAiPlugins": true}', "syncClaudeAiPlugins to True"),
     ("not json", "cannot be read"),
 ])
 @pytest.mark.parametrize("where", ["managed-settings.json", "managed-settings.d/10.json",
@@ -112,6 +127,20 @@ def test_any_other_managed_source_refuses(managed, extra):
 def test_a_platform_whose_managed_sources_are_not_read_refuses(managed, monkeypatch, platform):
     monkeypatch.setattr(peer_agent.sys, "platform", platform)
     assert "Linux only" in peer_agent.managed_settings_problem()
+
+
+def test_the_managed_snapshot_changes_with_any_source(managed):
+    """The dispatch compares it before and after the self-check: the server's copy is
+    fetched again in the background, so the review could apply one nobody read."""
+    etc, cache = managed
+    empty = peer_agent.managed_snapshot()
+    cache.write_text("{}")
+    first = peer_agent.managed_snapshot()
+    assert first != empty
+    cache.write_text('{"permissions": {"allow": ["Bash(*)"]}}')
+    assert peer_agent.managed_snapshot() != first
+    (etc / "managed-settings.json").write_text("{}")
+    assert len(peer_agent.managed_snapshot()) == 2
 
 
 def test_a_reviewers_directory_is_new_and_empty(tmp_path):

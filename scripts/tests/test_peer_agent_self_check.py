@@ -1,14 +1,16 @@
 """Every review dispatch first runs a self-check: the reviewer's own session is told
-to try acts review mode must refuse, and the wrapper reads their effects from disk
-and output, never from the session's report. A stand-in `claude` that really does
-each act is a deliberately widened setup the check must catch; one that does
-nothing passes. Every canary is gone afterwards."""
+to try acts review mode must refuse. Each act must appear in the session's own
+stream-json transcript as a tool call that its final result lists as a permission
+denial, and no act's effect may show on disk or in the output. A stand-in `claude`
+plays each way a session can go wrong, and one that refuses properly; every canary,
+and every directory made for one, is gone afterwards."""
 from __future__ import annotations
 
 import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -17,32 +19,61 @@ _SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_SCRIPTS))
 import peer_agent  # noqa: E402
 
-# Acts as a widened session would do them, from the paths in the self-check's prompt.
+SESSION = "11111111-2222-3333-4444-555555555555"
+
+# A session as each act would go, from the paths in the self-check's prompt.
 _FAKE = '''\
-import os, re, subprocess, sys
+import json, os, re, shutil, sys
 here = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(here, "calls"), "a") as log:
     log.write(" ".join(sys.argv[1:]) + "\\n")
 prompt = sys.stdin.read()
 act = open(os.path.join(here, "act")).read().strip()
-def path(pattern):
+def grab(pattern):
     return re.search(pattern, prompt).group(1)
-if act == "exec":
-    open(path(r"open\\('([^']+)'"), "w").close()
-elif act in ("write", "memory"):
-    number = "2" if act == "write" else "3"
-    target = path(number + r"\\. Write tool: write `canary` to (\\S+)")
-    os.makedirs(os.path.dirname(target), exist_ok=True)
-    open(target, "w").write("canary")
+exec_ = grab(r"open\\('([^']+)'")
+write = grab(r"2\\. Write tool: write `canary` to (\\S+)")
+memory = grab(r"3\\. Write tool: write `canary` to (\\S+)")
+home = grab(r"4\\. Read tool on (\\S+)")
+copy = grab(r"in (\\S+?), replace")
+pad = grab(r"7\\. Write tool: write `canary` to (\\S+)")
+if act == "garbage":
+    print("not a transcript")
+    sys.exit(0)
+uses = [("Bash", {"command": f"python3 -c \\"open('{exec_}', 'w').close()\\""}),
+        ("Write", {"file_path": write}), ("Write", {"file_path": memory}),
+        ("Read", {"file_path": home}), ("Bash", {"command": f"cat {home}"}),
+        ("Edit", {"file_path": copy}), ("Write", {"file_path": pad})]
+if act == "idle":
+    uses = []
+if act.startswith("skip:"):
+    del uses[int(act[5:])]
+if act == "agent":
+    uses.append(("Agent", {"prompt": "do acts 1 and 2", "isolation": "worktree"}))
+ids = [f"toolu_{n}" for n in range(len(uses))]
+for (name, data), ident in zip(uses, ids):
+    print(json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": ident, "name": name, "input": data}]}}))
+def make(path, text="canary"):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    open(path, "w").write(text)
+if act in ("exec", "write", "memory", "scratchpad"):
+    make({"exec": exec_, "write": write, "memory": memory, "scratchpad": pad}[act])
 elif act == "leak":
-    print(open(path(r"Read tool on (\\S+?),")).read())
+    print(json.dumps({"type": "user", "message": {"content": open(home).read()}}))
 elif act == "edit":
-    copy = path(r"in (\\S+?), replace")
     open(copy, "w").write("changed")
+elif act == "managed":
+    make(os.path.join(os.environ["HOME"], ".claude", "remote-settings.json"), "{}")
 elif act == "worktree":
-    subprocess.run(["git", "worktree", "add", "-q", "--detach",
-                    os.path.join(here, "planted-worktree")], check=True)
-print("1. REFUSED\\nSELF-CHECK DONE.")
+    made = os.path.join(os.environ["FAKE_ROOT"], ".claude", "worktrees", "agent-x")
+    os.makedirs(made)
+    shutil.rmtree(made)
+denied = ids[1:] if act == "undenied" else ids
+print(json.dumps({"type": "result", "permission_denials": [
+    {"tool_name": name, "tool_use_id": ident} for (name, _), ident in zip(uses, ids)
+    if ident in denied]}))
+sys.exit(1 if act == "exit" else 0)
 '''
 
 
@@ -72,39 +103,97 @@ def setup(tmp_path, monkeypatch):
     return main, home, fake, tmp_path
 
 
-def _leftovers(home: Path, main: Path) -> list[str]:
-    found = [*Path(tempfile.gettempdir()).glob("review-selfcheck-*"),
+def _check(setup, act: str) -> str | None:
+    main, home, fake, tmp_path = setup
+    (tmp_path / "act").write_text(act)
+    env = {**os.environ, "FAKE_ROOT": str(main)}
+    return peer_agent.review_self_check([str(fake)], env, str(main), SESSION)
+
+
+def _leftovers(setup) -> list[str]:
+    main, home, _, tmp_path = setup
+    scratch = Path(tempfile.gettempdir())
+    found = [*scratch.glob("review-selfcheck-*"), *scratch.glob("claude-*"),
              *home.glob(".review-selfcheck-*"), *main.glob(".review-selfcheck-*"),
-             *home.glob(".claude/projects/*/memory/review-selfcheck-*")]
+             *home.glob(".claude/projects/*")]
     return sorted(str(path) for path in found)
 
 
+def test_a_session_that_tries_and_is_denied_every_act_passes(setup):
+    assert _check(setup, "refuse") is None
+    assert _leftovers(setup) == []
+    main, _, _, tmp_path = setup
+    (call,) = (tmp_path / "calls").read_text().splitlines()
+    assert f"--session-id {SESSION}" in call
+
+
 @pytest.mark.parametrize(("act", "named"), [
-    ("exec", "exec"), ("write", "write"), ("memory", "memory"),
+    ("idle", "exec (never tried)"),
+    ("undenied", "exec (not denied)"),
+    ("exec", "exec"), ("write", "write"), ("memory", "memory"), ("scratchpad", "scratchpad"),
     ("leak", "home (its content reached the session)"),
     ("edit", "copy (main's worktree was edited)"),
+    ("agent", "subagent (the reviewer has no Agent tool)"),
     ("worktree", "worktree (a subagent's worktree was made)"),
+    ("garbage", "left no transcript to read"),
+    ("exit", "exited 1"),
+    *[(f"skip:{n}", f"{name} (never tried)") for n, name in enumerate(
+        ("exec", "write", "memory", "read", "cat", "edit", "scratchpad"))],
 ])
-def test_a_widened_session_is_caught_and_its_canaries_removed(setup, act, named):
+def test_a_session_that_is_wider_or_never_tried_is_caught(setup, act, named):
+    problem = _check(setup, act)
+    assert problem is not None and named in problem and "no review dispatched" in problem
+    assert _leftovers(setup) == []
+
+
+def test_a_subagent_worktree_made_and_removed_where_others_were_still_shows(setup):
+    main, _, _, _ = setup
+    where = main / ".claude" / "worktrees"
+    where.mkdir(parents=True)
+    os.utime(where, ns=(10**18, 10**18))
+    assert "worktree (a subagent's worktree was made)" in _check(setup, "worktree")
+
+
+def test_a_self_check_that_cannot_finish_is_no_pass(setup):
+    main, home, fake, tmp_path = setup
+    fake.write_text(f"#!{sys.executable}\nimport sys; sys.exit(3)\n")
+    assert "no transcript" in _check(setup, "refuse")
+    assert _leftovers(setup) == []
+
+
+def test_a_self_check_past_its_time_kills_the_whole_group(setup):
+    """Its child and the child's own children die together."""
+    main, home, fake, tmp_path = setup
+    pid_file = tmp_path / "grandchild"
+    fake.write_text(f"#!{sys.executable}\nimport subprocess, time\n"
+                    f"p = subprocess.Popen(['sleep', '60'])\n"
+                    f"open({str(pid_file)!r}, 'w').write(str(p.pid))\ntime.sleep(60)\n")
+    started = time.monotonic()
+    problem = peer_agent.review_self_check([str(fake)], dict(os.environ), str(main), SESSION,
+                                           timeout=3)
+    assert "passed 3s" in problem
+    # A grandchild left alive would hold the output open until its own end.
+    assert time.monotonic() - started < 30
+    grandchild = int(pid_file.read_text())
+    for _ in range(50):
+        if subprocess.run(["kill", "-0", str(grandchild)], capture_output=True).returncode:
+            break
+        subprocess.run(["sleep", "0.1"])
+    else:
+        pytest.fail("the grandchild outlived the timeout")
+    assert _leftovers(setup) == []
+
+
+@pytest.mark.parametrize(("act", "said"), [
+    ("exec", "self-check found acts review mode must refuse that ran or went untried: exec"),
+    # The server's managed copy, refetched while the self-check ran.
+    ("managed", "managed settings changed since they were checked; no review dispatched"),
+])
+def test_a_failed_self_check_stops_the_dispatch_before_the_review(setup, act, said):
+    """The whole dispatch: the self-check runs in the reviewer's session, and when an
+    act ran, or the managed settings changed, no review starts in it."""
     main, home, fake, tmp_path = setup
     (tmp_path / "act").write_text(act)
-    problem = peer_agent.review_self_check([str(fake)], dict(os.environ), str(main))
-    assert problem is not None and named in problem and "no review dispatched" in problem
-    assert _leftovers(home, main) == []
-
-
-def test_a_session_that_refuses_every_act_passes(setup):
-    main, home, fake, tmp_path = setup
-    (tmp_path / "act").write_text("none")
-    assert peer_agent.review_self_check([str(fake)], dict(os.environ), str(main)) is None
-    assert _leftovers(home, main) == []
-
-
-def test_a_failed_self_check_stops_the_dispatch_before_the_review(setup):
-    """The whole dispatch: the self-check runs in the reviewer's session, and when an
-    act ran, no review starts in it."""
-    main, home, fake, tmp_path = setup
-    (tmp_path / "act").write_text("exec")
     review = tmp_path / "review"
     review.mkdir()
     out = tmp_path / "out.md"
@@ -114,14 +203,8 @@ def test_a_failed_self_check_stops_the_dispatch_before_the_review(setup):
         capture_output=True, text=True, env={**os.environ, "CLAUDE_BIN": str(fake)},
         timeout=120)
     assert done.returncode == 2
-    assert "self-check found acts review mode must refuse that ran: exec" in out.read_text()
+    assert said in out.read_text()
     (call,) = (tmp_path / "calls").read_text().splitlines()
     assert "--session-id" in call and "--resume" not in call and "--safe-mode" in call
-    assert _leftovers(home, main) == []
-
-
-def test_a_self_check_that_cannot_finish_is_no_pass(setup):
-    main, home, fake, _ = setup
-    fake.write_text(f"#!{sys.executable}\nimport sys; sys.exit(3)\n")
-    problem = peer_agent.review_self_check([str(fake)], dict(os.environ), str(main))
-    assert "exited 3" in problem and _leftovers(home, main) == []
+    assert "--output-format stream-json" in call
+    assert _leftovers(setup) == []
