@@ -188,6 +188,15 @@ export function textOf(value: unknown): string | null {
   return JSON.stringify(value);
 }
 
+/**
+ * A session id a conversation keeps and a resume hands back to its CLI: 1 to 256 printable
+ * ASCII characters, no space (`conversations.session_id`'s CHECK); no `/` or `*`, which would
+ * reach past its own files in the engine's store (`resume_paths`); no leading `-`, which the
+ * CLI would read as a flag. The VM is untrusted, so the owner keeps no other, and the runner
+ * resumes no other.
+ */
+export const SESSION_ID = /^(?!-)[!-)+-.0-~]{1,256}$/;
+
 /** What one event is, by its record's matchers. */
 export interface Read {
   readonly kind: FrameKind;
