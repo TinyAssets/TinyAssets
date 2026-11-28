@@ -245,6 +245,45 @@ def review_dir_problem(path: str) -> str | None:
     return None
 
 
+# Managed settings apply even under `--restricted`: the files Claude Code reads on
+# Linux and macOS, a drop-in directory of them, and the server-managed copy it
+# caches. A key here would widen a reviewer past its own rules.
+_MANAGED_SETTINGS = ("/etc/claude-code/managed-settings.json",
+                     "/etc/claude-code/managed-settings.d",
+                     "/Library/Application Support/ClaudeCode/managed-settings.json",
+                     "~/.claude/remote-settings.json")
+_WIDENING = {"permissions": ("allow", "additionalDirectories", "defaultMode"),
+             "": ("hooks", "enabledPlugins", "extraKnownMarketplaces", "mcpServers",
+                  "statusLine", "apiKeyHelper")}
+
+
+def managed_settings_problem() -> str | None:
+    """Why the managed settings would widen a reviewer, or None. Unreadable managed
+    settings are a problem too: what they hold cannot be known."""
+    files: list[Path] = []
+    for name in _MANAGED_SETTINGS:
+        path = Path(os.path.expanduser(name))
+        if path.is_dir():
+            files += sorted(path.glob("*.json"))
+        elif path.is_file():
+            files.append(path)
+    for path in files:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8") or "{}")
+        except (OSError, ValueError):
+            return f"managed settings {path} cannot be read"
+        if not isinstance(data, dict):
+            return f"managed settings {path} are not an object"
+        permissions = data.get("permissions") if isinstance(data.get("permissions"), dict) \
+            else {}
+        found = [f"permissions.{k}" for k in _WIDENING["permissions"] if permissions.get(k)]
+        found += [k for k in _WIDENING[""] if data.get(k)]
+        if found:
+            return (f"managed settings {path} set {', '.join(found)}, which would widen "
+                    "a reviewer: dispatch none until they are gone")
+    return None
+
+
 def review_env(env: dict[str, str]) -> dict[str, str]:
     """A reviewer's environment from the dispatcher's `env`: `_REVIEW_ENV` only,
     `GH_TOKEN` the placeholder, and auto memory off, as the settings say too."""
@@ -562,7 +601,7 @@ def _main() -> int:
         if args.provider != "claude":
             return fail("--review is claude's only: codex cannot be narrowed to a "
                         "reviewer's tools here", 2)
-        problem = review_dir_problem(args.review)
+        problem = review_dir_problem(args.review) or managed_settings_problem()
         if problem:
             return fail(problem, 2)
         args.review = os.path.realpath(to_native_path(args.review))

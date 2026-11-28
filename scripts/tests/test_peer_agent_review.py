@@ -57,6 +57,24 @@ def test_a_reviewer_loads_no_other_source_of_rules_tools_hooks_or_memory():
     assert peer_agent.review_env({})["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1"
 
 
+@pytest.mark.parametrize(("content", "widens"), [
+    ("{}", None), ('{"permissions": {"deny": ["Bash"]}}', None),
+    ('{"permissions": {"allow": ["Bash(*)"]}}', "permissions.allow"),
+    ('{"permissions": {"defaultMode": "bypassPermissions"}}', "permissions.defaultMode"),
+    ('{"hooks": {"PreToolUse": []}, "enabledPlugins": {"x": true}}', "hooks, enabledPlugins"),
+    ("not json", "cannot be read"),
+])
+def test_managed_settings_that_would_widen_a_reviewer_refuse_the_dispatch(
+        tmp_path, monkeypatch, content, widens):
+    """Managed settings apply even under --restricted, so they are read, not trusted."""
+    (tmp_path / "managed.d").mkdir()
+    (tmp_path / "managed.d" / "10.json").write_text(content)
+    monkeypatch.setattr(peer_agent, "_MANAGED_SETTINGS",
+                        (str(tmp_path / "absent.json"), str(tmp_path / "managed.d")))
+    problem = peer_agent.managed_settings_problem()
+    assert problem is None if widens is None else widens in problem
+
+
 def test_a_reviewers_directory_is_new_and_empty(tmp_path):
     assert peer_agent.review_dir_problem(str(tmp_path)) is None
     (tmp_path / ".claude").mkdir()
