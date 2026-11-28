@@ -15,7 +15,7 @@ import { join } from "node:path";
 
 import { sha256Hex } from "../contract/src/digest";
 import { SUSPENSIONS } from "../contract/src/owner";
-import { IMPORTED, storedPath, WORKSPACE } from "../contract/src/paths";
+import { IMPORTED, newPath, WORKSPACE } from "../contract/src/paths";
 import { DEFAULT_IGNORES, ignoredBy, type Matcher } from "../contract/src/sync-ignore";
 
 import {
@@ -378,8 +378,9 @@ export function ignores(matcher: Matcher, path: string, dir: boolean): boolean {
 /**
  * The owner's files below `source`, carried at `path`: every node read by `lstat` and never
  * followed. A link is listed; a socket, FIFO or device is skipped and counted; a name that
- * is not UTF-8, or whose stored path the files plane would refuse, is kept (with everything
- * below it) for `refused.tar` as `member`; a path the sync's defaults ignore is counted and
+ * is not UTF-8, or whose path the files plane would refuse to make (`newPath`: a name a
+ * Windows computer cannot hold among them), is kept (with everything below it) for
+ * `refused.tar` as `member`; a path the sync's defaults ignore is counted and
  * left in the final backup.
  */
 export function walkUser(source: Buffer, path: string, member: Buffer, tree: Tree,
@@ -430,7 +431,7 @@ function walkNode(source: Buffer, path: string, member: Buffer, tree: Tree,
     let stored: string | null = null;
     if (text !== null) {
       try {
-        stored = storedPath(`${path}/${text}`);
+        stored = newPath(`${path}/${text}`);
       } catch {
         stored = null;
       }

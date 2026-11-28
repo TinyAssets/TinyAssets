@@ -437,7 +437,7 @@ It never counts as "absent".
        `routes` phase). Its old-stack probes would page on every run against the doors.
     3. **Open the control record for the canary owner, both gates:** `outside: "on"`,
        `ordinary: "canary"` and `canary: ["<the canary owner's WorkOS user id>"]`. The keyed
-       `/api` passes only with `outside` on (the doors' `outsideOpen`), so with it off,
+       `/api` passes only with `outside` on (`gateClosed`'s outside gate), so with it off,
        the keyed checks get a `503`. With `ordinary` still `canary`, this admits no one but
        the canary owner, inside or out.
        - Read the canary owner's WorkOS user id (`user_…`) from WorkOS before its first
@@ -473,9 +473,9 @@ It never counts as "absent".
      secret, and the access token's `iss` is `upstreamFrom`'s `token_issuer`, with a fresh
      `auth_time`. Sign up with each stage account at `https://stage.tinyassets.io/app`, an
      address that is not your main one (a plus-alias works).
-     - **Pass:** the browser ends at `…/app/signed-in?error=temporarily_unavailable` (the
-       page reads as a sign-in error, which is expected). The closed gate refused it after
-       every check passed (the client, the callback, the token's signature, `iss`,
+     - **Pass:** the browser ends at `…/app/signed-in`, saying "TinyAssets is in
+       maintenance." (`temporarily_unavailable`, which is expected). The closed gate refused
+       it after every check passed (the client, the callback, the token's signature, `iss`,
        `client_id`, `sub` and `auth_time`), and no owner was made.
      - **Fail, at `/authorize`, a `400` page:** the doors could not read their own app's
        client document.
@@ -486,9 +486,10 @@ It never counts as "absent".
        line in the doors' log. On the issuer it quotes the `iss` the token carries. Only a
        WorkOS value (`https://api.workos.com/...` or `OWNER_ISSUER`) becomes `token_issuer`
        in `upstreamFrom` (`deploy.ts`, one line), a change of its own, then `routes` again.
-     - **Fail, at `…/app/signed-in?error=access_denied` ("sign in again"):** `auth_time` is
-       more than 600 s old or ahead of the clock, so `max_age=0` did not force a fresh
-       sign-in.
+     - **Fail, at `…/app/signed-in`, saying "The sign-in is too old to use: sign in again.":**
+       `auth_time` is more than 600 s old or ahead of the clock, so `max_age=0` did not force
+       a fresh sign-in. Any other refusal the page says in words, WorkOS's own after "The
+       sign-in was refused:".
 
      If sign-up is closed, make the two users in WorkOS → Production → Users instead.
   4. **Open the gate to the stage accounts alone** with mode `control`: their two WorkOS

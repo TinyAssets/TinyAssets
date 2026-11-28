@@ -889,7 +889,7 @@ browser must name that browser/device limitation while typed chat remains usable
 developer bypass, new credential, provider switch, or platform-funded usage counts.
 
 Stop for Jonathan at the rendered disclosure or honest unsupported-browser state before starting
-microphone acceptance. The app must derive the current binding; do not ask him to name it or
+microphone acceptance. The app must derive the current binding; do not ask them to name it or
 reconnect it manually. Running the live microphone acceptance and releasing Voice beyond that
 bounded proof remain explicit founder decisions.
 

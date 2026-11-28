@@ -7,8 +7,8 @@
 // - compatibility_date: every Worker's one date (`ci/kit/config.ts` `dateProblems`).
 // - disable_ctx_exports: no way to the Worker's own namespaces but its bindings.
 // - limits.cpu_ms: Workers Paid's most, 5 minutes, room above code mode's interrupt budget
-//   (about 100 s of a tight loop), since a script that reaches it resets the object
-//   instead of failing alone.
+//   (about 5 s of a tight loop, `contract/src/codemode.ts`), since a script that reaches
+//   it resets the object instead of failing alone.
 // The class is SQLite-backed and never uses its storage.
 {
   "$schema": "../node_modules/wrangler/config-schema.json",

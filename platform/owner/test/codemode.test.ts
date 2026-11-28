@@ -14,7 +14,9 @@ import {
 } from "@earendil-works/pi-codemode/portable";
 import { describe, expect, it, vi } from "vitest";
 
-import { type CodemodeService, codemodeSandbox } from "../src/codemode";
+import {
+  CODE_COMPUTE_LIMIT, CODE_VM_LIMIT, type CodemodeService, codemodeSandbox, metLimit,
+} from "../src/codemode";
 import { sha256Hex } from "../../contract/src/digest";
 import { DEFAULT_POLICY_JSON, validate } from "../../contract/src/policy-document";
 import { codemodeSettings } from "../src/policy";
@@ -83,6 +85,34 @@ describe("code mode's executor", () => {
       vi.useRealTimers();
       await sandbox.close();
     }
+  });
+
+  it("names the limit a script meets, with what to do instead; any other error as it was said",
+     async () => {
+    // Its compute, at a budget a request carries below the Worker's: pi's own `timeout`.
+    const small = new RemoteCodemodeSandbox({
+      timeoutMs: 30_000, interruptBudget: 2_000,
+      remote: (): CodemodeRemote => ({ execute: (request, exchange) =>
+        env.CODEMODE_VM.codemodeExecute(`owner-a/${crypto.randomUUID()}`, request, exchange) }),
+    });
+    // Its memory, at the Worker's own cap, as the owner's sandbox asks for it.
+    const sandbox = codemodeSandbox({ service: env.CODEMODE_VM, owner: () => "owner-a",
+                                      tools: [] });
+    try {
+      const looped = await small.execute("for (;;) {}");
+      const held = await sandbox.execute(
+        "const all = []; for (;;) { all.push('x'.repeat(1 << 20) + all.length); }");
+      const thrown = await sandbox.execute("throw new Error('boom');");
+      expect([looped, held, thrown].map((end) => end.ok ? null : metLimit(end.error))).toEqual([
+        { kind: "timeout", message: CODE_COMPUTE_LIMIT },
+        { kind: "script", message: `out of memory: ${CODE_VM_LIMIT}` },
+        { kind: "script", message: "boom" }]);
+    } finally {
+      await small.close();
+      await sandbox.close();
+    }
+    expect(CODE_VM_LIMIT).toMatch(/32 MiB at once.*a file past 4 MiB is uploaded/);
+    expect(CODE_COMPUTE_LIMIT).toMatch(/50,000 interrupt polls.*Date\.now\(\) never ends/);
   });
 
   it("runs for an owner of any principal's length: its name is the principal's digest",

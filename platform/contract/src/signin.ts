@@ -40,6 +40,17 @@ export const SECRET_ORIGIN = "https://api.workos.com";
  */
 export const SIGN_IN_MAX_AGE_S = 600;
 
+/**
+ * A sign-in's refusals, as the doors' `error_description` says them to the client and the
+ * owner app's return page shows them (`doors/app/signed-in.js`), each with what to do: one
+ * older than `SIGN_IN_MAX_AGE_S` or ahead of the clock (`doors/src/authorize.ts`), and an
+ * erased owner's (`doors/src/refused.ts`). A closed gate's is its own message
+ * (`contract/src/control.ts`).
+ */
+export const STALE_SIGN_IN = "the sign-in is too old to use: sign in again";
+export const ERASED_SIGN_IN = "this account was erased, so it can't sign in again: sign in " +
+  "with another account";
+
 /** The parameters our flow sets, or that would change what it asks: never a record's. */
 const FLOW_PARAMS: readonly string[] = Object.freeze([
   "response_type", "client_id", "redirect_uri", "state", "code_challenge",

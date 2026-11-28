@@ -6,7 +6,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { sqlIn } from "../../ci/workerd";
-import { type Entry } from "../src/files";
+import { type Entry, FILE_CONFLICT } from "../src/files";
 import { INLINE_BYTES } from "../../contract/src/limits";
 import { rig, type Rig } from "./ledger-support";
 import { failure, fileCounters, inFiles, passEnd, setFiles, starterSeed, text } from "./support";
@@ -57,7 +57,7 @@ describe("a directory", () => {
       expect((await stat(r, path))?.kind).toBe("dir");
     }
     expect(entryOf(await mkdir(r, `${W}/a/b/c`))).toEqual(made);
-    expect(await mkdir(r, `${W}/a/b/c`, "")).toEqual({ conflict: made });
+    expect(await mkdir(r, `${W}/a/b/c`, "")).toEqual({ conflict: made, message: FILE_CONFLICT });
     expect(entryOf(await mkdir(r, W))).toMatchObject({ path: W, kind: "dir", version: 0 });
     await write(r, `${W}/f`);
     expect((await failure(() => mkdir(r, `${W}/f`))).message).toBe("exists: a file is in the way");
@@ -121,7 +121,8 @@ describe("a rename", () => {
     await write(r, `${W}/f`);
     const tree = await sqlIn(r.stub, "SELECT * FROM file_entries ORDER BY parent, name");
     const history = await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_history");
-    expect(await rename(r, `${W}/a`, `${W}/b`)).toEqual({ conflict: await stat(r, `${W}/b`) });
+    expect(await rename(r, `${W}/a`, `${W}/b`))
+      .toEqual({ conflict: await stat(r, `${W}/b`), message: FILE_CONFLICT });
     for (const [from, to, replace, message] of [
       [`${W}/a`, `${W}/a/inner`, true, "a directory is never moved into itself"],
       [`${W}/a`, `${W}/b`, true, "not_empty: the destination directory is not empty"],
@@ -156,7 +157,7 @@ describe("a rename", () => {
     expect(entryOf(await rename(r, `${W}/same`, `${W}/same`))).toEqual(made);
     expect(entryOf(await rename(r, `${W}/same`, `${W}/same`, false, made.etag))).toEqual(made);
     expect(await rename(r, `${W}/same`, `${W}/same`, false, "x".repeat(64)))
-      .toEqual({ conflict: made });
+      .toEqual({ conflict: made, message: FILE_CONFLICT });
     expect((await failure(() => rename(r, `${W}/none`, `${W}/none`))).message)
       .toBe("not_found: no such file or directory");
     expect((await r.stub.fileHistory(r.bind(null), { path: `${W}/same`, limit: 5 })).changes)
@@ -168,7 +169,7 @@ describe("a rename", () => {
     const made = entryOf(await write(r, `${W}/a`));
     await write(r, `${W}/a`, "changed");
     expect(await rename(r, `${W}/a`, `${W}/b`, false, made.etag))
-      .toEqual({ conflict: await stat(r, `${W}/a`) });
+      .toEqual({ conflict: await stat(r, `${W}/a`), message: FILE_CONFLICT });
     expect(entryOf(await rename(r, `${W}/a`, `${W}/b`, false, (await stat(r, `${W}/a`))!.etag))
       .path).toBe(`${W}/b`);
   });
@@ -196,8 +197,10 @@ describe("a remove", () => {
     const r = await rig();
     const made = entryOf(await write(r, `${W}/a`));
     await write(r, `${W}/a`, "again");
-    expect(await remove(r, `${W}/a`, false, made.etag)).toEqual({ conflict: await stat(r, `${W}/a`) });
-    expect(await remove(r, `${W}/b`, false, made.etag)).toEqual({ conflict: null });
+    expect(await remove(r, `${W}/a`, false, made.etag))
+      .toEqual({ conflict: await stat(r, `${W}/a`), message: FILE_CONFLICT });
+    expect(await remove(r, `${W}/b`, false, made.etag))
+      .toEqual({ conflict: null, message: FILE_CONFLICT });
     expect((await failure(() => remove(r, `${W}/b`, false, ""))).message)
       .toBe("not_found: no such file or directory");
   });

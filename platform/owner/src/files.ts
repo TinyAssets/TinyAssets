@@ -101,7 +101,7 @@ import { refuseErasing } from "./erasure";
 import { heldGenerations } from "./restore";
 import { AGENTS_OWNER_ONLY, ownersOnly } from "./paths";
 import {
-  ancestors, isRoot, MAX_NAME_BYTES, nameOf, parentOf, storedPath, within, WORKSPACE,
+  ancestors, isRoot, MAX_NAME_BYTES, nameOf, parentOf, storedPath, unportable, within, WORKSPACE,
 } from "../../contract/src/paths";
 import { printable, utf8Bytes, utf8Decoder } from "../../contract/src/text";
 import { APPEND_UNITS, EDIT_MAKE_UNITS, EDIT_READ_UNITS, ownerSlots } from "./holds";
@@ -155,6 +155,13 @@ const INDEX_FULL = `${FILE_INDEX_FULL}: your file index is full: it holds as man
  * calls); larger files go by upload, a chunk at a time.
  */
 export const WHOLE_BYTES = 4 * CHUNK_BYTES;
+/**
+ * Where a file past one written chunk (4 MiB) goes, as a refusal says it: the upload doors,
+ * which the owner's app serves (`doors/src/file-bytes.ts`), or a run's sandbox, whose sync
+ * uploads every large file it makes.
+ */
+export const UPLOAD_LARGER = "a file past 4 MiB is uploaded: through the owner app's " +
+  "files/upload doors, or made in a run's sandbox, whose sync uploads it";
 /** An upload intent's life: past it, its uncommitted chunks become garbage. */
 export const INTENT_TTL_S = 86_400;
 /**
@@ -1272,8 +1279,16 @@ export class Files {
     }
   }
 
+  /**
+   * The one place an entry is made or changed. A name it would make is one every place can
+   * hold (`unportable`), or refused; one the owner already holds is kept as it is.
+   */
   #upsert(path: string, kind: FileKind, version: number, contentId: string | null, size: number,
           mode: number, writer: string, now: number, mtimeMs: number | null = null): StoredEntry {
+    const why = unportable(nameOf(path));
+    if (why !== null && this.#entry(path) === undefined) {
+      throw new Refusal("invalid", why);
+    }
     return this.#sql.exec<StoredEntry>(
       "INSERT INTO file_entries (parent, name, kind, version, content_id, size, mode, " +
         "mtime_ms, writer) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (parent, name) DO " +
@@ -2905,12 +2920,22 @@ export const STRUCTURED = /\.(json|jsonc|json5|toml|ya?ml)$/i;
  */
 export const APPEND_TRIES = MAX_OPEN_INTENTS;
 
+/** What a lost file compare-and-swap says beside the file as it stands. */
+export const FILE_CONFLICT = "the file is not at the etag you sent: conflict is the file as " +
+  "it now stands (null: nothing is there). Read it again (file_stat or file_read), then make " +
+  "your change against its etag, or \"\" to create a file that is not there";
+
+/** A lost file compare-and-swap's answer: the entry as it stands, and what to do. */
+function conflictAnswer(current: Entry | null): FileConflicted {
+  return { conflict: current, message: FILE_CONFLICT };
+}
+
 function fileConflicted<T>(act: () => T): T | FileConflicted {
   try {
     return act();
   } catch (error) {
     if (lostSwap(error)) {
-      return { conflict: error.facts["current"] as Entry | null };
+      return conflictAnswer(error.facts["current"] as Entry | null);
     }
     throw error;
   }
@@ -2921,7 +2946,7 @@ async function fileConflictedAfter<T>(act: () => Promise<T>): Promise<T | FileCo
     return await act();
   } catch (error) {
     if (lostSwap(error)) {
-      return { conflict: error.facts["current"] as Entry | null };
+      return conflictAnswer(error.facts["current"] as Entry | null);
     }
     throw error;
   }
@@ -3136,6 +3161,7 @@ export interface SyncUploadAbortRequest extends LeaseRequest {
 /** A lost file compare-and-swap: answered with the entry as it stands. */
 export interface FileConflicted {
   readonly conflict: Entry | null;
+  readonly message: string;
 }
 
 // -- THE DOORS: the `files` rows' handlers (`owner/doors.json`) -----------------------------------
@@ -3603,9 +3629,8 @@ export const filesDoors = Object.freeze({
       const given = r["content"];
       const content = typeof given === "string" ? new TextEncoder().encode(given) : given;
       if (!(content instanceof Uint8Array) || content.byteLength > CHUNK_BYTES) {
-        throw new Refusal("invalid",
-                          "a written file is bytes or text, at most 4 MiB; larger ones are " +
-                          "uploaded");
+        throw new Refusal("invalid", `a written file is bytes or text, at most 4 MiB; ${
+          UPLOAD_LARGER}`);
       }
       return { account, r, content };
     });
@@ -3648,7 +3673,7 @@ export const filesDoors = Object.freeze({
         throw new FileFault("not_found", "no such file");
       }
       if (entry.etag !== etag) {
-        return { conflict: entry };
+        return conflictAnswer(entry);
       }
       if (entry.size > EDIT_BYTES_MAX) {
         throw new Refusal("invalid",
@@ -3657,8 +3682,8 @@ export const filesDoors = Object.freeze({
       }
       return { account, path, old, replacement, content: o.files.open(path) };
     });
-    if (asked.conflict !== undefined) {
-      return { conflict: asked.conflict };
+    if ("conflict" in asked) {
+      return asked;
     }
     const { account, path, old, replacement, content } = asked;
     const authorize = () => door.check();

@@ -18,6 +18,7 @@ import {
 
 import { keyed, whole } from "../../contract/src/checks";
 import { taken } from "../../contract/src/handed";
+import { ERASED_SIGN_IN } from "../../contract/src/signin";
 import {
   callAgain, type FaultCode, type Refusal, refusalOf, told,
 } from "../../contract/src/refusal";
@@ -147,18 +148,21 @@ export const asEvent: Surface<never> = (refusal) => {
 };
 
 /**
- * The owner's sign-in's, back to the client in OAuth's own words: a refusal for the moment
- * (a closed gate, a full pool) is `temporarily_unavailable`; an erased owner's is
- * `access_denied`. Any other refusal at a sign-in is a bug, thrown.
+ * The owner's sign-in's, back to the client in OAuth's own words, its reason in
+ * `error_description` for the page that shows it (`doors/app/signed-in.js`): a refusal for
+ * the moment (a closed gate, a full pool) is `temporarily_unavailable` with its message, the
+ * canary gate's (`CANARY_ONLY`) among them; an erased owner's is `access_denied`
+ * (`ERASED_SIGN_IN`). Any other refusal at a sign-in is a bug, thrown.
  */
 export function asRedirect(original: AuthRequest, headers: Headers): Surface<Response> {
   return (refusal) => {
     if (refusal.transient) {
-      return redirect(authorizationErrorRedirect(original, "temporarily_unavailable"), headers);
+      return redirect(authorizationErrorRedirect(original, "temporarily_unavailable",
+                                                 refusal.message), headers);
     }
     if (refusal.code === "erasing" || refusal.code === "owner_erased") {
-      return redirect(authorizationErrorRedirect(original, "access_denied",
-                                                 "this account was erased"), headers);
+      return redirect(authorizationErrorRedirect(original, "access_denied", ERASED_SIGN_IN),
+                      headers);
     }
     throw refusal;
   };

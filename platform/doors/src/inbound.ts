@@ -44,7 +44,7 @@ import { bindInbound, type Bound, withAccount } from "./binder";
 import { INBOUND_PATH, namedSecret, now } from "./config";
 import { ORIGIN } from "../../contract/src/identity";
 import type { DoorsEnv } from "./env";
-import { inboundGate, MAINTENANCE, ordinaryAdmits } from "../../contract/src/control";
+import { inboundGate, ordinaryClosed } from "../../contract/src/control";
 import { controlRead } from "./control";
 import { deleteRoute, putRoute, readRoute } from "./directory";
 import { answer, boundedBytes, mediaType, randomToken } from "./kit";
@@ -246,8 +246,9 @@ async function inbound(request: Request, env: DoorsEnv): Promise<Response> {
     return answer(200, { state: "no_op" });
   }
   return answered(routed.shared ? asShared : asInbound, async () => {
-    if (!ordinaryAdmits(gate, entry.o)) {
-      throw new Refusal("unavailable", MAINTENANCE);
+    const closed = ordinaryClosed(gate, entry.o);
+    if (closed !== null) {
+      throw new Refusal("unavailable", closed);
     }
     // The run an event starts is held to the record's tiers and sign-ins as a door's is.
     const { binding, stub } = withAccount(bindInbound(env, entry), read);

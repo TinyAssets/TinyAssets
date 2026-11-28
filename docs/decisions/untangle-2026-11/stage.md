@@ -55,7 +55,7 @@ PR 1 is built now. PRs 1 and 2 are sequential, not parallel: PR 2's host-under-t
 ## Founder steps (from `stage_research.md` §9, still current)
 
 1. Approve the `routes` run that opens the stage and the `handback` run that closes it (`production` environment).
-2. Make two stage accounts at `https://stage.tinyassets.io/app` with addresses that are not his main one; each ends at `…/app/signed-in?error=temporarily_unavailable`. If sign-up is closed, create them in WorkOS → Production → Users.
+2. Make two stage accounts at `https://stage.tinyassets.io/app` with addresses that are not the founder's main one; each ends at `…/app/signed-in?error=temporarily_unavailable`. If sign-up is closed, create them in WorkOS → Production → Users.
 3. Send their two WorkOS user ids, which go into the control record's canary list through mode `control`.
 4. Sign in as each, mint one API key each, and add `https://stage.tinyassets.io/mcp` as "TinyAssets stage" in Claude and ChatGPT.
 5. Only if the kit's DNS write is refused: add `AAAA stage → 100::`, proxied, in Cloudflare's DNS for `tinyassets.io`.

@@ -7,6 +7,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
+import { FILE_CONFLICT } from "../src/files";
 import { CHUNK_BYTES, INLINE_BYTES } from "../../contract/src/limits";
 import type { Entry } from "../src/files";
 import {
@@ -135,7 +136,8 @@ describe("an edit (file_edit)", () => {
       .toBe("- Likes coffee <!-- observed: 2026-11-01 -->\n- Lives in Oslo\n");
     // The etag it was read at is stale now: a conflict with the file as it stands.
     expect(await r.stub.fileEdit(r.bind(MUSE), { path: NOTES, old_text: "Oslo",
-      new_text: "Bergen", expected_etag: made.etag })).toEqual({ conflict: edited });
+      new_text: "Bergen", expected_etag: made.etag }))
+      .toEqual({ conflict: edited, message: FILE_CONFLICT });
   });
 
   it("refuses text found nowhere or more than once, and a file not there", async () => {

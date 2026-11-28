@@ -60,8 +60,8 @@ layer, boundary, contract, data model, pipeline or ADR, or reverses a decided
 one), moves away from a line of AGENTS.md's Direction, or makes a product or
 process choice the founder has not made and the repo does not settle. One
 question a non-engineer can answer, on its own line:
-`Founder question: <one sentence>`. His answer counts only from a comment by
-a writer that quotes him with the date.
+`Founder question: <one sentence>`. The answer counts only from a comment by
+a writer that quotes it with the date.
 
 ## The review
 

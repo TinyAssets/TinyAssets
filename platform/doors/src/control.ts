@@ -1,10 +1,10 @@
 /**
  * The platform gates at the doors (research §7, checklist 11): the control record
  * (`contract/src/control.ts`) read on every outside and owner call, its gates applied, and a
- * closed gate thrown as the contract's `unavailable`, its message why (`OUTSIDE_OFF`,
- * `MAINTENANCE`), which each door answers as its protocol says (`refused.ts`). An outside
- * call needs the outside gate (`outsideOpen`, fail-closed); the owner's own surfaces the
- * maintenance gate (`ownerOpen`). The record an admitted call was read on rides its binding
+ * closed gate thrown as the contract's `unavailable`, its message why (`gateClosed`:
+ * `OUTSIDE_OFF`, `MAINTENANCE` or `CANARY_ONLY`), which each door answers as its protocol
+ * says (`refused.ts`). An outside call needs the outside gate (fail-closed); the owner's own
+ * surfaces the maintenance gate. The record an admitted call was read on rides its binding
  * (`binder.ts`, `withAccount`). A `code` call's script reads the same gates again at each tool
  * call, in the object (`owner/src/control-gate.ts`).
  *
@@ -12,8 +12,7 @@
  * can't be read.
  */
 import {
-  type ControlKeeper, type ControlRead, type Kept, MAINTENANCE, OUTSIDE_OFF, outsideOpen,
-  ownerOpen, readControl,
+  type ControlKeeper, type ControlRead, type Gate, gateClosed, type Kept, readControl,
 } from "../../contract/src/control";
 import { Refusal } from "../../contract/src/refusal";
 
@@ -73,13 +72,18 @@ export function controlRead(env: DoorsEnv): Promise<ControlRead> {
   return readControl(env.CONTROL, KEEPER);
 }
 
-/** The outside gate, read once: the record it admitted the call on, or its refusal thrown. */
-export async function outsideRead(env: DoorsEnv, owner: string): Promise<ControlRead> {
-  const read = await controlRead(env);
-  if (!outsideOpen(read, owner)) {
-    throw new Refusal("unavailable", OUTSIDE_OFF);
+/** The record `read`, past `gate` for `owner`, or that gate's refusal thrown, saying why. */
+function gated(read: ControlRead, owner: string, gate: Gate): ControlRead {
+  const closed = gateClosed(read, owner, gate);
+  if (closed !== null) {
+    throw new Refusal("unavailable", closed);
   }
   return read;
+}
+
+/** The outside gate, read once: the record it admitted the call on, or its refusal thrown. */
+export async function outsideRead(env: DoorsEnv, owner: string): Promise<ControlRead> {
+  return gated(await controlRead(env), owner, "outside");
 }
 
 /** An outside caller's binding past the outside gate, the record it was admitted on riding it. */
@@ -90,9 +94,5 @@ export async function outsideAccount(env: DoorsEnv,
 
 /** The maintenance gate, read once: the record it admitted the call on, or its refusal thrown. */
 export async function ownerRead(env: DoorsEnv, owner: string): Promise<ControlRead> {
-  const read = await controlRead(env);
-  if (!ownerOpen(read, owner)) {
-    throw new Refusal("unavailable", MAINTENANCE);
-  }
-  return read;
+  return gated(await controlRead(env), owner, "owner");
 }

@@ -162,6 +162,6 @@ Later answers on the same page:
 - ADR-035's Status line: decision 5's collection-history retention (call 11).
 - d3 §A9, corrected in place (call 1).
 
-No ADR body is edited (ADR-005). The founder's Clean-Sheet doc is his own, so it is not edited
+No ADR body is edited (ADR-005). The founder's Clean-Sheet doc is their own, so it is not edited
 here. Its per-agent caps, its "sandbox-seconds … capped by plan" and its wake caps of "12 an
 hour by default" are superseded by call 11.

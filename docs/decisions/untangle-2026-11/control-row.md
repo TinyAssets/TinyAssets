@@ -85,7 +85,7 @@ waits for `untangle/start-faults`, which holds the owner's `signins.ts` and `lau
   the switches a missing record reads as on (each record's own verdict, `signinsRead`) need a
   rule of their own or go; the sandbox starts nothing on a missing record either way.
 - The edge switch itself, which needs the founder's token scope (Zone WAF Edit) or two rules
-  he makes once by hand, and a read of the zone's free rule slots.
+  the founder makes once by hand, and a read of the zone's free rule slots.
 - The kept copy is the last write, not the newest record: a door's read at a location KV has
   not reached yet can overwrite the object's newer own read (the record carries no version).
   KV's 60 s bounds it, as it bounds every reader's fresh read; the next fresh read restores it.

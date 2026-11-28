@@ -32,7 +32,10 @@ import { keyring as newKeyring, OPEN, writeControl } from "../../ci/fixtures.ts"
 import { PLATFORM } from "../../ci/paths.ts";
 import { auxiliary, fake, pool, workerConfig } from "../../ci/workers.ts";
 import { EGRESS_HOST, EGRESS_ORIGIN } from "../../contract/src/egress.ts";
+import { CANARY_ONLY, MAINTENANCE } from "../../contract/src/control.ts";
 import { HOST, ORIGIN, waitingPage } from "../../contract/src/identity.ts";
+import { unportable } from "../../contract/src/paths.ts";
+import { ERASED_SIGN_IN, STALE_SIGN_IN } from "../../contract/src/signin.ts";
 import { AUTHKIT } from "./fake-providers.ts";
 
 installed();
@@ -1012,6 +1015,9 @@ const P_IMG = `<img src=x onerror="window.__xss=(window.__xss||0)+1">`;
 const P_SVG = `"><svg onload="window.__xss=(window.__xss||0)+1"></svg>`;
 const P_SCRIPT = `</textarea><script>window.__xss=(window.__xss||0)+1</script>`;
 const PAYLOAD = `${P_IMG}${P_SVG}${P_SCRIPT}`;
+/** File names the name rule lets be that are markup if built into HTML unescaped. */
+const N_ATTR = "x' autofocus onfocus='window.__xss=1";
+const N_ENTITY = "&lt;img src=x onerror=window.__xss=1&gt;";
 
 /** One owner-surface call from the page itself: its token, and its cookie. */
 async function api(path, body = {}) {
@@ -1129,7 +1135,16 @@ test("no payload runs through file names, file text, frames, results, posts or t
     dialog.dismiss();
   };
   page.on("dialog", onDialog);
+  // A name with markup's `<`, `>` or `"` is never made (`unportable`): refused, saying why,
+  // at the first such name the path would make (`</svg>` holds a `/`, so a folder's).
   for (const path of [`/workspace/agents/helper/${P_IMG}.md`, `/workspace/${P_SVG}.md`]) {
+    const made = path.split("/").find((name) => name !== "" && unportable(name) !== null);
+    assert.deepEqual(await api("files/write", { path, expected_etag: "", text: PAYLOAD }),
+                     { status: 400, body: { error: unportable(made) } }, path);
+  }
+  // Names of what the rule still lets be, each markup should the app ever build HTML from a
+  // name: an attribute broken out of by `'`, and markup written as entities.
+  for (const path of [`/workspace/agents/helper/${N_ATTR}.md`, `/workspace/${N_ENTITY}.md`]) {
     assert.equal((await api("files/write", { path, expected_etag: "", text: PAYLOAD })).status,
                  200, path);
   }
@@ -1141,7 +1156,7 @@ test("no payload runs through file names, file text, frames, results, posts or t
   await page.getByRole("link", { name: "AGENTS.md" }).click();
   await page.locator("textarea.editor").waitFor();
   assert.equal(await page.locator("textarea.editor").inputValue(), PAYLOAD);
-  await page.getByRole("link", { name: `${P_IMG}.md` }).click();
+  await page.getByRole("link", { name: `${N_ATTR}.md` }).click();
   await page.locator("textarea.editor").waitFor();
   // A run whose frames and result are the payload, and one frame with no event.
   const before = (await starts()).length;
@@ -1271,6 +1286,43 @@ test("the return pages exchange no stranger's code and send no one off-site", { 
   await page.locator("#status", { hasText: "not finished" }).waitFor();
   assert.equal(page.url(), `${ORIGIN}/app/connected`);
   assert.ok(!seen.slice(from).some((r) => r.url.startsWith("https://evil.test")));
+});
+
+test("the sign-in return page says each refusal's reason in words, with what to do, only for " +
+     "a sign-in its tab began", { timeout: 60_000 }, async () => {
+  const probe = await context.newPage();
+  // This tab began a sign-in of state `s1`, as the app does before it leaves for /authorize.
+  await probe.addInitScript(() => sessionStorage.setItem("ta.app.signin",
+    JSON.stringify({ state: "s1", verifier: "v" })));
+  const again = "Go back to the app to try again.";
+  const shown = async (query) => {
+    await probe.goto(`${ORIGIN}/app/signed-in?${new URLSearchParams(query)}`);
+    const status = probe.locator("#status");
+    await status.filter({ hasText: again }).waitFor();
+    return status.textContent();
+  };
+  const upstream = "the sign-in was refused: access_denied: The user cancelled";
+  for (const [error, reason, said] of [
+    ["temporarily_unavailable", CANARY_ONLY, "This account can't use TinyAssets here for now: " +
+      "only the accounts this deployment is being tested with can (on the stage, sign in with " +
+      "a stage account)."],
+    ["temporarily_unavailable", MAINTENANCE, "TinyAssets is in maintenance."],
+    ["access_denied", STALE_SIGN_IN, "The sign-in is too old to use: sign in again."],
+    ["access_denied", ERASED_SIGN_IN, "This account was erased, so it can't sign in again: " +
+      "sign in with another account."],
+    ["access_denied", upstream, "The sign-in was refused: access_denied: The user cancelled."],
+    ["access_denied", null, "The sign-in was cancelled or refused."],
+    ["temporarily_unavailable", null, "TinyAssets can't finish a sign-in right now."],
+    ["server_error", null, "The sign-in was not finished (server_error)."],
+  ]) {
+    const query = { error, state: "s1", ...reason === null ? {} : { error_description: reason } };
+    assert.equal(await shown(query), `${said} ${again}`, `${error}: ${reason}`);
+  }
+  // A link made elsewhere, of no sign-in this tab began: its words are never shown.
+  assert.equal(await shown({ error: "access_denied", state: "forged",
+                             error_description: "call this number to unlock your account" }),
+               `This sign-in was not started in this tab. ${again}`);
+  await probe.close();
 });
 
 test("a leaked token alone changes no agent's definition, and a missing door is a real 404",

@@ -54,7 +54,7 @@ import {
   APP_RESOURCE, MCP_RESOURCE, UPSTREAM_CALLBACK, ZONE,
 } from "../../contract/src/identity";
 import { navigation } from "../../contract/src/navigation";
-import { SIGN_IN_MAX_AGE_S } from "../../contract/src/signin";
+import { SIGN_IN_MAX_AGE_S, STALE_SIGN_IN } from "../../contract/src/signin";
 import { outsideRead, ownerRead } from "./control";
 import { requireFresh } from "../../contract/src/control";
 import { putOwner, readOwner } from "./directory";
@@ -75,6 +75,18 @@ const escape = (value: string): string =>
 
 function granted(scope: readonly string[]): string[] {
   return scope.filter((s) => SCOPES.includes(s));
+}
+
+/** The most characters of the upstream's own words a refusal carries. */
+const UPSTREAM_SAID_MAX = 300;
+
+/**
+ * The upstream's refusal of a sign-in in its own words, `error` and then its
+ * `error_description`: control characters made spaces, cut to `UPSTREAM_SAID_MAX`.
+ */
+function upstreamSaid(error: string, description: string | null): string {
+  const text = description === null || description === "" ? error : `${error}: ${description}`;
+  return text.replace(/\p{C}/gu, " ").slice(0, UPSTREAM_SAID_MAX);
 }
 
 /**
@@ -279,8 +291,15 @@ export async function callback(request: Request, env: DoorsEnv): Promise<Respons
   const { request: original, data, headers } = resumed;
   const params = new URL(request.url).searchParams;
   const code = params.get("code");
-  if (params.get("error") !== null || code === null) {
-    return redirect(authorizationErrorRedirect(original, "access_denied"), headers);
+  const upstreamError = params.get("error");
+  if (upstreamError !== null || code === null) {
+    // The upstream's own words (OAuth's `error` and `error_description`, which name what it
+    // refused, never a token), to the client's page and the Worker's log alike.
+    const said = upstreamError === null ? "it returned no code"
+      : upstreamSaid(upstreamError, params.get("error_description"));
+    console.error(`the upstream sign-in failed: ${said}`);
+    return redirect(authorizationErrorRedirect(original, "access_denied",
+                                               `the sign-in was refused: ${said}`), headers);
   }
   let signedIn: SignIn;
   try {
@@ -296,8 +315,8 @@ export async function callback(request: Request, env: DoorsEnv): Promise<Respons
   const at = now();
   if (signedIn.authenticated_at < at - SIGN_IN_MAX_AGE_S
       || signedIn.authenticated_at > at + CLOCK_MARGIN_S) {
-    return redirect(authorizationErrorRedirect(original, "access_denied",
-                                               "sign in again"), headers);
+    return redirect(authorizationErrorRedirect(original, "access_denied", STALE_SIGN_IN),
+                    headers);
   }
   return answered(asRedirect(original, headers), () => granting(env, oauth, upstream,
                                                                  original, headers, signedIn));

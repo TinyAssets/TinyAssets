@@ -14,6 +14,14 @@
  * `resolve` is the one place a relative or dotted path is turned into a stored one, against
  * a `cwd`; the RPC doors take only stored paths and refuse anything else.
  *
+ * A new name is one every place the owner's files reach can hold (`unportable`): they sync
+ * to Linux sandboxes and to the owner's own computers, Windows and macOS among them
+ * (ADR-040), so a name Windows cannot hold, or one holding a control character, is never
+ * made. The owner's object holds the rule wherever an entry is made (`owner/src/files.ts`
+ * `#upsert`: the file tools, uploads, the sync, a rename's target, a restore), and the
+ * cutover's importer keeps such a name in `refused.tar` (`newPath`). A name made before the
+ * rule is read, written, removed and renamed as it is (`untangle-2026-11/stage-batch-3.md`).
+ *
  * The owner's agent trees (Direction 3: abilities are editable files): the agent
  * definitions, the abilities' trees that reach every engine's instructions, the owner's
  * goals and the owner's profile.
@@ -83,9 +91,14 @@ export function within(path: string, root: string): boolean {
  * refused as invalid.
  */
 export function storedPath(value: unknown): string {
-  if (typeof value !== "string" || !value.startsWith("/") || value.includes("\0")
-      || LONE_SURROGATE.test(value) || utf8Bytes(value) > MAX_PATH_BYTES) {
-    throw new Refusal("invalid", "a path is an absolute, well-formed path of at most 4096 bytes");
+  if (typeof value !== "string" || !value.startsWith("/")) {
+    throw new Refusal("invalid", "a path is absolute, such as /workspace/notes.md");
+  }
+  if (value.includes("\0")) {
+    throw new Refusal("invalid", "a path holds no NUL character");
+  }
+  if (LONE_SURROGATE.test(value) || utf8Bytes(value) > MAX_PATH_BYTES) {
+    throw new Refusal("invalid", "a path is well-formed Unicode of at most 4096 bytes");
   }
   const parts = value.split("/").slice(1);
   if (parts.some((part) => part === "" || part === "." || part === ".."
@@ -97,6 +110,62 @@ export function storedPath(value: unknown): string {
     throw new Refusal("invalid", "a path is under /workspace");
   }
   return value;
+}
+
+/** A control character: C0 (NUL, a newline, a tab among them), DEL and C1. */
+const CONTROL = /\p{Cc}/u;
+/**
+ * What a Windows file name cannot hold (Microsoft's "Naming Files, Paths, and Namespaces"),
+ * beside the `/` no stored name holds; OneDrive and Nextcloud's Windows-compatible names
+ * refuse the same.
+ */
+const NOT_ON_WINDOWS = /[\\:*?"<>|]/u;
+/**
+ * The device names Windows reserves, in any case and with any extension (`NUL.txt` is
+ * `NUL`), the part before the first dot read without its trailing spaces.
+ */
+const RESERVED = /^(?:CON|PRN|AUX|NUL|COM[0-9¹²³]|LPT[0-9¹²³])$/iu;
+
+/**
+ * Why `name`, one component, cannot be made in the owner's files, or null: a control
+ * character, a character Windows names cannot hold, a trailing space or dot (which Windows
+ * drops), or a device name Windows reserves. Every sync tool that reaches Windows meets these
+ * (Dropbox, OneDrive, Syncthing, git's `core.protectNTFS`); refused here, before a name is
+ * made, a name stays the same on every place it reaches.
+ */
+export function unportable(name: string): string | null {
+  const shown = JSON.stringify(name);
+  if (CONTROL.test(name)) {
+    return `the name ${shown} holds a control character (such as NUL, a tab or a newline), ` +
+      "which no file name holds";
+  }
+  const held = NOT_ON_WINDOWS.exec(name)?.[0];
+  if (held !== undefined) {
+    return `the name ${shown} holds ${held}, which a Windows file name cannot hold ` +
+      "(none of \\ : * ? \" < > |); the owner's files reach Windows computers, so choose " +
+      "another name";
+  }
+  if (/[ .]$/u.test(name)) {
+    return `the name ${shown} ends in a space or a dot, which Windows drops from a file name`;
+  }
+  if (RESERVED.test(name.split(".")[0]!.trimEnd())) {
+    return `the name ${shown} is a device name Windows reserves (CON, PRN, AUX, NUL, COM0 ` +
+      "to COM9 and LPT0 to LPT9, with any extension), so choose another name";
+  }
+  return null;
+}
+
+/**
+ * A stored path whose last name may be made (`unportable`), or refused as invalid: what a
+ * walk that makes each name below its parent checks, one name at a time (the importer's).
+ */
+export function newPath(value: unknown): string {
+  const path = storedPath(value);
+  const why = unportable(nameOf(path));
+  if (why !== null) {
+    throw new Refusal("invalid", why);
+  }
+  return path;
 }
 
 /**

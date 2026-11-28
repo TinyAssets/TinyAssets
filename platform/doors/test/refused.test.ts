@@ -9,7 +9,8 @@ import type { AuthRequest } from "@cloudflare/workers-oauth-provider";
 import { ProtocolError } from "@modelcontextprotocol/server";
 import { describe, expect, it } from "vitest";
 
-import { MAINTENANCE } from "../../contract/src/control";
+import { CANARY_ONLY, MAINTENANCE } from "../../contract/src/control";
+import { ERASED_SIGN_IN } from "../../contract/src/signin";
 import { Refusal, refusalOf } from "../../contract/src/refusal";
 import {
   answered, asEgress, asEgressFault, asEvent, asInbound, asJson, asRedirect, asRequest, asShared,
@@ -229,10 +230,13 @@ describe("a sign-in's answer", () => {
   const redirected = (refusal: Refusal): URL => new URL(
     asRedirect(original, new Headers())(refusal).headers.get("Location")!);
 
-  it("is temporarily_unavailable for any refusal for the moment, a closed gate's or a pool's",
-     () => {
-    for (const refusal of [new Refusal("unavailable", MAINTENANCE), new Refusal("storage_busy")]) {
-      expect(redirected(refusal).searchParams.get("error")).toBe("temporarily_unavailable");
+  it("is temporarily_unavailable for any refusal for the moment, a closed gate's or a pool's, " +
+     "its message the reason", () => {
+    for (const refusal of [new Refusal("unavailable", MAINTENANCE),
+                           new Refusal("unavailable", CANARY_ONLY), new Refusal("storage_busy")]) {
+      const url = redirected(refusal);
+      expect([url.searchParams.get("error"), url.searchParams.get("error_description")])
+        .toEqual(["temporarily_unavailable", refusal.message]);
     }
   });
 
@@ -240,7 +244,7 @@ describe("a sign-in's answer", () => {
     for (const code of ["erasing", "owner_erased"] as const) {
       const url = redirected(new Refusal(code));
       expect([url.searchParams.get("error"), url.searchParams.get("error_description")])
-        .toEqual(["access_denied", "this account was erased"]);
+        .toEqual(["access_denied", ERASED_SIGN_IN]);
     }
     const other = new Refusal("owner_suspended");
     expect(() => redirected(other)).toThrow(other);

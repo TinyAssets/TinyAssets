@@ -18,6 +18,7 @@ import {
   upstreamReturns, url,
 } from "./support";
 import { NAVIGATE } from "../../contract/src/navigation";
+import { STALE_SIGN_IN } from "../../contract/src/signin";
 import { Refusal } from "../../contract/src/refusal";
 
 function owner(): string {
@@ -185,8 +186,30 @@ describe("the authorization flow", () => {
     const approved = await decide(jar, handleOf(await page.text()), "approve");
     const stale = await upstreamReturns(jar, approved.headers.get("Location")!,
                                         { owner: owner(), authenticatedAt: now() - 601 });
-    expect(new URL(stale.headers.get("Location")!).searchParams.get("error"))
-      .toBe("access_denied");
+    const back = new URL(stale.headers.get("Location")!).searchParams;
+    expect([back.get("error"), back.get("error_description")])
+      .toEqual(["access_denied", STALE_SIGN_IN]);
+  });
+
+  it("hands the upstream's own refusal to the client and the log, in its words", async () => {
+    const client = await registerClient();
+    const jar = new Jar();
+    const { challenge } = await pkce();
+    const page = await consent(jar, client, challenge);
+    const approved = await decide(jar, handleOf(await page.text()), "approve");
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const refused = await upstreamReturns(jar, approved.headers.get("Location")!,
+                                            { owner: owner() }, doorsEnv, {
+        error: "access_denied", error_description: "The user cancelled\nthe sign-in" });
+      const back = new URL(refused.headers.get("Location")!).searchParams;
+      const said = "access_denied: The user cancelled the sign-in";
+      expect([back.get("error"), back.get("error_description")])
+        .toEqual(["access_denied", `the sign-in was refused: ${said}`]);
+      expect(logged).toHaveBeenCalledWith(`the upstream sign-in failed: ${said}`);
+    } finally {
+      logged.mockRestore();
+    }
   });
 
   it("names a failed upstream check at the callback, on its page and in the log", async () => {

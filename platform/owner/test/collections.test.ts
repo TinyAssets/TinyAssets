@@ -7,7 +7,7 @@ import type { WrittenRow } from "../src/collections";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import { Collections, LIMITS, type Row } from "../src/collections";
+import { Collections, LIMITS, type Row, ROW_CONFLICT } from "../src/collections";
 
 import { MIGRATIONS } from "../src/schema";
 import {
@@ -98,7 +98,7 @@ describe("the revision primitive", () => {
     }
     expect(await stub.collectionWrite(as("bob"), {
       collection: "board", row_id: "t1", body: "{}", expected_etag: "", private: false,
-    })).toEqual({ conflict: shownAs(one, body) });
+    })).toEqual({ conflict: shownAs(one, body), message: ROW_CONFLICT });
   });
 
   it("a private row is its writer's own, under an id apart from every other row's",
@@ -118,13 +118,13 @@ describe("the revision primitive", () => {
     const open = await write(o, "cara", { collection: ROOM, row_id: "p", body: "everyone's" });
     expect(await stub.collectionWrite(as("cara"), { collection: ROOM, row_id: "p", body: "x",
                                                     expected_etag: mine.etag, private: true }))
-      .toEqual({ conflict: shownAs(hers, "cara's") });
+      .toEqual({ conflict: shownAs(hers, "cara's"), message: ROW_CONFLICT });
     // A public claim is one for everyone, bob and the owner too.
     for (const caller of ["bob", alice]) {
       expect(await stub.collectionWrite(as(caller), { collection: ROOM, row_id: "p",
                                                       body: "mine", expected_etag: "",
                                                       private: false }))
-        .toEqual({ conflict: shownAs(open, "everyone's") });
+        .toEqual({ conflict: shownAs(open, "everyone's"), message: ROW_CONFLICT });
     }
     expect((await stub.collectionPull(as("bob"), { collection: ROOM, limit: 10 })).rows)
       .toEqual([shownAs(mine, "secret"), shownAs(open, "everyone's")]);
@@ -206,7 +206,7 @@ describe("the revision primitive", () => {
     expect((await rows(stub))[0]?.[4]).toBe("bob");
     expect(await stub.collectionWrite(as("bob"), {
       collection: "board", row_id: "t", body: "2", expected_etag: "", private: false,
-    })).toEqual({ conflict: shownAs(row, "1") });
+    })).toEqual({ conflict: shownAs(row, "1"), message: ROW_CONFLICT });
     const forged = await failure(() => stub.collectionWrite(as("bob"), {
       collection: "board", row_id: "t", body: "2", expected_etag: "", private: false,
       writer: alice } as never));
@@ -981,9 +981,10 @@ describe("the RPC door's owner-only erases", () => {
       .toEqual(["refused", "only the owner may delete collection rows"]);
     expect(await stub.collectionDelete(as(alice), {
       collection: "board", row_id: "t", expected_etag: "stale" }))
-      .toEqual({ conflict: shownAs(row, "1") });
+      .toEqual({ conflict: shownAs(row, "1"), message: ROW_CONFLICT });
     expect(await stub.collectionDelete(as(alice), {
-      collection: "board", row_id: "gone", expected_etag: "" })).toEqual({ conflict: null });
+      collection: "board", row_id: "gone", expected_etag: "" }))
+      .toEqual({ conflict: null, message: ROW_CONFLICT });
     expect(await stub.collectionDelete(as(alice), {
       collection: "board", row_id: "t", expected_etag: row.etag })).toEqual({ deleted: 1 });
     expect(await rows(stub)).toEqual([]);

@@ -158,8 +158,8 @@ tree. No call reached Cloudflare's API.
 ## Left, each with its reason
 
 - A rule the founder places before ours with Skip would skip it. The kit adds its rules
-  first; it does not move them back if he reorders.
-- A rule he made by hand from the old checklist line, under another ref, sits beside the
+  first; it does not move them back if the founder reorders.
+- A rule the founder made by hand from the old checklist line, under another ref, sits beside the
   kit's; the kit never touches a rule that is not its own.
 - A blocked caller sees Cloudflare's 403 page, not JSON: a body of our own is Pro's.
 - An open connection is not cut by a Block.

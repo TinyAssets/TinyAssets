@@ -15,7 +15,7 @@ import { sqlIn, until } from "../../ci/workerd";
 import { refusalOf } from "../../contract/src/refusal";
 import { MARK_BODY } from "../../contract/src/files";
 import { jsonBytes, RESULT_CHARS } from "../../contract/src/encoded";
-import { LIMITS } from "../src/collections";
+import { LIMITS, ROW_CONFLICT } from "../src/collections";
 import { Files, PLACE_TTL_S } from "../src/files";
 import { BODY_BYTES_MAX, GC_GRACE_S, INLINE_BYTES, PLACE_BYTES } from "../../contract/src/limits";
 import { GRANT_LIMITS, scopes } from "../src/grants";
@@ -289,12 +289,12 @@ describe("the placement rule, held to the owner's own limits", () => {
     await put(LARGE, "");
     const stored = (await stub.collectionGet(as(name), { collection: "board", row_id: "r" }))
       .row!;
-    expect(await put("mine", "stale")).toEqual({ conflict: stored });
+    expect(await put("mine", "stale")).toEqual({ conflict: stored, message: ROW_CONFLICT });
     expect(stored.body).toBe(LARGE);
     expect(Object.keys(stored)).not.toContain("content_id");
     expect(await stub.collectionDelete(as(name), { collection: "board", row_id: "r",
                                                    expected_etag: "stale" }))
-      .toEqual({ conflict: stored });
+      .toEqual({ conflict: stored, message: ROW_CONFLICT });
   });
 
   it("an outside client's placed bodies are its own, held to its share and the reserve",
