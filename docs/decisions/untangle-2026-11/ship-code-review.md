@@ -414,7 +414,8 @@ allowed call of another form beside a denied exact act passed, so any call
 naming a canary now counts and must be denied (`[sidecat]`);
 `permissions.disableAutoMode` `"disable"`, the docs' form, refused every
 dispatch and now passes, as at the top level; the reviewer's budget is sized
-(§ Departures).
+(§ Departures). Its fix, e3b95a9ad, also carries the previous commit's
+message by mistake; this paragraph is its record.
 
 The settings also turn off the Artifact tool's scratchpad (`enableArtifact`), a
 directory outside DIR it writes without asking, and claude.ai plugin sync
