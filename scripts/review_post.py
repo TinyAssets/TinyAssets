@@ -7,7 +7,8 @@
 Run it from a detached worktree of `origin/main`, the reviewer's working directory,
 as `python3 -I scripts/review_post.py`, never the PR's copy: a PR must not loosen
 its own review. It calls `gh` by its absolute path and refuses one inside a git
-checkout, which a PR's tree could put first on `PATH`.
+checkout, which a PR's tree could put first on `PATH`, and imports only the
+`review_checks` beside it, main's too, for the edit rule `review.yml` applies.
 
 `read` lists what a review must answer: every earlier `Important:` finding, edit
 and `Founder question:` by a writer, and the PR's comments. `post` builds the
@@ -51,9 +52,11 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, replace
-from datetime import datetime
 from pathlib import Path
 from typing import Callable
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import review_checks as checks  # noqa: E402
 
 # The two verdicts review.yml reads as a review's first line
 # (scripts/tests/test_review_post.py reads a posted one through review_checks).
@@ -72,11 +75,6 @@ _STATUSES = {"important": ("fixed", "withdrawn", "standing"),
              "question": ("answered", "standing")}
 _WRITER_ROLES = frozenset({"admin", "maintain", "write"})
 _BOTS = frozenset({"github-actions[bot]"})
-# GitHub stamps `updated_at` up to a second after a record is made with no edit
-# (#5862's read of 249 reviews); past this, it was edited. #5862's
-# `review_edits` holds the same rule for reviews; reading it from there is owed
-# once that PR merges (ship-code-review.md).
-_EDITED_AFTER_S = 10
 
 
 class Refused(Exception):
@@ -124,32 +122,13 @@ def _login(record: dict) -> str:
     return login if isinstance(login, str) else ""
 
 
-def _edited(record: dict, made: str = "created_at") -> bool:
-    """Whether `record` was edited after it was made; raises on a record with no
-    times, which the decision cannot read."""
-    made_at, updated = record.get(made), record.get("updated_at")
-    if not (isinstance(made_at, str) and isinstance(updated, str)):
-        raise ValueError(f"{record.get('id')!r} has no {made} or updated_at")
-    gap = datetime.fromisoformat(updated) - datetime.fromisoformat(made_at)
-    return gap.total_seconds() > _EDITED_AFTER_S
-
-
-def edited_reviews(events: list[object]) -> dict[int, str]:
-    """Each edited review's id and edit time, from `GET issues/{n}/timeline`: the
-    reviews listing has no edit time, the `reviewed` events do. A dismissed or
-    pending one is skipped, as #5862's `review_edits` does."""
-    edits: dict[int, str] = {}
-    for event in events:
-        if not isinstance(event, dict):
-            raise ValueError(f"not a timeline event: {event!r}")
-        if event.get("event") != "reviewed" or event.get("state") in {"dismissed",
-                                                                       "pending"}:
-            continue
-        if not isinstance(event.get("id"), int):
-            raise ValueError(f"review event {event!r} has no id")
-        if _edited(event, "submitted_at"):
-            edits[event["id"]] = str(event["updated_at"])
-    return edits
+def _edited(comment: dict) -> bool:
+    """Whether a comment was edited after it was posted, by `review_checks`'
+    `is_edited`; raises on one with no times, which the decision cannot read."""
+    made, updated = comment.get("created_at"), comment.get("updated_at")
+    if not (isinstance(made, str) and isinstance(updated, str)):
+        raise ValueError(f"{comment.get('id')!r} has no created_at or updated_at")
+    return checks.is_edited(made, updated)
 
 
 def resolve_gh() -> str:
@@ -203,7 +182,7 @@ class Earlier:
 
 def earlier_findings(reviews: list[object], comments: list[object], *,
                      writers: frozenset[str],
-                     edits: dict[int, str] | None = None) -> list[Earlier]:
+                     edits: dict[int, tuple[str, str]] | None = None) -> list[Earlier]:
     """Every earlier entry by a writer, from `GET pulls/{n}/reviews` and
     `GET pulls/{n}/comments` (outdated ones included), whatever the base did.
 
@@ -213,7 +192,7 @@ def earlier_findings(reviews: list[object], comments: list[object], *,
     one its review's body lacks is a finding of its own (`comment:<id>#<k>`).
     A founder question is one in either (`question:<review id>#<k>`,
     `question:comment:<id>#<k>`). An edited review (`edits`, from
-    `edited_reviews`) or an edited thread's first comment is an entry too: what
+    `review_checks.review_edits`) or an edited thread's first comment is an entry too: what
     it said before is gone, so it stands until a review marks it. A pending
     review (no `submitted_at`) and its comments, which nobody else can read, do
     not count.
@@ -245,7 +224,7 @@ def earlier_findings(reviews: list[object], comments: list[object], *,
                 found.append(Earlier(f"question:{rid}#{q}", "question", login, when,
                                      commit, "", question.group(1).strip()))
         if rid in (edits or {}):
-            found.append(Earlier(f"review:{rid}:edited", "edited", login, edits[rid],
+            found.append(Earlier(f"review:{rid}:edited", "edited", login, edits[rid][1],
                                  commit, "", "this review was edited after it was posted"))
     for comment in comments:
         if not isinstance(comment, dict) or not isinstance(comment.get("id"), int):
@@ -480,7 +459,7 @@ def read_pull(get: Get, repo: str, pr: int, writers: frozenset[str]) -> PullStat
     head = pull.get("head", {}).get("sha") if isinstance(pull, dict) else None
     if not (isinstance(head, str) and _SHA_RE.fullmatch(head)):
         raise ValueError(f"PR {pr} has no head commit")
-    edits = edited_reviews(get(f"repos/{repo}/issues/{pr}/timeline?per_page=100"))
+    edits = checks.review_edits(get(f"repos/{repo}/issues/{pr}/timeline?per_page=100"))
     earlier = earlier_findings(get(f"repos/{repo}/pulls/{pr}/reviews?per_page=100"),
                                get(f"repos/{repo}/pulls/{pr}/comments?per_page=100"),
                                writers=writers, edits=edits)

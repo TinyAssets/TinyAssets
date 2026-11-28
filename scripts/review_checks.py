@@ -170,17 +170,18 @@ def standing_verdicts(reviews: list[object], *, head: str,
     already answers (in the head's history, one on its commit or a descendant;
     outside it, one on the head), and then for the author of each review edited at
     or after it: an answered verdict cannot decide, so neither its author's read nor
-    an older edit's ever holds a PR. When it raises `PermissionUnread`, so does
-    this: that author may be a writer whose BLOCK stands.
+    an older edit's ever holds a PR. One read decides both paths: an author GitHub
+    does not find (`PermissionUnread.not_found`, a 404: a bot, a deleted account) is
+    no writer, so neither its verdict nor its edit counts. Any other failed read
+    raises `PermissionUnread`, and so does this: that author may be a writer whose
+    BLOCK stands.
 
     A dismissed review, by anyone, voids every verdict at or before it: dismissing
     a BLOCK must not bring back the APPROVE it answered (#3989's failure), so the
     check goes back to waiting until a newer verdict. An edit of a writer's review,
-    `(author, when)` from `review_edits`, voids every verdict at or before its time
+    `(author, when)`, the values of `review_edits`, voids every verdict at or before its time
     the same way: an edited first line would otherwise turn a BLOCK into an APPROVE,
-    or into no verdict, with no review after it. An edited review whose author
-    GitHub does not find (404: a bot, a deleted account) is no writer's, so its edit
-    voids nothing; any other failed read raises as above.
+    or into no verdict, with no review after it.
 
     `since` is the time the PR's base last changed (`last_base_change`): a review
     submitted before it read a diff against another base, so it counts for nothing.
@@ -239,18 +240,17 @@ def standing_verdicts(reviews: list[object], *, head: str,
                    and line(read, head) and line(commit, read)
                    for then, other, read in seen)
 
-    pushes: dict[str, bool] = {}
-    editors: dict[str, bool] = {}
+    writers: dict[str, bool] = {}
 
-    def edited_by_writer(author: str) -> bool:
-        if author not in editors:
+    def writer(login: str) -> bool:
+        if login not in writers:
             try:
-                editors[author] = can_push(author)
+                writers[login] = can_push(login)
             except PermissionUnread as exc:
                 if not exc.not_found:
                     raise
-                editors[author] = False
-        return editors[author]
+                writers[login] = False
+        return writers[login]
 
     standing: list[tuple[Verdict, bool]] = []
     for when, ident, login, verdict in sorted(verdicts, key=lambda v: v[:2], reverse=True):
@@ -263,11 +263,9 @@ def standing_verdicts(reviews: list[object], *, head: str,
                 newer.commit == head for newer, _ in standing)
         if answered or (verdict.verdict == "APPROVE" and late(when, ident, verdict.commit)):
             continue
-        if any(edited >= when and edited_by_writer(author) for author, edited in edits):
+        if any(edited >= when and writer(author) for author, edited in edits):
             break
-        if login not in pushes:
-            pushes[login] = can_push(login)
-        if pushes[login]:
+        if writer(login):
             standing.append((verdict, inside))
     return [verdict for verdict, _ in standing]
 
@@ -280,16 +278,23 @@ def standing_verdicts(reviews: list[object], *, head: str,
 _EDITED_AFTER_S = 10
 
 
-def review_edits(events: list[object]) -> list[tuple[str, str]]:
-    """Each edited review, `(author, updated_at)`, from `GET /issues/{n}/timeline`.
+def is_edited(made: str, updated: str) -> bool:
+    """Whether a record GitHub stamped `made` and `updated` was edited: an `updated`
+    more than `_EDITED_AFTER_S` later. The one rule for a review here and for the
+    reviewer's poster (`review_post.py`), a comment's `created_at` included."""
+    gap = datetime.fromisoformat(updated) - datetime.fromisoformat(made)
+    return gap.total_seconds() > _EDITED_AFTER_S
+
+
+def review_edits(events: list[object]) -> dict[int, tuple[str, str]]:
+    """Each edited review, `{id: (author, updated_at)}`, from `GET /issues/{n}/timeline`.
 
     The reviews listing has no edit time; the timeline's `reviewed` events carry
-    `updated_at`, which an edit of the body moves (above). A review is edited when it
-    is more than `_EDITED_AFTER_S` after its `submitted_at`. A dismissed one is
-    skipped: its dismissal already voids it. The timeline names the review's author,
-    not its editor. Raises on a `reviewed` event not the API's shape.
+    `updated_at`, which an edit of the body moves (above): `is_edited`. A dismissed
+    one is skipped: its dismissal already voids it. The timeline names the review's
+    author, not its editor. Raises on a `reviewed` event not the API's shape.
     """
-    edits: list[tuple[str, str]] = []
+    edits: dict[int, tuple[str, str]] = {}
     for event in events:
         if not isinstance(event, dict):
             raise ValueError(f"not a timeline event: {event!r}")
@@ -297,13 +302,13 @@ def review_edits(events: list[object]) -> list[tuple[str, str]]:
             continue
         user = event.get("user")
         login = user.get("login") if isinstance(user, dict) else None
+        ident = event.get("id")
         submitted, updated = event.get("submitted_at"), event.get("updated_at")
-        if not (isinstance(login, str) and isinstance(submitted, str)
-                and isinstance(updated, str)):
-            raise ValueError(f"review event {event.get('id')!r} has no author or times")
-        gap = datetime.fromisoformat(updated) - datetime.fromisoformat(submitted)
-        if gap.total_seconds() > _EDITED_AFTER_S:
-            edits.append((login, updated))
+        if not (isinstance(login, str) and isinstance(ident, int)
+                and isinstance(submitted, str) and isinstance(updated, str)):
+            raise ValueError(f"review event {ident!r} has no id, author or times")
+        if is_edited(submitted, updated):
+            edits[ident] = (login, updated)
     return edits
 
 
@@ -768,7 +773,7 @@ def _review_check(argv: list[str]) -> int:
             raise ValueError("the reviews or the timeline is not a JSON array")
         state = review_check(
             reviews, base=args.base, head=args.head, since=last_base_change(events),
-            edits=review_edits(events),
+            edits=review_edits(events).values(),
             carry=lambda commit: carries(args.base, commit, args.head),
             in_line=in_line, can_push=push_reader(args.repo),
         )

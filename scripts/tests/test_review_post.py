@@ -251,7 +251,7 @@ def test_an_edited_finding_or_review_stands_until_a_review_marks_it(tmp_path, wr
     slack = {**_comment(6, "Important: stamped a second late", review=1),
              "updated_at": "2026-11-28T10:00:01Z"}
     gh = GitHub(reviews=[_review(1, "BLOCK")], comments=[edited, slack],
-                timeline=[{"event": "reviewed", "id": 1,
+                timeline=[{"event": "reviewed", "id": 1, "user": {"login": WRITER},
                            "submitted_at": "2026-11-28T10:00:00Z",
                            "updated_at": "2026-11-28T11:00:00Z"}])
     assert _post(tmp_path, writers, gh, {"verdict": "APPROVE"}) == 2
@@ -299,21 +299,22 @@ def test_every_founder_question_of_a_review_is_listed():
     assert [(f.id, f.text) for f in found] == [("question:1#1", "a?"), ("question:1#2", "b?")]
 
 
-def test_an_edit_is_read_as_review_checks_reads_it():
-    """Inside the slack GitHub stamps with no edit, nothing is edited; a dismissed or
-    pending review is skipped; an event with no times fails loudly."""
-    def event(ident, updated, state="commented"):
-        return {"event": "reviewed", "id": ident, "state": state,
-                "submitted_at": "2026-11-28T10:00:00Z", "updated_at": updated}
-    assert rp.edited_reviews([event(1, "2026-11-28T10:00:09Z"),
-                              event(2, "2026-11-28T10:00:11Z"),
-                              event(3, "2026-11-28T11:00:00Z", "dismissed"),
-                              event(4, "2026-11-28T11:00:00Z", "pending")]) == {
-        2: "2026-11-28T10:00:11Z"}
+def test_an_edit_is_read_by_review_checks_one_rule(writers):
+    """The poster reads a review's edit and a comment's through review_checks, the
+    rule review.yml applies: inside its slack nothing is edited, past it the edit is
+    an entry, and a record with no times fails loudly."""
+    def event(ident, updated):
+        return {"event": "reviewed", "id": ident, "state": "commented",
+                "user": {"login": WRITER}, "submitted_at": "2026-11-28T10:00:00Z",
+                "updated_at": updated}
+    gh = GitHub(reviews=[_review(1, "BLOCK"), _review(2, "BLOCK")],
+                comments=[{**_comment(5, "Important: x"), "updated_at": "2026-11-28T10:00:09Z"},
+                          {**_comment(6, "Important: y"), "updated_at": "2026-11-28T10:00:11Z"}],
+                timeline=[event(1, "2026-11-28T10:00:09Z"), event(2, "2026-11-28T10:00:11Z")])
+    ids = [f.id for f in rp.read_pull(gh.get, REPO, PR, rp.load_writers(writers)).earlier]
+    assert sorted(ids) == ["comment:5#1", "comment:6:edited", "review:2:edited"]
     with pytest.raises(ValueError):
-        rp.edited_reviews([{"event": "reviewed", "id": 5, "state": "commented"}])
-    with pytest.raises(ValueError):
-        rp.earlier_findings([], [{**_comment(6, "Important: x"), "updated_at": None}],
+        rp.earlier_findings([], [{**_comment(7, "Important: z"), "updated_at": None}],
                             writers=frozenset({WRITER}))
 
 
@@ -417,7 +418,9 @@ def test_a_posted_verdict_is_the_one_review_checks_reads(tmp_path, writers, verd
     review = {"id": 9, "state": "COMMENTED", "body": gh.posts[0][1]["body"],
               "commit_id": HEAD, "submitted_at": "2026-11-28T11:00:00Z",
               "user": {"login": WRITER}}
-    read = review_checks.latest_verdict([review], can_push=lambda login: True)
+    [read] = review_checks.standing_verdicts([review], head=HEAD,
+                                             in_line=lambda older, newer: older == newer,
+                                             can_push=lambda login: True)
     assert (read.verdict, read.commit) == (verdict, HEAD)
 
 

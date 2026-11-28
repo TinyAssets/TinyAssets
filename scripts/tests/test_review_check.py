@@ -432,18 +432,20 @@ def test_an_edit_is_read_from_the_timeline():
                 "updated_at": updated, "user": {"login": "writer"}, **more}
 
     assert gate.review_edits([event(_T1), event(_T1_1S), event(_T2, state="dismissed"),
-                              {"event": "committed"}]) == []
-    assert gate.review_edits([event("2026-11-04T10:00:11Z")]) == [
-        ("writer", "2026-11-04T10:00:11Z")]
+                              {"event": "committed"}]) == {}
+    assert gate.review_edits([event("2026-11-04T10:00:11Z")]) == {
+        1: ("writer", "2026-11-04T10:00:11Z")}
     # Review 6096259332 on #5862, read live (verdict-order.md item 6): as submitted, then
     # after its body's edit. Resolving its thread, replying in it and editing its inline
     # comment afterwards left `updated_at` at the edit.
     submitted = {"submitted_at": "2026-11-28T06:24:05Z"}
-    assert gate.review_edits([event("2026-11-28T06:24:05Z", **submitted)]) == []
-    assert gate.review_edits([event("2026-11-28T06:24:37Z", **submitted)]) == [
-        ("writer", "2026-11-28T06:24:37Z")]
+    assert gate.review_edits([event("2026-11-28T06:24:05Z", **submitted)]) == {}
+    assert gate.review_edits([event("2026-11-28T06:24:37Z", **submitted)]) == {
+        1: ("writer", "2026-11-28T06:24:37Z")}
     with pytest.raises(ValueError):
         gate.review_edits([{"event": "reviewed", "state": "commented"}])
+    with pytest.raises(ValueError):
+        gate.review_edits([{**event("2026-11-04T10:00:11Z"), "id": None}])
 
 
 def test_in_line_is_git_ancestry_and_a_missing_head_decides_nothing(heads):
@@ -844,13 +846,23 @@ def test_a_decision_reads_who_can_push_as_actions_and_counts_only_a_writer(pr_ch
     ((_, _, run),) = _writes(calls)
     assert run["status"] == "in_progress"
     assert run["output"]["title"] == f"waiting for review of {data['head']}"
+    # GitHub finds no such account (404): no writer, so the check waits.
     data["reviews"] = [_review("APPROVE", data["head"], login="gone")]
     done, calls, after = _decide(tmp_path, path, data)
     assert done.returncode == 0, done.stderr
     ((_, _, run),) = _writes(calls)
     assert run["status"] == "in_progress" and not _passes(after, data["head"])
+    assert run["output"]["title"] == f"waiting for review of {data['head']}"
+    # Any other failed read may hide a writer: no verdict counts, and it says why.
+    data["permissions"]["broken"] = "write"
+    data["fail"] = "collaborators/broken"
+    data["reviews"] = [_review("APPROVE", data["head"], login="broken")]
+    done, calls, after = _decide(tmp_path, path, data)
+    assert done.returncode == 0, done.stderr
+    ((_, _, run),) = _writes(calls)
+    assert run["status"] == "in_progress" and not _passes(after, data["head"])
     assert run["output"]["title"] == (
-        "no verdict counts: could not read gone's permission: gh: Not Found (HTTP 404)")
+        "no verdict counts: could not read broken's permission: gh exited 1")
     assert run["output"]["title"] in (tmp_path / "summary").read_text(encoding="utf-8")
 
 

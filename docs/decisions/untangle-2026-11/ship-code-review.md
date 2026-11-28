@@ -55,9 +55,10 @@ landing step goes.
    every edit to a review or to a thread's first comment (`...:edited`), every
    `Founder question:` (`question:<id>#<k>`), and the PR's comments, the
    writers' apart from the bots'. Entries come only from writers, whatever the
-   base did. Edits are read as #5862's `review_edits` reads them (the same
-   slack; a dismissed or pending review skipped; a record with no times fails
-   loudly).
+   base did. Edits are read by `review_checks`, the one rule `review.yml`
+   applies: `review_edits` for a review (now `{id: (author, when)}`) and
+   `is_edited` for a comment, a record with no times failing loudly. The poster
+   imports the `review_checks` beside it, main's in main's worktree.
 2. `review_post.py post` builds one `COMMENT` review from the reviewer's JSON
    and posts it on `--commit`. The body is the record: the verdict first, a
    founder question on its own line, every finding with its one marker and
@@ -127,6 +128,13 @@ landing step goes.
    label line; `pr-scope-guard.yml` cites `REVIEW.md` for the lineage rule;
    `review-queue.yml` drops the removed carry's reason; the gates page's pin
    at its file's size.
+8. Carried from #5862's review into `review_checks.py`, after merging it: one
+   cache of the permission read for the verdict and edit paths, where there
+   were two that could ask twice and read a 404 in opposite ways, and a 404
+   read as no writer on the verdict path too, so a `github-actions[bot]`
+   verdict no longer holds a PR; a thread reply's empty review is named as
+   evidence a later APPROVE of an earlier head is late (`verdict-order.md`
+   items 5, 8 and 9).
 
 ## From #5864's first review (25154449e, BLOCK)
 
@@ -236,5 +244,5 @@ to 58,339.
 
 ## Owed
 
-- [ ] fix/verdict-order: whichever of #5862 and this PR merges second makes `review_post.py` read review edits through `review_checks`' one rule and slack, and points `test_a_posted_verdict_is_the_one_review_checks_reads` at `standing_verdicts`
+- [x] fix/verdict-order: whichever of #5862 and this PR merges second makes `review_post.py` read review edits through `review_checks`' one rule and slack, and points `test_a_posted_verdict_is_the_one_review_checks_reads` at `standing_verdicts`
 - [ ] live: the coordinator deletes the host's `land_pr2.sh`, `land_pr.sh` and `untangle/receipt_*.md` and the brief's receipt line, then ticks `claude-ship.md`'s `process/ship-code-review` lane line, once one PR's review is posted with main's `review_post.py` (after `process/ship-code-review` merges)
