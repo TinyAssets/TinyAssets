@@ -31,7 +31,7 @@ def _comment(ident: int, body: str, login: str = WRITER, *, review: int | None =
              line: int | None = 2, when: str = "2026-11-28T10:00:00Z") -> dict:
     return {"id": ident, "body": body, "user": {"login": login}, "path": "a.py",
             "line": line, "original_line": 2, "commit_id": OLD, "original_commit_id": OLD,
-            "pull_request_review_id": review, "created_at": when}
+            "pull_request_review_id": review, "created_at": when, "updated_at": when}
 
 
 class GitHub:
@@ -258,27 +258,74 @@ def test_an_edited_finding_or_review_stands_until_a_review_marks_it(tmp_path, wr
 
 def test_an_earlier_founder_question_stands_until_a_writers_answer_after_it(
         tmp_path, writers, capsys):
-    def at(ident, login, when):
+    def at(ident, login, when, updated=None):
         return {"id": ident, "user": {"login": login}, "body": "Founder (2026-11-28): yes",
-                "created_at": when}
+                "created_at": when, "updated_at": updated or when}
     gh = GitHub(reviews=[_review(1, "BLOCK\n\nFounder question: ship X?",
                                  when="2026-11-28T10:00:00Z")],
                 issue_comments=[at(4, WRITER, "2026-11-28T09:00:00Z"),
                                 at(5, BOT, "2026-11-28T11:00:00Z"),
-                                at(6, WRITER, "2026-11-28T11:00:00Z")])
+                                at(6, WRITER, "2026-11-28T11:00:00Z"),
+                                at(7, WRITER, "2026-11-28T11:00:00Z", "2026-11-28T15:00:00Z")])
     assert _post(tmp_path, writers, gh, {"verdict": "APPROVE", "summary": "delta fine"}) == 2
-    assert "earlier question:1" in capsys.readouterr().err
+    assert "earlier question:1#1" in capsys.readouterr().err
 
     def answered(by: str) -> dict:
         return {"verdict": "APPROVE", "earlier": [
-            {"id": "question:1", "status": "answered", "answer": by}]}
-    assert _post(tmp_path, writers, gh, answered("issuecomment:4")) == 2
-    assert _post(tmp_path, writers, gh, answered("issuecomment:5")) == 2
-    assert "not a writer's comment posted after" in capsys.readouterr().err
+            {"id": "question:1#1", "status": "answered", "answer": by}]}
+    for early_bot_or_edited in ("issuecomment:4", "issuecomment:5", "issuecomment:7"):
+        assert _post(tmp_path, writers, gh, answered(early_bot_or_edited)) == 2
+        assert "not a writer's comment posted after" in capsys.readouterr().err
     assert _post(tmp_path, writers, gh, {"verdict": "APPROVE", "earlier": [
-        {"id": "question:1", "status": "standing"}]}) == 2
+        {"id": "question:1#1", "status": "standing"}]}) == 2
     assert _post(tmp_path, writers, gh, answered("issuecomment:6")) == 0
-    assert "- answered: question:1" in gh.posts[0][1]["body"]
+    assert "- answered: question:1#1" in gh.posts[0][1]["body"]
+
+
+def test_every_founder_question_of_a_review_is_listed():
+    """A review written by hand can ask more than one."""
+    found = rp.earlier_findings([_review(1, "BLOCK\n\nFounder question: a?\n"
+                                            "Founder question: b?")], [],
+                                writers=frozenset({WRITER}))
+    assert [(f.id, f.text) for f in found] == [("question:1#1", "a?"), ("question:1#2", "b?")]
+
+
+def test_an_edit_is_read_as_review_checks_reads_it():
+    """Inside the slack GitHub stamps with no edit, nothing is edited; a dismissed or
+    pending review is skipped; an event with no times fails loudly."""
+    def event(ident, updated, state="commented"):
+        return {"event": "reviewed", "id": ident, "state": state,
+                "submitted_at": "2026-11-28T10:00:00Z", "updated_at": updated}
+    assert rp.edited_reviews([event(1, "2026-11-28T10:00:09Z"),
+                              event(2, "2026-11-28T10:00:11Z"),
+                              event(3, "2026-11-28T11:00:00Z", "dismissed"),
+                              event(4, "2026-11-28T11:00:00Z", "pending")]) == {
+        2: "2026-11-28T10:00:11Z"}
+    with pytest.raises(ValueError):
+        rp.edited_reviews([{"event": "reviewed", "id": 5, "state": "commented"}])
+    with pytest.raises(ValueError):
+        rp.earlier_findings([], [{**_comment(6, "Important: x"), "updated_at": None}],
+                            writers=frozenset({WRITER}))
+
+
+def test_a_gh_inside_a_checkout_is_refused(tmp_path, monkeypatch, writers, capsys):
+    """A PR's tree could put its own `gh` first on PATH; the real one is outside."""
+    def gh_in(folder: Path) -> Path:
+        (folder / "bin").mkdir(parents=True)
+        gh = folder / "bin" / "gh"
+        gh.write_text("#!/bin/sh\necho '[[]]'\n")
+        gh.chmod(0o755)
+        return gh
+    planted = gh_in(tmp_path / "head")
+    (tmp_path / "head" / ".git").write_text("gitdir: elsewhere\n")
+    monkeypatch.setenv("PATH", str(planted.parent))
+    with pytest.raises(rp.Refused, match="inside the checkout"):
+        rp.resolve_gh()
+    assert rp.run(["read", "--repo", REPO, "--pr", str(PR), "--writers", str(writers)]) == 2
+    assert "inside the checkout" in capsys.readouterr().err
+    real = gh_in(tmp_path / "tools")
+    monkeypatch.setenv("PATH", str(real.parent))
+    assert rp.resolve_gh() == str(real)
 
 
 def test_every_earlier_important_is_accounted_for_and_fixed_threads_resolved(
@@ -336,11 +383,19 @@ def test_a_founder_question_blocks_on_its_own_line(tmp_path, writers):
     assert "Founder question: Should reviews also run at night?" in lines
 
 
-def test_the_verdicts_are_the_ones_review_checks_reads():
-    """A guard holding the two equal: the poster imports nothing of the repository,
-    since the reviewer runs main's copy alone."""
+@pytest.mark.parametrize("verdict", rp.VERDICTS)
+def test_a_posted_verdict_is_the_one_review_checks_reads(tmp_path, writers, verdict):
+    """Read through review_checks' public decision, as review.yml reads it."""
     import review_checks
-    assert set(rp.VERDICTS) == set(review_checks._VERDICTS)
+    gh = GitHub()
+    spec = ({"verdict": verdict} if verdict == "APPROVE"
+            else {"verdict": verdict, "founder_question": "Ship it?"})
+    assert _post(tmp_path, writers, gh, {**spec, "summary": "Read it."}) == 0
+    review = {"id": 9, "state": "COMMENTED", "body": gh.posts[0][1]["body"],
+              "commit_id": HEAD, "submitted_at": "2026-11-28T11:00:00Z",
+              "user": {"login": WRITER}}
+    read = review_checks.latest_verdict([review], can_push=lambda login: True)
+    assert (read.verdict, read.commit) == (verdict, HEAD)
 
 
 def test_a_posted_review_whose_thread_will_not_resolve_says_so(tmp_path, writers, capsys):

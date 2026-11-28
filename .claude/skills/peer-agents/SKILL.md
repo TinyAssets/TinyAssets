@@ -20,7 +20,7 @@ python scripts/peer_agent.py codex --model sol --out output/codex-fix.md \
 The prompt goes to the peer via stdin. Peers do not see your chat: the brief holds every path, line, constraint and what "done" means. Set `--timeout` to what you will wait (900s over the 1800s default).
 
 - **A denied permission is the answer**, for you and every peer: never work around it; say what it blocks.
-- **Every PR is reviewed** (the untangle skill's "How this project uses it"): dispatch a separate reviewer on each new head once the PR is ready, never the authoring session, told to break the change; any model family, the other one when this host has it. It posts, so it runs `--write` with `--cwd` its own detached worktree, or as a session's subagent. Save the GitHub MCP's `list_repository_collaborators` answer (every page) as JSON and name the file in its brief. Its result is the review on the PR, never the `--out` text.
+- **Every PR is reviewed** (the untangle skill's "How this project uses it"): dispatch a separate reviewer on each new head once the PR is ready, never the authoring session, told to break the change; any model family, the other one when this host has it. It posts, so it runs `--write` with `--cwd` its own detached worktree of `origin/main`, never of the head (a session loads its working directory's hooks, settings, skills and instructions), or as a session's subagent. Save the GitHub MCP's `list_repository_collaborators` answer (every page) as JSON and name the file in its brief. Its result is the review on the PR, never the `--out` text.
 - **The founder's question.** A review's `Founder question:` line holds the PR (`review` fails). Ask him in chat, post his answer on the PR as a comment quoting him with the date, from a writer's account, then dispatch a fresh review. Feedback goes to the steward first.
 
 ## A dispatched peer must not dispatch
@@ -44,11 +44,11 @@ Parallel dispatches are fine once every brief carries the block, each with its o
 
 Claude Ship's Code Review, in a session (`docs/decisions/untangle-2026-11/claude-ship.md`):
 
-1. **Read** `REVIEW.md`, its includes and `CLAUDE.md` at `origin/main` (`git show origin/main:REVIEW.md`), never the PR's copy, and the head in your own detached worktree. Run main's poster too, from outside that worktree, so the PR cannot change it: `git show origin/main:scripts/review_post.py > <dir>/review_post.py`, then `python3 -I <dir>/review_post.py read --repo <o/r> --pr <n> --writers <file>` lists the earlier entries (findings, edits, founder questions) and the comments that count.
+1. **Read** from your working directory, a detached worktree of `origin/main` (Code Review reads only the default branch's instructions and never runs the PR's code): `REVIEW.md`, its includes, `CLAUDE.md` and this procedure are main's. Read the head only as git objects (`git diff origin/main...<sha>`, `git show <sha>:<path>`, `git grep <pattern> <sha>`), never checked out or added as a directory. `python3 -I scripts/review_post.py read --repo <o/r> --pr <n> --writers <file>` lists the earlier entries (findings, edits, founder questions) and the comments that count.
 2. **Find** in parallel: a few finders, each one slice (an area of the diff, or a kind from REVIEW.md's Important list), each returning candidates with `file:line` and the failing case.
 3. **Verify**: one verifier rereads each candidate in the source and drops what the code does not show; duplicates merge.
 4. **Rank** by `REVIEW.md`, and mark each earlier entry as the poster's docstring says.
-5. **Post**: write the review as the JSON that poster documents and run its `post` with `--commit <the head you read>`. It refuses a review `REVIEW.md` forbids, and a head past yours: review the new one. It resolves the threads you mark fixed.
+5. **Post**: write the review as the JSON that poster documents and run its `post` with `--commit <the sha you read>`. It refuses a review `REVIEW.md` forbids, and a head past yours: review the new one. It resolves the threads you mark fixed.
 
 ## Output and modes
 

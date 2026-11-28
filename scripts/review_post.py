@@ -4,9 +4,10 @@
     review_post.py read --repo O/R --pr N --writers FILE
     review_post.py post --repo O/R --pr N --writers FILE --commit SHA --review FILE
 
-Run `origin/main`'s copy, never the PR's (`git show origin/main:scripts/review_post.py
-> <dir>/review_post.py`, then `python3 -I <dir>/review_post.py`): a PR must not
-loosen its own review. It imports nothing of the repository.
+Run it from a detached worktree of `origin/main`, the reviewer's working directory,
+as `python3 -I scripts/review_post.py`, never the PR's copy: a PR must not loosen
+its own review. It calls `gh` by its absolute path and refuses one inside a git
+checkout, which a PR's tree could put first on `PATH`.
 
 `read` lists what a review must answer: every earlier `Important:` finding, edit
 and `Founder question:` by a writer, and the PR's comments. `post` builds the
@@ -19,7 +20,7 @@ PR's head:
                    "text": "One paragraph: the input, what happens, what should."},
                   {"severity": "Nit", "text": "A finding with no line."}],
      "earlier": [{"id": "review:123#1", "status": "fixed", "note": "abc1234"},
-                 {"id": "question:120", "status": "answered",
+                 {"id": "question:120#1", "status": "answered",
                   "answer": "issuecomment:456"}],
      "founder_question": "One sentence a non-engineer can answer."}
 
@@ -27,8 +28,8 @@ The verdict is the body's first line, which `review.yml` reads. The body is the
 record: it holds every finding, `path:line` first, and one goes inline as well
 when its line is in the PR's diff. Every earlier entry is listed: an Important
 or an edit as `fixed`, `withdrawn` (with its reason in `note`) or `standing`; a
-founder question as `answered`, by a writer's comment posted after it, or
-`standing`. The verdict is `BLOCK` exactly when one stands, or a new Important
+founder question as `answered`, by a writer's unedited comment posted after it,
+or `standing`. The verdict is `BLOCK` exactly when one stands, or a new Important
 or founder question. After posting, the threads of earlier inline findings it
 lists as fixed are resolved. Exit 0 posted, 1 GitHub or the head refused it, 2
 the input is refused, 3 posted but a thread was not resolved.
@@ -44,7 +45,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, replace
@@ -53,7 +56,7 @@ from pathlib import Path
 from typing import Callable
 
 # The two verdicts review.yml reads as a review's first line
-# (scripts/tests/test_review_post.py holds them equal to review_checks').
+# (scripts/tests/test_review_post.py reads a posted one through review_checks).
 VERDICTS = ("APPROVE", "BLOCK")
 MARKERS = ("Important", "Nit", "Pre-existing")
 _MARKER_RE = re.compile(r"^\s*(?:[-*+]\s+)?(Important|Nit|Pre-existing):\s*(.*)$")
@@ -68,7 +71,9 @@ _STATUSES = {"important": ("fixed", "withdrawn", "standing"),
 _WRITER_ROLES = frozenset({"admin", "maintain", "write"})
 _BOTS = frozenset({"github-actions[bot]"})
 # GitHub stamps `updated_at` up to a second after a record is made with no edit
-# (#5862's read of 249 reviews); past this, it was edited.
+# (#5862's read of 249 reviews); past this, it was edited. #5862's
+# `review_edits` holds the same rule for reviews; reading it from there is owed
+# once that PR merges (ship-code-review.md).
 _EDITED_AFTER_S = 10
 
 
@@ -117,24 +122,46 @@ def _login(record: dict) -> str:
     return login if isinstance(login, str) else ""
 
 
-def _edited(made: object, updated: object) -> bool:
-    if not (isinstance(made, str) and isinstance(updated, str)):
-        return False
-    gap = datetime.fromisoformat(updated) - datetime.fromisoformat(made)
+def _edited(record: dict, made: str = "created_at") -> bool:
+    """Whether `record` was edited after it was made; raises on a record with no
+    times, which the decision cannot read."""
+    made_at, updated = record.get(made), record.get("updated_at")
+    if not (isinstance(made_at, str) and isinstance(updated, str)):
+        raise ValueError(f"{record.get('id')!r} has no {made} or updated_at")
+    gap = datetime.fromisoformat(updated) - datetime.fromisoformat(made_at)
     return gap.total_seconds() > _EDITED_AFTER_S
 
 
 def edited_reviews(events: list[object]) -> dict[int, str]:
     """Each edited review's id and edit time, from `GET issues/{n}/timeline`: the
-    reviews listing has no edit time, the `reviewed` events do."""
+    reviews listing has no edit time, the `reviewed` events do. A dismissed or
+    pending one is skipped, as #5862's `review_edits` does."""
     edits: dict[int, str] = {}
     for event in events:
         if not isinstance(event, dict):
             raise ValueError(f"not a timeline event: {event!r}")
-        if (event.get("event") == "reviewed" and isinstance(event.get("id"), int)
-                and _edited(event.get("submitted_at"), event.get("updated_at"))):
+        if event.get("event") != "reviewed" or event.get("state") in {"dismissed",
+                                                                       "pending"}:
+            continue
+        if not isinstance(event.get("id"), int):
+            raise ValueError(f"review event {event!r} has no id")
+        if _edited(event, "submitted_at"):
             edits[event["id"]] = str(event["updated_at"])
     return edits
+
+
+def resolve_gh() -> str:
+    """`gh`'s absolute path, refused when it lives inside a git checkout: a PR's
+    tree could put its own `gh` first on `PATH`. Read from the files, not from
+    `git`, which `PATH` could replace too."""
+    found = shutil.which("gh")
+    if found is None:
+        raise Refused("no gh on PATH")
+    real = Path(os.path.realpath(found))
+    inside = next((d for d in real.parents if (d / ".git").exists()), None)
+    if inside is not None:
+        raise Refused(f"gh resolves to {real}, inside the checkout {inside}")
+    return str(real)
 
 
 def _text(first: str, rest: list[str]) -> str:
@@ -196,7 +223,7 @@ def earlier_findings(reviews: list[object], comments: list[object], *,
             continue
         commit = str(review.get("commit_id"))
         lines = (review.get("body") or "").splitlines()
-        k = 0
+        k = q = 0
         for i, line in enumerate(lines):
             mark, question = _MARKER_RE.match(line), _QUESTION_RE.match(line)
             if mark and mark.group(1) == "Important":
@@ -207,9 +234,10 @@ def earlier_findings(reviews: list[object], comments: list[object], *,
                     f"review:{rid}#{k}", "important", login, when, commit,
                     f"{where['path']}:{where['line']}" if where else "",
                     where["text"] if where else text))
-            elif question and not any(f.id == f"question:{rid}" for f in found):
-                found.append(Earlier(f"question:{rid}", "question", login, when, commit,
-                                     "", question.group(1).strip()))
+            elif question:
+                q += 1
+                found.append(Earlier(f"question:{rid}#{q}", "question", login, when,
+                                     commit, "", question.group(1).strip()))
         if rid in (edits or {}):
             found.append(Earlier(f"review:{rid}:edited", "edited", login, edits[rid],
                                  commit, "", "this review was edited after it was posted"))
@@ -225,7 +253,7 @@ def earlier_findings(reviews: list[object], comments: list[object], *,
         where = f"{comment.get('path')}:{comment.get('original_line')}"
         commit = str(comment.get("original_commit_id") or comment.get("commit_id"))
         body = (comment.get("body") or "").splitlines()
-        if _edited(when, comment.get("updated_at")):
+        if _edited(comment):
             found.append(Earlier(f"comment:{cid}:edited", "edited", login,
                                  str(comment["updated_at"]), commit, where,
                                  "this finding was edited: " + _text(body[0] if body else "",
@@ -295,8 +323,9 @@ def build_review(spec: object, *, earlier: list[Earlier], lines: dict[str, set[i
                  answers: dict[str, str] | None = None) -> Review:
     """The review `spec` asks for, or `Refused` with every reason it cannot be.
 
-    `answers` maps each writer's comment, `issuecomment:<id>`, to when it was
-    posted: a founder question is answered only by one posted after it.
+    `answers` maps each writer's unedited comment, `issuecomment:<id>`, to when
+    it was posted: a founder question is answered only by one posted after it.
+    An edited one answers nothing: what it quoted before is gone.
     """
     if not isinstance(spec, dict):
         raise Refused("the review file is not a JSON object")
@@ -361,7 +390,7 @@ def build_review(spec: object, *, earlier: list[Earlier], lines: dict[str, set[i
         elif status == "answered" and not ((answers or {}).get(str(entry.get("answer")), "")
                                            > known[ident].when):
             problems.append(f"earlier {ident}'s answer is not a writer's comment "
-                            "posted after the question")
+                            "posted after the question and never edited")
         else:
             accounted[ident] = entry
     problems += [f"earlier {f.id} ({f.where or f.commit[:9]}: {f.text[:80]}) is not "
@@ -400,23 +429,28 @@ Get = Callable[[str], object]
 Post = Callable[[str, dict | None], object]
 
 
-def _gh_get(path: str) -> object:
-    """A read, every page (`--paginate --slurp`) for a list. A failure fails the
-    run; the reviewer runs it again."""
-    done = subprocess.run(["gh", "api", "--paginate", "--slurp", path], capture_output=True,
-                          text=True, timeout=120, check=True)
-    pages = json.loads(done.stdout)
-    if isinstance(pages, list) and all(isinstance(p, list) for p in pages):
-        return [item for page in pages for item in page]
-    return pages[0] if isinstance(pages, list) and len(pages) == 1 else pages
+def gh_client(gh: str) -> tuple[Get, Post]:
+    """The reads and the write, through `gh` at its absolute path (`resolve_gh`).
 
+    A read takes every page (`--paginate --slurp`) of a list; a failure fails the
+    run, and the reviewer runs it again. A write is made once: a retried POST can
+    post a review twice.
+    """
+    def get(path: str) -> object:
+        done = subprocess.run([gh, "api", "--paginate", "--slurp", path],
+                              capture_output=True, text=True, timeout=120, check=True)
+        pages = json.loads(done.stdout)
+        if isinstance(pages, list) and all(isinstance(p, list) for p in pages):
+            return [item for page in pages for item in page]
+        return pages[0] if isinstance(pages, list) and len(pages) == 1 else pages
 
-def _gh_post(path: str, payload: dict | None) -> object:
-    """A write, once: a retried POST can post a review twice."""
-    done = subprocess.run(["gh", "api", "-X", "POST", path, "--input", "-"],
-                          input=json.dumps(payload or {}), capture_output=True,
-                          text=True, timeout=120, check=True)
-    return json.loads(done.stdout or "{}")
+    def post(path: str, payload: dict | None) -> object:
+        done = subprocess.run([gh, "api", "-X", "POST", path, "--input", "-"],
+                              input=json.dumps(payload or {}), capture_output=True,
+                              text=True, timeout=120, check=True)
+        return json.loads(done.stdout or "{}")
+
+    return get, post
 
 
 @dataclass(frozen=True)
@@ -457,7 +491,9 @@ def _show(state: PullState, writers: frozenset[str]) -> str:
     return "\n".join(out)
 
 
-def run(argv: list[str], *, get: Get = _gh_get, post: Post = _gh_post) -> int:
+def run(argv: list[str], *, get: Get | None = None, post: Post | None = None) -> int:
+    """The command line; `get` and `post` are GitHub's, through `resolve_gh`'s `gh`
+    unless given."""
     parser = argparse.ArgumentParser(prog="review_post.py")
     parser.add_argument("command", choices=("read", "post"))
     parser.add_argument("--repo", required=True, help="owner/name")
@@ -477,6 +513,8 @@ def run(argv: list[str], *, get: Get = _gh_get, post: Post = _gh_post) -> int:
                 spec = json.loads(args.review.read_text(encoding="utf-8"))
             except (OSError, ValueError) as exc:
                 raise Refused(f"the review file cannot be read: {exc}") from exc
+        if get is None or post is None:
+            get, post = gh_client(resolve_gh())
     except Refused as exc:
         print(f"review_post: refused: {exc}", file=sys.stderr)
         return 2
@@ -490,8 +528,8 @@ def run(argv: list[str], *, get: Get = _gh_get, post: Post = _gh_post) -> int:
                   f"read ({args.commit}): nothing posted; review {state.head}",
                   file=sys.stderr)
             return 1
-        answers = {f"issuecomment:{c.get('id')}": str(c.get("created_at") or "")
-                   for c in state.writer_comments}
+        answers = {f"issuecomment:{c.get('id')}": str(c.get("created_at"))
+                   for c in state.writer_comments if not _edited(c)}
         review = build_review(spec, earlier=state.earlier, answers=answers, lines=commentable(
             get(f"repos/{args.repo}/pulls/{args.pr}/files?per_page=100")))
     except Refused as exc:
