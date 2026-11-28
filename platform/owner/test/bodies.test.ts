@@ -437,12 +437,13 @@ describe("the placement rule, held to the owner's own limits", () => {
     // Its chunk is garbage now, its grace passed: the sweep deletes it, held at FILES.
     expect(await sqlIn(stub, "SELECT state FROM file_chunks WHERE sha256 = ?", sha(LARGE)))
       .toEqual([{ state: "garbage" }]);
-    await sqlIn(stub, "UPDATE file_chunks SET gc_after = 1 WHERE sha256 = ?", sha(LARGE));
-    // A door's write points the files lane's job at the chunk, now due (`sync()`).
-    await stub.collectionWrite(as(name), { collection: "board", row_id: "due", body: "x",
-                                           expected_etag: "", private: false });
     const files = gateFor(env.FILES_GATE, await spaceOf(stub));
     await files.arm("deleteChunks", { hold: "before" });
+    await sqlIn(stub, "UPDATE file_chunks SET gc_after = 1 WHERE sha256 = ?", sha(LARGE));
+    // A door's write points the files lane's job at the chunk, now due (`sync()`), and the
+    // pass it arms sends the delete, held (by the runtime's alarm, or this one).
+    await stub.collectionWrite(as(name), { collection: "board", row_id: "due", body: "x",
+                                           expected_etag: "", private: false });
     const pass = runDurableObjectAlarm(stub);
     await files.held("deleteChunks");
     // The object runs in this isolate: its uploads' begins are seen here, each refusal too.
