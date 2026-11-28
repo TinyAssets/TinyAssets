@@ -2858,11 +2858,15 @@ describe("the rollout record and mode rollback", () => {
                  "sandbox's version before");
     const protocols = JSON.parse(readFileSync(join(REPO, PROTOCOL_JSON), "utf8")) as
       Record<string, object>;
+    // A protocol newer than any this tree records (a rollback's): its record is the serving
+    // version's alone, since a protocol this tree records is held by its own frozen record.
+    const newer = String(Math.max(...Object.keys(protocols).map(Number)) + 1);
     await stops(world({ held: true, before: {
-      [SPEAKS_JSON]: "[6]", [PROTOCOL_JSON]: JSON.stringify({ ...protocols, 6: { relayed: {
-        tierRead: { required: { plan: { type: "string" } }, optional: {} } } } }) } }),
-                "so nothing is changed: tierRead no longer answers plan, which protocol 6's " +
-                "runner reads");
+      [SPEAKS_JSON]: `[${newer}]`, [PROTOCOL_JSON]: JSON.stringify({ ...protocols,
+        [newer]: { relayed: {
+          tierRead: { required: { plan: { type: "string" } }, optional: {} } } } }) } }),
+                "so nothing is changed: tierRead no longer answers plan, which protocol " +
+                `${newer}'s runner reads`);
     // A commit with no handed.json, a version no tag names a commit of, and a commit this
     // checkout lacks, are unknown.
     await stops(world({ held: true, before: { [HANDED]: null } }),

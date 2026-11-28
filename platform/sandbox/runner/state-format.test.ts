@@ -43,7 +43,8 @@ const FROZEN = Object.freeze({
                "2": "c38091d43b77abc01243f22e52285771355d6680a9d0ae3cce9ac438c5440fc0",
                "3": "f46e144d6b9eaa1cd38a394722a8135501755a85a5e79020246a06957a79d5ff",
                "4": "1d3c4ee19355036e58b6ea8e2a9cc35adc6bfce46bd29eabe9e0e17769b5932b",
-               "5": "84ef8b5bc0a4bfbe04a6e4e01b3104e2d0ad3ea48bf14bc0912a1ec0a221d8fb" },
+               "5": "84ef8b5bc0a4bfbe04a6e4e01b3104e2d0ad3ea48bf14bc0912a1ec0a221d8fb",
+               "6": "74bab57cac1f2b3490b61fd85db890491099da46689ca9bdeff7971043a2f295" },
 });
 
 const digest = (value: unknown) => createHash("sha256").update(canonical(value)).digest("hex");
