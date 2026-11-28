@@ -400,7 +400,9 @@ the end", among them). By the threat model that fetch is the admin's act, so
 no mechanism was added: item 3 says what the check covers, and the texts are
 corrected. Its Nits: an act matches only a call that is exactly it; `REVIEW.md`
 runs step 5's search slice by slice, with no subagents; the departure below
-gives its reason; `allowManagedModsOnly` is gone.
+gives its reason; `allowManagedModsOnly` is gone. Its fix, e7e597ddd, carries
+b2e1c8f66's commit message by mistake (history is never rewritten here); this
+paragraph is its record.
 
 The settings also turn off the Artifact tool's scratchpad (`enableArtifact`), a
 directory outside DIR it writes without asking, and claude.ai plugin sync
