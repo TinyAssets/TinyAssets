@@ -210,7 +210,7 @@ it.
 ## Problems found (untangle step 2), with the fix above each
 
 - **A sandbox names the template it was made from, and the look moves one on another, with
-  nothing living, moves it.**
+  nothing living in it.**
   - `#ensure` read `E2B_TEMPLATE` only at a create: a sandbox outlived every pin after its own,
     and nothing recorded which pin it was made from.
   - The only way to move one was a hand kill at E2B, which drops the sign-ins, the unsent
