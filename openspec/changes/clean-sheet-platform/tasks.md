@@ -788,13 +788,14 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     `untangle/runs-wait-message`), and
     `Runs.#place` named `sourceLabel`; `limits-audit.md`'s tier row and the site's plans copy
     in the same words (`untangle/place-shapes`).
-  - [ ] PL2, the rule: `contract/placement.json` and the owner's override; `agent.json`
-    `places` and `needs`; each wake record's `can`, and `contract/place-kinds.json` for the
-    device's and the sandbox's; `choose` over `(source, place)` for the main agents and the
-    sandbox, every subscription before any metered source, a key only by the owner's stored
-    choice (a pin, "Move to…", `metered_fallback`, off), and an agent's move to a newly
-    connected subscription announced; `due`; a limit reached waits or moves to another
-    subscription;
+  - [ ] PL2, the rule: `contract/placement.json`; the owner policy document's `places`
+    table (`order`, each agent's `places`, the `sources` pins and the `metered` fallbacks,
+    written only in the owner's session); `agent.json` `needs`; each wake record's `can`, and
+    `contract/place-kinds.json` for the device's and the sandbox's; `choose` over `(source,
+    place)` for the main agents and the sandbox, every subscription before any metered
+    source, a key only by the owner's policy (a fallback when no plan can, a pin, or one
+    "Move to…"), and an agent's move to a newly connected subscription announced; `due`; a
+    limit reached waits or moves to another subscription;
     `preview` and the notices name the place; the starter's instructions per place, with the
     steer of ADR-040 decision 5. It merges `untangle/strongest-ranking` (call 4: the same
     function and ranking file), after `untangle/main-agent-definition` (`untangle/place-rule`).
@@ -823,7 +824,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [ ] PL9, the app: each run's place and state, the devices screen, the overrides and "Move
     to…", the steer before a sandbox opens, the vendors' own connects first and an API key
     second, the one question a key-only owner's connect asks, the waiting run's "this run,
-    or always?" offer, and the `metered_fallback` switch; `test:app` (`untangle/place-app`).
+    or whenever no plan can?" offer, a pin shown apart ("always use this key"), and the
+    fallback switch, each written to the owner's policy; `test:app` (`untangle/place-app`).
 - [ ] The data shapes already known to be wrong, fixed before real data, as decided in d3 §P
   (list3 P48), each in its own lane PR:
   - rooms and room members with opaque ids, in lane O after T1c and before S4: built in
@@ -1230,7 +1232,8 @@ Open questions, from the as-built record:
 7. Answered (founder, 2026-11-28): Codex stays off in our sandbox on a ChatGPT plan, and
    TinyAssets submits OpenAI's Sign in with ChatGPT interest form (ADR-040 decision 9).
    `codex.json` stays `unclear`. Once OpenAI answers yes, the control record's sign-in
-   switch turns it on, with no deploy.
+   switch offers it, and attended sandbox runs with it, with no deploy; unattended sandbox
+   runs wait for the record's own verdict, a record change and so a deploy.
 
 The coordinator's to decide (no spending, irreversible or outward-facing act), from the
 as-built record, and decided (the coordinator, 2026-11-12):

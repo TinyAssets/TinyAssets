@@ -232,7 +232,9 @@ open work that says "simultaneous runs", or assumes the sandbox or a key first.
   sandboxes with the shape (`untangle/place-shapes`).
 - [x] `platform/deploy/control.json` `sandbox_concurrency_ceiling: 20` against E2B's Hobby 10,
   once the founder names the plan (`untangle/place-shapes`). Done here: the founder kept
-  Hobby (2026-11-28), so the record, `checklist.md` and `contract/src/control.ts` say 10.
+  Hobby (2026-11-28), so the record, `checklist.md`, `contract/src/control.ts` and
+  `limits-audit.md`'s row say 10, and `e2b-resume-measurement.md` gains a dated
+  correction.
 - [ ] A control record already written with 20 keeps it, since a deploy writes the record only
   when none is held: mode `control` sets `sandbox_concurrency_ceiling` to 10 wherever one is
   (`live:` the founder's operator run).

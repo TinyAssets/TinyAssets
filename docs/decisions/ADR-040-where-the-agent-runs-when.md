@@ -83,28 +83,36 @@ those ADRs' bodies are not edited: only their Status lines point here.
      - second, API keys, routers and custom endpoints.
    - Direction 4's strongest connected source ranks within each group
      (`model-ranking.json`).
-   - **A metered source runs only by the owner's choice, and the choice is data the owner
-     set.** It is one of these, and nothing else:
-     - a pin for that agent (its `agent.json`);
-     - "Move to…" for one run;
-     - `metered_fallback` turned on, for every agent.
+   - **A metered source runs only by the owner's choice.** The choice is owner policy, in
+     the owner policy document's `places` table (decision 3). Only the owner writes it, in
+     the owner's own session, and an agent can only propose a change (`policy_propose`;
+     ADR-039 decision 2.13). It is one of these, and nothing else:
+     - **"Move to…" one run:** that run, once.
+     - **A fallback:** `metered.fallback` for every agent, or `metered.fallback_agents` for
+       one. A key is then acceptable for that agent only when no subscription source can take
+       the run at any place, now. Whenever one can, the subscription runs.
+     - **A pin:** `sources[agent]`, the owner choosing one source for that agent on purpose.
+       A pinned agent runs on that source, a key included, whatever else is connected.
 
      Connecting a key is not a choice to run on it: the app offers a key as the secondary
      option, beside subscriptions.
    - **Otherwise the run waits** for a subscription source, even when none can take it now.
      Its message offers the choice: "Waiting for your computer. Use your OpenAI key for this
-     run, or always?" "This run" is a "Move to…". "Always" stores a pin for that agent, or
-     `metered_fallback` if the owner picks all agents.
+     run, or whenever no plan can?" "This run" is a "Move to…". The other answer stores a
+     fallback for that agent, or for all agents if the owner picks that. The app shows a pin
+     apart, as a different act: "Always use this key for this agent" against "Use my key
+     when no plan can".
    - **A key-only owner** meets that offer on an agent's first run. Or the connect flow asks
      once, when the owner connects a key and holds no subscription that decision 9 allows:
-     "Run your agents on this key?" A yes is stored the same way, as `metered_fallback` on.
-   - **What the owner chose stays chosen.** Each admission reads only the stored choice,
+     "Use this key when no plan can?" A yes is stored as `metered.fallback` on.
+   - **What the owner chose stays chosen.** Each admission reads only the stored policy,
      never what the owner happens to hold. So a vendor withdrawing a path, or the kill
-     switch failing a source closed, moves no agent onto a key: its runs wait with the offer.
-     A pin for agent A never runs agent B.
-   - **A newly connected subscription** takes every unpinned agent its definition allows, at
-     that agent's next input. The move is announced once per agent: "Your research agent now
-     runs on your Claude plan." A pinned agent stays on its pin.
+     switch failing a source closed, moves no agent onto a key unless its fallback covers it:
+     its runs wait with the offer. A fallback or pin for agent A never runs agent B.
+   - **A newly connected subscription** takes every agent with no pin that its definition
+     allows, at that agent's next input, a fallback agent included. The move is announced once
+     per agent: "Your research agent now runs on your Claude plan." A pinned agent stays on
+     its pin.
    - So a model that only an API key reaches runs only when the owner chose it. Otherwise
      the strongest subscription runs.
    - A top-up, credits or a limit reset stays on the same subscription sign-in. TinyAssets
@@ -117,32 +125,38 @@ those ADRs' bodies are not edited: only their Status lines point here.
      key is the secondary option.
 
 3. **One place rule, as data.**
-   - **The file.** The platform's default is `platform/contract/placement.json`. The owner
-     overrides it whole with `/workspace/placement.json`, the way `model-ranking.json` works.
-     An agent's `agent.json` may pin `places`, and declares what its work `needs`
-     (decision 4).
-   - **The default:**
+   - **The platform's default** is `platform/contract/placement.json`:
 
      ```json
      {
-       "attended":         ["main_push", "device", "sandbox"],
-       "unattended":       ["main_push", "main_pull", "device", "sandbox"],
-       "unattended_due":   ["main_push", "device", "main_pull", "sandbox"],
-       "warm_first":       true,
-       "metered_fallback": false
+       "attended":       ["main_push", "device", "sandbox"],
+       "unattended":     ["main_push", "main_pull", "device", "sandbox"],
+       "unattended_due": ["main_push", "device", "main_pull", "sandbox"],
+       "warm_first":     true
      }
      ```
 
-   - **What the file does not hold.**
+   - **The owner's own settings are owner policy**, in the owner policy document's `places`
+     table (`contract/src/policy-document.ts`, `owner/src/policy.ts`). It is written only by
+     the owner, in the owner's own session, and enforced outside the sandbox (ADR-039
+     decision 2.13). Each part can spend, or can move work onto our sandbox, so none of it is
+     in a file a run or an outside client may write:
+     - `order`: the owner's own orders and `warm_first`, replacing the platform's whole;
+     - `agents[agent].places`: the places one agent may use;
+     - `sources[agent]`: a pin (decision 2);
+     - `metered`: `fallback` and `fallback_agents` (decision 2), both off by default (Fact 15).
+
+     The default document leaves the table out, so every default above holds. An agent asks
+     for a change with `policy_propose`, which the owner answers as a card.
+   - **What an agent's files hold.** `agent.json` declares what its work `needs`
+     (decision 4), and may name the model or engine its definition is written for. Neither
+     spends: a model that only a key reaches still runs only by the policy's choice. A
+     `needs` that only the sandbox meets stays within the tier.
+   - **What no file holds.**
      - The group order of decision 2 is the founder's rule, not a setting.
-     - The owner's choices about metered sources are the three of decision 2. This file holds
-       `metered_fallback`; the pins are in each agent's `agent.json`; a "Move to…" belongs to
-       one run.
-     - A place that can take nothing waits, and is never refused (ADR-039 decision 6), so
-       that is no setting either.
-     - What each place kind `can` do is a platform fact, not an owner preference, so it is
-       not here (decision 4). An owner who overrides this file whole copies no platform
-       facts.
+     - A place that can take nothing waits, and is never refused (ADR-039 decision 6).
+     - What each place kind `can` do is a platform fact, not an owner preference (decision
+       4).
 
    - **Attended** means a person waits in the app. A push main agent comes first, then the
      device, then the sandbox. A pull-only main agent is not in this order, because it cannot
@@ -177,8 +191,8 @@ those ADRs' bodies are not edited: only their Status lines point here.
      the order that can run an acceptable source wins, and the strongest acceptable source
      runs there.*
      - An acceptable source is one the agent's definition allows, from the subscription
-       group. A metered source is acceptable only by the owner's choice (decision 2). An agent
-       that needs one model or engine pins it.
+       group. A metered source is acceptable only by the owner's choice (decision 2). An owner
+       who wants one source for an agent pins it.
      - The places are tried in the rule's order. At each place, the strongest acceptable
        source that place can take runs.
      - Why: the order puts the places that cost the user and us nothing first, and the most
@@ -187,14 +201,15 @@ those ADRs' bodies are not edited: only their Status lines point here.
        connecting that vendor's agent or signing its subscription in on their computer
        (decision 5). That brings the strongest to a free place.
      - One trade is left open: a metered source on a free place, against a subscription in
-       the sandbox. The sandbox runs the subscription, unless `metered_fallback` is on. Why:
+       the sandbox. The sandbox runs the subscription; a fallback takes the key only when no
+       subscription can run at any place. Why:
        metered use is money the user pays their provider directly, which the founder ruled
        out by default. The sandbox spends a ceiling the tier already gives them.
    - **None free: the run waits.** When no place can take the run now, it waits with a clear
      message: "Waiting for your computer", or "Waiting for a free sandbox (5 of 5 in use)".
      It is never refused for room (ADR-039 decision 6). It never spends metered money in
      silence. A device arriving, a sandbox freeing, or a limit resetting rings it.
-   - **`metered_fallback`** is the owner's own setting, off by default (Fact 15).
+   - **The metered fallback** is the owner's own policy, off by default (Fact 15).
    - **Exclusivity** comes from what exists, never a second check:
      - one input is one admission;
      - mail is held until exactly one taker acks it;
@@ -401,13 +416,16 @@ those ADRs' bodies are not edited: only their Status lines point here.
        That is ambiguous, and the risk is the user's ChatGPT account. The founder decided
        (2026-11-28): it stays off, and TinyAssets submits OpenAI's Sign in with ChatGPT
        interest form. So the record's verdict stays `unclear`, and the sign-in is not offered
-       in the sandbox. Once OpenAI answers yes, the control record's sign-in switch turns it
-       on, with no deploy.
+       in the sandbox. Once OpenAI answers yes, two steps turn it on:
+       - the control record's sign-in switch (`control.signins`) offers the sign-in, and with
+         it attended sandbox runs, with no deploy;
+       - unattended sandbox runs wait for the record's own verdict
+         (`unattended.vendor_login_in_sandbox`), which is a record change and so a deploy.
    - **Google's subscribers.** Neither of Google's CLIs runs a consumer Google plan for an
      app like TinyAssets, and Jules does not yet reach the door. Such a user's Gemini runs on
      a Google API key they connect, as Google's own FAQ recommends [8]. The app says why.
-     That key runs only once the owner chooses it, by decision 2's stored choice: a pin,
-     "Move to…", or `metered_fallback`, offered at the first run or in the connect flow.
+     That key runs only once the owner chooses it, by decision 2's owner policy: a fallback,
+     a pin or one "Move to…", offered at the first run or in the connect flow.
 
 ## What changes in the other ADRs, exactly
 
