@@ -256,6 +256,14 @@ describe("the Worker's protocol with the runner", () => {
     expect(ANSWERS).toEqual(record.answers);
   });
 
+  it("names the carry where every record that names one does", () => {
+    // A runner's `prepare` drops a move's archive whichever runner left it (`CARRY_FILE`).
+    const named = Object.values(PROTOCOLS).flatMap((record) =>
+      record.paths["carry"] === undefined ? [] : [record.paths["carry"]]);
+    expect(named.length).toBeGreaterThan(0);
+    expect(new Set(named)).toEqual(new Set([CARRY_FILE]));
+  });
+
   it("launches and cancels each kind of job by a command the Worker sends", () => {
     for (const job of Object.values(JOBS)) {
       expect(WORKER_COMMANDS).toEqual(expect.arrayContaining([job.launch, job.cancel]));
