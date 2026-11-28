@@ -35,8 +35,10 @@ def test_a_change_to_more_than_prose_needs_the_check() -> None:
     for body in ("## Untangle check\n\nNothing found.\n", "### untangle check\n",
                  "**Untangle check:** nothing found.\n"):
         assert gate.untangle_check_problems(body, CODE) == [], body
+    # Only the root REVIEW.md is the reviewer's: Claude Ship reads no other.
     assert gate.untangle_check_problems(
-        "A typo.\n", ["docs/a.md", "README.md", "openspec/changes/c/notes.md"]) == []
+        "A typo.\n", ["docs/a.md", "README.md", "openspec/changes/c/notes.md",
+                      "docs/REVIEW.md", "docs/decisions/x/review-notes.md"]) == []
 
 
 # Agents' and the reviewer's instructions and the gates' rules bind, so they are not
@@ -44,7 +46,7 @@ def test_a_change_to_more_than_prose_needs_the_check() -> None:
 @pytest.mark.parametrize("path", [
     "AGENTS.md", "CLAUDE.md", "AGENTS.override.md", "CLAUDE.local.md", "GEMINI.md",
     "CODEX.md", "agents.md", "docs/AGENTS.md", "openspec/CLAUDE.md",
-    "ideas/x/Claude-notes.md", "REVIEW.md", "review.md", "docs/REVIEW.md",
+    "ideas/x/Claude-notes.md", "REVIEW.md", "review.md",
     "docs/reference/executable-gates.md", "docs/REFERENCE/executable-gates.md",
     "tinyassets/notes.md", "docs/tool.py", "docs/data.json", "Dockerfile",
 ])

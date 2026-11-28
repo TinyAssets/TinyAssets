@@ -239,13 +239,14 @@ def last_base_change(events: list[object]) -> str | None:
 # Prose: Markdown under docs/, openspec/ and ideas/, and the top-level Markdown
 # files, that no agent reads as instructions. Agents' instruction files bind at any
 # depth and in any variant (Codex reads AGENTS.override.md first; Claude reads
-# CLAUDE.local.md and nested CLAUDE.md), REVIEW.md binds as the reviewer's, and
-# docs/reference/ binds as the gates' rules (AGENTS.md Fact 4), so none of them is
-# prose. The refusals compare case-insensitively, since a checkout on a
-# case-insensitive disk loads either case.
+# CLAUDE.local.md and nested CLAUDE.md), the root REVIEW.md binds as the reviewer's
+# (Claude Ship reads only the root one), and docs/reference/ binds as the gates'
+# rules (AGENTS.md Fact 4), so none of them is prose. The refusals compare
+# case-insensitively, since a checkout on a case-insensitive disk loads either case.
 _PROSE_DIRS = ("docs/", "openspec/", "ideas/")
-_AGENT_INSTRUCTIONS_RE = re.compile(r"(?i)^(AGENTS|CLAUDE|GEMINI|CODEX|REVIEW)([._-].*)?\.md$")
+_AGENT_INSTRUCTIONS_RE = re.compile(r"(?i)^(AGENTS|CLAUDE|GEMINI|CODEX)([._-].*)?\.md$")
 _BINDING_DIRS = ("docs/reference/",)
+_BINDING_FILES = ("review.md",)
 
 
 def is_prose(path: str) -> bool:
@@ -253,7 +254,7 @@ def is_prose(path: str) -> bool:
         return False
     if _AGENT_INSTRUCTIONS_RE.fullmatch(path.rsplit("/", 1)[-1]):
         return False
-    if path.lower().startswith(_BINDING_DIRS):
+    if path.lower().startswith(_BINDING_DIRS) or path.lower() in _BINDING_FILES:
         return False
     return path.startswith(_PROSE_DIRS) or "/" not in path
 

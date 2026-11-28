@@ -25,10 +25,14 @@ skills, `review_checks.py`, `check_shapes.py`, `check_context_budget.py`,
 1. `REVIEW.md` at the root: Ship's format, including the untangle skill by
    Ship's include line. It holds the untangle skill's reviewer list as "What
    Important means here", with the briefs' rules the table gives it (the repo
-   is public; Ship is the blueprint), a change that loosens a gate, and a test
-   that cannot fail read from the code; Nits capped at five; what CI proves
-   not reported; the founder question; the review's format, its three markers
-   and the accounting of earlier Important findings; "Who counts".
+   is public; Ship is the blueprint), a change that loosens a gate, a test
+   that cannot fail read from the code, and the gates page's carried-lineage
+   check (`claude-ship.md`'s "becomes REVIEW.md Important rules"); Nits capped
+   at five; what CI proves not reported; the founder question; the review's
+   format, its three markers and the accounting of earlier Important findings;
+   "Who counts". It and what it includes are read at `origin/main`. The gates
+   page keeps a pointer to it, and to the steward skill for reruns: each rule
+   has one home.
 2. The steward skill, `.agents/skills/steward/` and its `.claude/skills/`
    mirror (the repo's mirror is a whole-folder copy): setup, the never list,
    the done-check's specifics, and the watch (Ship's defaults, the three-push
@@ -41,20 +45,34 @@ skills, `review_checks.py`, `check_shapes.py`, `check_context_budget.py`,
    go; "Merge `origin/main` in; never rebase" moves to the steward skill.
 4. `carries` loses its prose rule (and `_modes`, `_PROSE_MODES`, which only it
    read); `review_check`'s ask and title say "a fresh review of this head";
-   `review.yml`'s header, the gates page and the openspec requirement say the
-   same change only.
-5. `REVIEW.md` reads as instructions: `_AGENT_INSTRUCTIONS_RE` (so a change to
-   it needs an Untangle check), `check_shapes.py` `INSTRUCTION_FILES`, and the
-   docs-reference test's `LIVE_FILES`.
+   `review.yml`'s header, the gates page, ADR-038's decision 3 and the
+   openspec requirement say the same change only.
+5. The root `REVIEW.md` reads as instructions: `is_prose` (so a change to it
+   needs an Untangle check; the root file only, as Ship reads and as
+   `check_shapes.py` `INSTRUCTION_FILES` lists it, so a `review-*.md` note
+   stays prose), and the docs-reference test's `LIVE_FILES`.
+6. The `steward-watching` label does not exist on the repository yet. Adding
+   it to a PR would create it, a repo setting the agent may make (Fact 4); the
+   steward skill leaves that act to the coordinator, done once, and a steward
+   watches without the label until it exists.
 
 ## Pins
 
-The skills aggregate pays for the steward skill (4,127 B) with the untangle
-skill's removed lines (1,209 B); the rest is a raise from 34,467 to 37,380
-(2,913 B), inside the aggregate total, as #5508, #5593 and #5605 did.
-`REVIEW.md` gets its own aggregate pin, 4,319 B, also inside the total: unpinned,
-it would be the offload hole the aggregates exist to close. Neither total
+The skills aggregate pays for the steward skill (4,147 B) with the untangle
+skill's removed lines (1,209 B); the rest is a raise from 34,467 to 37,400
+(2,933 B), inside the aggregate total, as #5508, #5593 and #5605 did.
+`REVIEW.md` gets its own aggregate pin, 4,550 B: unpinned, it would be the
+offload hole the aggregates exist to close. The gates page's 156 B that moved
+into it lower the `docs/reference` pin from 5,615 to 5,459. Neither total
 moves.
+
+The aggregate pins now sum to 47,409 B of the 58,471 B total (81%, from 68.5%
+on main). The untangle skill's 20% band is for a measured time or size that
+fails a run when it crosses its ceiling (a watchdog, a budget, a quota). This
+total fails no run: it is the ratchet's cap on a sum of pins, which a reviewed
+diff moves on purpose, and nearing it is the ratchet working, since each later
+raise must then displace an old rule. So the band does not apply, and no pin
+is cut for it.
 
 ## Departures
 
@@ -66,3 +84,4 @@ moves.
 ## Owed
 
 - [ ] The peer-agents skill's dispatch and reviewer sections point at `REVIEW.md` for the review's format and accounting, and carry the coordinator's denied-permission rule: `process/ship-code-review`
+- [ ] live: the coordinator creates the `steward-watching` label on the repository, once (after this PR merges)

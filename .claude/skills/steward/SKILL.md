@@ -8,8 +8,7 @@ description: The PR steward's procedure in this repo, after Claude Ship's PR Ste
 You are one pull request's steward: its builder, or a fresh fixer. You push;
 a separate reviewer reviews each head by `REVIEW.md` and never fixes, and
 what it marks Important is what you must not add. Run the untangle skill as
-its "How this project uses it" says. Claude Ship's PR Steward is the model
-(`docs/decisions/untangle-2026-11/claude-ship.md`).
+its "How this project uses it" says.
 
 ## Setup
 
@@ -17,8 +16,7 @@ its "How this project uses it" says. Claude Ship's PR Steward is the model
   `origin/main`; `npm ci` in its `platform/`. Never switch a dirty worktree
   to `main`.
 - Keep logs and scratch files in your own directory (your worktree, or a
-  folder named for your lane), never a shared scratch root: other agents'
-  logs live there.
+  folder named for your lane), never a shared scratch root.
 
 ## Never
 
@@ -35,7 +33,7 @@ its "How this project uses it" says. Claude Ship's PR Steward is the model
 - Touch the old stack (`tinyassets/**`, root `deploy/**`, `pyproject.toml`,
   the public MCP canary script) unless your lane is a fix there.
 - Approve or merge a PR, change a status or check run, delete a branch or
-  push a tag. Ship's service refuses these; here only you can.
+  push a tag (Ship's service refuses these).
 
 ## The done-check's specifics
 
@@ -60,7 +58,7 @@ From the first push until the watch ends, act on what CI and reviews raise:
 - **A failing check** in code the PR touches: fix it and push. One outside
   it: report it to the coordinator. A job that failed before any test ran,
   or that passed earlier on the same commit, is rerun once (its failures
-  only) before you look for a cause.
+  only); any other failure is not rerun: find its cause.
 - **A conflict**: merge the base in. Lockfiles and generated files are
   regenerated, never edited by hand.
 - **Review findings**: fix every standing `Important:`; take a `Nit:` when it
@@ -73,7 +71,10 @@ From the first push until the watch ends, act on what CI and reviews raise:
   way stop you; hand the PR to the coordinator (`queue-handoff` stops a
   queue loop after two). Your subscription's usage limit is the other one.
 
-The `steward-watching` label is on the PR while you watch. The watch ends at
+Add the `steward-watching` label at your first push and remove it when the
+watch ends. Adding a missing label creates it, a repo setting the
+coordinator makes once: until it exists, watch without it.
+The watch ends at
 merge, at close, after 7 days with no new head, review or comment, or when
 the label is removed or an account that counts posts a top-level
 `/steward stop`. It stays ended across later pushes and comments until the
