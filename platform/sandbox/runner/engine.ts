@@ -8,9 +8,9 @@
  *   `sandboxEnv`), its templates filled, and the process basics it keeps (`config.inherit`)
  *   from the runner's own; nothing else of the sandbox's environment reaches the CLI. A
  *   variable the run's credential forbids (`forbid_env`) fails the run loudly.
- * - The argv: the binary, then the credential's own arguments, the model (each option
- *   joined to its value, `--model=<id>`, so a reported id that starts with `-` is never a
- *   flag), the unattended flags on an unattended run, what keeps the engine's own layers out
+ * - The argv: the binary, then the credential's own arguments, the model (as the record
+ *   writes it, `--model={model}` where the engine takes it, so a reported id that starts with
+ *   `-` is never a flag; a bare one that does is refused), the unattended flags on an unattended run, what keeps the engine's own layers out
  *   (`definition.native.argv`, every run), the agent's skills where the engine
  *   takes each by its argv (`definition.skills.argv_each`), the MCP arguments, the update
  *   switch, then the record's `argv` or `resume_argv` past its binary. The prompt goes on stdin
@@ -189,29 +189,20 @@ function keyProvider(cli: CliSpec, env: Readonly<Record<string, string>>):
 }
 
 /**
- * The record's model arguments, each option joined to its value (`--model=<id>`), so a
- * value is never read as a flag; a placeholder not after an option is refused when its
- * value could be read as one.
+ * The record's model arguments, each filled as the record writes it: an engine that takes
+ * `--model=<id>` says so (a value is then never read as a flag), and one whose parser takes
+ * only `--model <id>` (pi's) says that. A bare placeholder is refused when its value could be
+ * read as a flag.
  */
 function modelArgs(template: readonly string[], values: Readonly<Record<string, string>>):
     string[] {
-  const out: string[] = [];
-  for (let i = 0; i < template.length; i += 1) {
-    const arg = template[i]!;
-    const next = template[i + 1];
-    if (arg.startsWith("--") && !arg.includes("=") && next !== undefined
-        && /^\{[a-z_]+\}$/.test(next)) {
-      out.push(`${arg}=${fill(next, values)}`);
-      i += 1;
-    } else {
-      const filled = fill(arg, values);
-      if (/^\{[a-z_]+\}$/.test(arg) && filled.startsWith("-")) {
-        throw new Error("a value that reads as a flag is never a bare argument");
-      }
-      out.push(filled);
+  return template.map((arg) => {
+    const filled = fill(arg, values);
+    if (/^\{[a-z_]+\}$/.test(arg) && filled.startsWith("-")) {
+      throw new Error("a value that reads as a flag is never a bare argument");
     }
-  }
-  return out;
+    return filled;
+  });
 }
 
 /**
