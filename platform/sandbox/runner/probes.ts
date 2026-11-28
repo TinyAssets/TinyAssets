@@ -237,6 +237,9 @@ async function loginProbe(engine: string): Promise<number> {
 
 // -- the route probe --------------------------------------------------------------------
 
+/** How much of a probe turn's stderr is kept: its end, where a CLI says why it stopped. */
+const STDERR_TAIL = 600;
+
 /** How long one probe turn may take: a command's bound. */
 const ROUTE_PROBE_MS = COMMAND_MS;
 
@@ -250,7 +253,7 @@ function sealedScope(provider: string, engine: string): ModelScope {
 
 /** One probe turn's outcome: its exit, the session it named, whether it gave its final text. */
 interface ProbeTurn {
-  /** Its stderr's tail, named when it failed. */
+  /** Its stderr's last `STDERR_TAIL` characters, in the result when it failed. */
   readonly stderr: string;
   readonly exit: number;
   readonly session_id: string | null;
@@ -390,7 +393,7 @@ async function probeRoute(rec: Served, provider: string, api: string, model: str
         let text = "";
         let stderr = "";
         child.stderr!.on("data", (data: Buffer) => {
-          stderr = (stderr + data.toString("utf8")).slice(-600);
+          stderr = (stderr + data.toString("utf8")).slice(-STDERR_TAIL);
         });
         if (call.stdin !== null) {
           child.stdin!.on("error", () => undefined);
@@ -433,7 +436,7 @@ async function probeRoute(rec: Served, provider: string, api: string, model: str
     turns.push(one);
     if (one.exit !== 0 || !one.answered) {
       throw new Error(`the first turn did not complete (exit ${one.exit}${one.answered ? ""
-        : ", no final text"}): ${one.stderr.trim().slice(-300)}`);
+        : ", no final text"})`);
     }
     if (one.session_id === null) {
       throw new Error("the first turn named no session to resume");
@@ -445,7 +448,7 @@ async function probeRoute(rec: Served, provider: string, api: string, model: str
     turns.push(two);
     if (two.exit !== 0 || !two.answered) {
       throw new Error(`the resumed turn did not complete (exit ${two.exit}${two.answered ? ""
-        : ", no final text"}): ${two.stderr.trim().slice(-300)}`);
+        : ", no final text"})`);
     }
     history = requests.slice(before).some((request) => request.body.includes(nonce));
     if (!history) {
@@ -480,7 +483,9 @@ async function probeRoute(rec: Served, provider: string, api: string, model: str
     secretInHeader: engine.secret_header !== undefined }) ?? failed;
   return { engine: rec.id, provider, api, model, ok: reason === null, reason,
            turns: turns.map((each) => ({ exit: each.exit, answered: each.answered,
-                                         resumed: each.resumed })),
+                                         resumed: each.resumed,
+                                         ...(each.exit === 0 && each.answered ? {}
+                                           : { stderr: each.stderr.trim() }) })),
            compacted, history,
            requests: requests.map((request) => `${request.method} ${request.url.split("?")[0]}`),
            connects: [...new Set(turns.flatMap((each) => each.connects))] };

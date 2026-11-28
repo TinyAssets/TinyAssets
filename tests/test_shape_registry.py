@@ -560,6 +560,7 @@ def test_an_instruction_citing_any_deleted_path_goes_red(tmp_path: Path):
     _commit_file(repo, "tinyassets/other.py", "# tinyassets/attribution/core.py\n", "code2")
     _commit_file(repo, "openspec/changes/archive/old/tasks.md", "docs/ops/gone.md\n", "arch")
     _commit_file(repo, "openspec/changes/the-build/tasks.md", "Run `scripts/old_tool.py`.\n", "b")
+    _commit_file(repo, "REVIEW.md", "Read `scripts/old_tool.py`'s output.\n", "review")
     _commit_file(repo, "openspec/changes/old-plan/proposal.md",
                  "# Old plan\n\n**Superseded by ADR-032.**\n", "sup")
     _commit_file(repo, "openspec/changes/old-plan/tasks.md", "Run scripts/old_tool.py.\n", "sup2")
@@ -591,6 +592,7 @@ def test_an_instruction_citing_any_deleted_path_goes_red(tmp_path: Path):
         "deleted-path-reference: AGENTS.md cites docs/getting-started",
         "deleted-path-reference: AGENTS.md cites scripts/old_tool.py",
         "deleted-path-reference: AGENTS.md cites tinyassets/attribution",
+        "deleted-path-reference: REVIEW.md cites scripts/old_tool.py",
         "deleted-path-reference: openspec/changes/the-build/tasks.md cites scripts/old_tool.py",
     ]
 

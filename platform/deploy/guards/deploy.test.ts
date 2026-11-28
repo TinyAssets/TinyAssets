@@ -83,13 +83,25 @@ import platform from "../platform.json" with { type: "json" };
 import { night, nightsAnswer } from "./copy-nights";
 
 // The kit here is the cutover's: the doors' host is the zone, whatever host the identity names
-// today (the live stage's, while it runs), so a change of `host` changes no case. A host under
-// the zone is the kit's other case, run over an identity of its own (`at a host under the
-// zone`, below).
-vi.mock("../../contract/identity.json", async (actual) => {
-  const { default: real } = await actual<{ default: { zone: string } }>();
-  return { default: { ...real, host: real.zone } };
-});
+// today (the live stage's, while it runs), so a change of `host` changes no case. And its
+// forward list (`platform.json` `forward`) names no change, whatever the tree's holds today
+// (forward.test.ts holds that one), so a change appended there changes no case. A host under
+// the zone, or a list naming a Worker, is a case of its own, run over a kit loaded with it
+// (`kitOver`).
+const TREE = vi.hoisted(() => ({
+  /** identity.json with the doors' host `host`, the zone when none. */
+  identity: (host?: string) => async (actual: () => Promise<unknown>) => {
+    const { default: real } = await actual() as { default: { zone: string } };
+    return { default: { ...real, host: host ?? real.zone } };
+  },
+  /** platform.json with the forward list `changes`. */
+  platform: (changes: readonly unknown[] = []) => async (actual: () => Promise<unknown>) => {
+    const { default: real } = await actual() as { default: { forward: object } };
+    return { default: { ...real, forward: { ...real.forward, changes } } };
+  },
+}));
+vi.mock("../../contract/identity.json", TREE.identity());
+vi.mock("../platform.json", TREE.platform());
 
 type Json = Record<string, unknown>;
 
@@ -939,8 +951,18 @@ function world(options: WorldOptions = {}) {
 
 const H2_INPUTS_LIST = Object.values(H2_INPUTS);
 
-/** The kit's two entries a run goes through: this tree's, or one loaded with another identity. */
+/** The kit's two entries a run goes through: this file's, or one loaded over other data. */
 type Kit = Pick<typeof import("../deploy"), "perform" | "parse">;
+
+/** The kit loaded afresh over the doors' host `host` and the forward list `changes` (`TREE`). */
+async function kitOver(over: { host?: string; changes?: readonly unknown[] }): Promise<Kit> {
+  vi.resetModules();
+  vi.doMock("../../contract/identity.json", TREE.identity(over.host));
+  vi.doMock("../platform.json", TREE.platform(over.changes));
+  const kit = await import("../deploy");
+  vi.resetModules();
+  return kit;
+}
 
 /**
  * `mode` run whole in `w`, with `flags` and `env`, by `kit`: its work, or its refusal. An
@@ -1045,7 +1067,6 @@ describe("the deploy kit's facts", () => {
 
   it("counts each Worker's forward changes, each naming Workers of this tree once, with why",
      () => {
-    expect(FORWARD).toEqual(forwardCounts(platform.forward.changes, NAMES));
     expect(Object.keys(FORWARD).sort()).toEqual([...WORKERS].sort());
     const why = "its app's page asks /app/api in a shape the version before cannot read";
     expect(forwardCounts([{ workers: ["doors"], why }, { workers: ["doors", "owner"], why }],
@@ -2138,11 +2159,7 @@ describe("the route record", () => {
     const PLACED = `AAAA ${STAGE} (100::)`;
     let stage: Kit;
     beforeAll(async () => {
-      vi.resetModules();
-      vi.doMock("../../contract/identity.json", () => ({ default: { ...identity, host: STAGE } }));
-      stage = await import("../deploy");
-      vi.doUnmock("../../contract/identity.json");
-      vi.resetModules();
+      stage = await kitOver({ host: STAGE });
     });
     const onStage = (w: ReturnType<typeof world>) =>
       w.dns.filter((record) => record.name === STAGE);
@@ -3222,31 +3239,42 @@ describe("the rollout record and mode rollback", () => {
     expect(serving(w)).toEqual(BEFORE_ALL);
   });
 
-  it("stops at a Worker the run marked forward (-f), its count held to Cloudflare's tag",
-     async () => {
-    // A tree whose forward list names the owner once: its version's tag carries -f1.
+  it("takes a Worker a forward change names to 100% at once, marked -f1, and a rollback stops " +
+     "at it, its count held to Cloudflare's tag", async () => {
+    // A tree whose forward list names the sandbox once, as a moved template adds.
+    const kit = await kitOver({ changes: [{ workers: ["sandbox"], why: "its image moves" }] });
+    const sandbox = NAMES["sandbox"]!;
+    const cannot = "the run's version is marked -f1 and its version before with none: it " +
+      "writes, or is called, in a way its version before cannot follow (platform.json forward)";
     const w = world({ held: true });
-    await runMode(w, "dark", ["--yes"], RUN);
-    const owner = NAMES["owner"]!;
-    const ours = w.deployments.get(owner)![0]!.version;
-    const held = recordIn(w)!;
-    const count = (forward: number) => {
-      w.kv.set(`${CONTROL_NS}/${ROLLOUT}`, JSON.stringify({ ...held, workers: held.workers.map(
-        (each) => each.name === owner ? { ...each, forward } : each) }));
-      w.events.splice(0);
-    };
+    const work = await runMode(w, "dark", ["--yes"], RUN, kit);
+    const ours = w.deployments.get(sandbox)![0]!.version;
+    const tag = w.versions.get(ours)!.tag!;
+    expect(tag).toMatch(new RegExp(`^${OURS}(-m[0-9.]+)?-f1$`));
+    expect(w.events.filter((event) => event.startsWith(`wrangler versions deploy ${ours}@`)))
+      .toEqual([expect.stringMatching(new RegExp(`^wrangler versions deploy ${ours}@100 `))]);
+    expect(work.plan).toContain(onceLine("sandbox", cannot));
+    expect(recordIn(w)!.workers.map((each) => [each.name, each.forward])).toEqual(
+      WORKERS.map((worker) => [NAMES[worker], worker === "sandbox" ? 1 : 0]));
     // The record's count is held to the tag: one the tag lacks is no record of the run's.
-    count(1);
-    await expect(runMode(w, "rollback", ["--yes", "--record", "7001"], RUN)).rejects.toThrow(
-      `the record ${ROLLOUT} holds ${owner} as before ${HELD_SERVING[owner]![0]!.tag}, counts `);
+    const held = recordIn(w)!;
+    w.kv.set(`${CONTROL_NS}/${ROLLOUT}`, JSON.stringify({ ...held, workers: held.workers.map(
+      (each) => each.name === sandbox ? { ...each, forward: 0 } : each) }));
+    w.events.splice(0);
+    await expect(runMode(w, "rollback", ["--yes", "--record", "7001"], RUN, kit)).rejects
+      .toThrow(`the record ${ROLLOUT} holds ${sandbox} as before ${
+        HELD_SERVING[sandbox]![0]!.tag}, counts `);
     expect(w.events.filter((event) => CHANGE.test(event))).toEqual([]);
-    w.versions.set(ours, { script: owner, tag: `${w.versions.get(ours)!.tag}-f1` });
-    const work = await runMode(w, "rollback", ["--yes", "--record", "7001"], RUN);
-    expect(deployed(w)).toEqual([DOORS]);
-    expect(work.plan).toContainEqual(expect.stringMatching(new RegExp(
-      `^leave ${owner} on ${ours} \\(${OURS}-m[0-9.]+-f1\\) at 100%: the run's version is ` +
-      "marked -f1 and its version before with none: it writes, or is called, in a way its " +
-      "version before cannot follow \\(platform.json forward\\)$")));
+    // The doors and the owner, its callers, go back; it and its callees stay.
+    w.kv.set(`${CONTROL_NS}/${ROLLOUT}`, JSON.stringify(held));
+    const back = await runMode(w, "rollback", ["--yes", "--record", "7001"], RUN, kit);
+    expect(deployed(w)).toEqual([DOORS, NAMES["owner"]]);
+    expect(back.plan).toContain(`leave ${sandbox} on ${ours} (${tag}) at 100%: ${cannot}`);
+    for (const worker of WORKERS.slice(0, WORKERS.indexOf("sandbox"))) {
+      expect(back.plan).toContainEqual(expect.stringMatching(new RegExp(
+        `^leave ${NAMES[worker]} on .*: it comes before ${sandbox} in the deploy order, and ${
+          sandbox} stays on the run's version$`)));
+    }
   });
 
   it("stops loudly when Cloudflare refuses a deployment, or one reads back otherwise",

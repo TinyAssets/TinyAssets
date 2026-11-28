@@ -183,7 +183,7 @@ all nine steps only once #5852 is on `main` too, so the build is dispatched afte
   pin (untangle/template-move, or that sandbox killed at E2B with no run live, an
   irreversible act the founder approves); then one `auto` pi run on an OpenRouter connection
   sealed with the Messages API answers.
-- [ ] live: `sandbox-template.yml` (`mode: build`, on `main` once this and #5852 have merged)
+- [x] live: `sandbox-template.yml` (`mode: build`, on `main` once this and #5852 have merged)
   builds `tinyassets-sandbox:sb31f0bce0edffd2a` and passes every standing check, all nine of
   pi's route steps among them. Its `passed-json` and the pin in `sandbox/wrangler.jsonc` land
-  as one PR, and deploys wait for it.
+  as one PR, and deploys wait for it. Done: run 46112336531 on main f81d40aa6, landed as #5863.

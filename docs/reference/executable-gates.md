@@ -5,14 +5,12 @@ Done-check: in `platform/`, `npm run typecheck`, touched files' tests, the
 `check_shapes.py`, `ci_structural_guards.py`, `openspec validate
 clean-sheet-platform`, and `test_hygiene_gate.py` on the body
 (`Test-Removal:`). Exit codes decide (pipefail). Suites and recorders: CI's
-(`Recorders-Differ: rv` names one to differ). After a red CI job, rerun
-only its failures. After merging main, a change to a file the manifest
+(`Recorders-Differ: rv` names one to differ). Reruns: the steward skill.
+After merging main, a change to a file the manifest
 names runs `guards/cutover.test.ts`.
 
-To land, post the verdict as a `COMMENT` review on the commit read, first
-line `APPROVE` or `BLOCK`; auto-merge, armed at open, queues it. A verdict
-carries across only the same change or a prose delta. Over 8 release-critical
-files: look for a carried lineage. Two counted queue failures on one head
+To land, a review as `REVIEW.md` says; auto-merge, armed at open, queues
+it. A verdict carries across only the same change. Two counted queue failures on one head
 disarm auto-merge (`queue-handoff`): fix the head or drop the label.
 Rerunning a `pull_request_target` run (scope guard) replays its old body:
 edit the body instead.

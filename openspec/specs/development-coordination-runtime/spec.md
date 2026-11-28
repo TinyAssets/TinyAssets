@@ -234,8 +234,8 @@ A verdict SHALL be a review on the commit read, by an account that can push, who
 first non-blank line, stripped, is `APPROVE` or `BLOCK`. The latest verdict after the
 last base change and dismissal SHALL become a `review` check run on the head,
 `external_id` `pr-<number>`, posted only with the review App's token from the
-main-only `review` environment. It SHALL carry only across the same change or a
-prose delta. Readers SHALL take the App's highest-id run for their own pull request.
+main-only `review` environment. It SHALL carry only across the same change.
+Readers SHALL take the App's highest-id run for their own pull request.
 
 #### Scenario: An approval at the head passes
 - **WHEN** a review by an account that can push, on the head's commit, opens with `APPROVE`
@@ -258,14 +258,14 @@ prose delta. Readers SHALL take the App's highest-id run for their own pull requ
 - **WHEN** an `APPROVE` is followed by a `BLOCK` that is then dismissed
 - **THEN** the `review` check is pending until a newer verdict
 
-#### Scenario: An approval carries across a prose delta only
-- **WHEN** the change since the approved commit touches only Markdown under `docs/`, `openspec/` or `ideas/`, or top-level Markdown
-- **THEN** the approval carries to the new head
-- **AND** it does not carry when any changed path is under `docs/reference/`, or its name matches `(?i)^(AGENTS|CLAUDE|GEMINI|CODEX)([._-].*)?\.md$` at any depth
+#### Scenario: An approval carries across the same change only
+- **WHEN** the change since the approved commit differs in any path, Markdown prose included
+- **THEN** the approval does not carry to the new head
+- **AND** it carries across a merge of main that touched none of the pull request's files
 
 #### Scenario: A verdict that does not carry fails, naming the review owed
 - **WHEN** the latest verdict was on an earlier commit and does not carry to the head, as after a merge of main that touched a file the pull request changes
-- **THEN** the `review` run on the head is a failure whose title names the verdict, its commit, and the delta review (after `APPROVE`) or fresh review (after `BLOCK`) the change since needs
+- **THEN** the `review` run on the head is a failure whose title names the verdict, its commit, and the fresh review of this head the change since needs
 
 #### Scenario: A retarget voids the verdict
 - **WHEN** a pull request approved at its head is retargeted to another base, by hand or by GitHub after its parent merged

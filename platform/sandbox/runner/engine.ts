@@ -8,9 +8,10 @@
  *   `sandboxEnv`), its templates filled, and the process basics it keeps (`config.inherit`)
  *   from the runner's own; nothing else of the sandbox's environment reaches the CLI. A
  *   variable the run's credential forbids (`forbid_env`) fails the run loudly.
- * - The argv: the binary, then the credential's own arguments, the model (each option
- *   joined to its value, `--model=<id>`, so a reported id that starts with `-` is never a
- *   flag), the unattended flags on an unattended run, what keeps the engine's own layers out
+ * - The argv, each argument as the record writes it, one a value made start with `-` refused
+ *   (`argOf`): the binary, then the credential's own arguments, the model (`--model={model}`
+ *   where the engine takes that form, pi's `--model {model}`), the unattended flags on an
+ *   unattended run, what keeps the engine's own layers out
  *   (`definition.native.argv`, every run), the agent's skills where the engine
  *   takes each by its argv (`definition.skills.argv_each`), the MCP arguments, the update
  *   switch, then the record's `argv` or `resume_argv` past its binary. The prompt goes on stdin
@@ -48,6 +49,7 @@ import {
 import { object } from "../../contract/src/checks";
 import { DECIDE_HEADER, decideDoor, egressDoor, envStem } from "../../contract/src/egress";
 import { AGENTS_DIR } from "../../contract/src/paths";
+import { SESSION_ID } from "../../contract/src/run-events";
 import { forbids } from "../../contract/src/text";
 
 import { DECIDE_ENV, helperArgv, helperCommand, matcherOf } from "./decide";
@@ -189,29 +191,16 @@ function keyProvider(cli: CliSpec, env: Readonly<Record<string, string>>):
 }
 
 /**
- * The record's model arguments, each option joined to its value (`--model=<id>`), so a
- * value is never read as a flag; a placeholder not after an option is refused when its
- * value could be read as one.
+ * One argument of the argv, filled as the record writes it, refused when a value made it
+ * start with `-`: a CLI would read it as a flag (a session id `--dangerously-skip-permissions`
+ * after `--resume`). An option joined to its value (`--model={model}`) takes any value.
  */
-function modelArgs(template: readonly string[], values: Readonly<Record<string, string>>):
-    string[] {
-  const out: string[] = [];
-  for (let i = 0; i < template.length; i += 1) {
-    const arg = template[i]!;
-    const next = template[i + 1];
-    if (arg.startsWith("--") && !arg.includes("=") && next !== undefined
-        && /^\{[a-z_]+\}$/.test(next)) {
-      out.push(`${arg}=${fill(next, values)}`);
-      i += 1;
-    } else {
-      const filled = fill(arg, values);
-      if (/^\{[a-z_]+\}$/.test(arg) && filled.startsWith("-")) {
-        throw new Error("a value that reads as a flag is never a bare argument");
-      }
-      out.push(filled);
-    }
+function argOf(template: string, values: Readonly<Record<string, string>>): string {
+  const filled = fill(template, values);
+  if (filled.startsWith("-") && !template.startsWith("-")) {
+    throw new Error("a value that reads as a flag is never a bare argument");
   }
-  return out;
+  return filled;
 }
 
 /**
@@ -388,25 +377,24 @@ export function invocation(record: Served, start: StartDoc,
   const base = resumed ? cli.engine.resume_argv : cli.engine.argv;
   const prompt = options.prompt ?? start.prompt;
   const promptValues = { ...values, prompt };
-  const tail = base.slice(1).map((arg) => arg.includes("{prompt}")
-    ? fill(arg, promptValues) : fill(arg, values));
   const credential = cli.per_credential?.[start.credential];
+  const each = (args: readonly string[]) => args.map((arg) => argOf(arg, values));
   const argv = [
     values["bin"]!,
-    ...(credential?.argv ?? []).map((arg) => fill(arg, values)),
-    ...modelArgs(cli.engine.model_argv, values),
-    ...(start.unattended ? cli.unattended_argv.map((arg) => fill(arg, values)) : []),
-    ...(cli.definition.native.argv ?? []).map((arg) => fill(arg, values)),
+    ...each(credential?.argv ?? []),
+    ...each(cli.engine.model_argv),
+    ...each(start.unattended ? cli.unattended_argv : []),
+    ...each(cli.definition.native.argv ?? []),
     ...options.skills.flatMap((skill) => (cli.definition.skills.argv_each ?? [])
-      .map((arg) => fill(arg, { ...values, skill }))),
+      .map((arg) => argOf(arg, { ...values, skill }))),
     ...serverPairs(mcp, servers),
-    ...mcp.argv.map((arg) => fill(arg, values)),
+    ...each(mcp.argv),
     ...servers.flatMap(([name]) => (mcp.argv_each ?? []).map((arg) =>
-      fill(arg, { ...values, name }))),
-    ...(hooked ? decide!.argv ?? [] : []).map((arg) => fill(arg, values)),
-    ...(carried.length > 0 ? hooks!.argv ?? [] : []).map((arg) => fill(arg, values)),
-    ...("argv" in cli.no_update ? cli.no_update.argv ?? [] : []).map((arg) => fill(arg, values)),
-    ...tail,
+      argOf(arg, { ...values, name }))),
+    ...each(hooked ? decide!.argv ?? [] : []),
+    ...each(carried.length > 0 ? hooks!.argv ?? [] : []),
+    ...each("argv" in cli.no_update ? cli.no_update.argv ?? [] : []),
+    ...base.slice(1).map((arg) => argOf(arg, promptValues)),
   ];
   const refusedArgs = credential?.forbid_argv ?? [];
   const bad = argv.find((arg) => refusedArgs.includes(arg));
@@ -490,14 +478,14 @@ export function keptPaths(record: Served): { secrets: string[]; sessions: string
 
 /**
  * The store files a resume of `session` reads (the record's `resume_paths`, `{sid}` filled),
- * each from its home; none for a new conversation (null). A session id is one name: one
- * holding a `/` or a `*` would reach past its own files, so it fails loudly.
+ * each from its home; none for a new conversation (null). One outside `SESSION_ID`'s shape
+ * (a `/` or a `*` would reach past its own files) fails loudly.
  */
 export function resumePaths(record: Served, session: string | null): string[] {
   if (session === null) {
     return [];
   }
-  if (session === "" || /[/*]/.test(session)) {
+  if (!SESSION_ID.test(session)) {
     throw new Error(`the session id ${JSON.stringify(session)} is not one name`);
   }
   return record.cli.resume_paths.map((path) =>
