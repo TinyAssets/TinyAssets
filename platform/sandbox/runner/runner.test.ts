@@ -280,6 +280,29 @@ describe("the invocation", () => {
     expect(mcp.mcpServers.tinyassets.headers).toEqual({ "x-ta-run": "e".repeat(64) });
   });
 
+  it("passes pi its provider and model as separate arguments, as its parser takes them, and " +
+     "refuses a model that would read as a flag there", () => {
+    // pi reads `--model=<id>` as an unknown option and exits 1 before any request (the pair
+    // check of run 45307631080): the record's form is what runs, never rewritten.
+    const call = (model: string) => invocation(served().get("pi")!, pureStart("pi", { model }),
+                                               {}, { home: "/h", system: "/s", skills: [] });
+    const { argv } = call("model-1");
+    const after = (flag: string) => argv[argv.indexOf(flag) + 1];
+    expect([after("--provider"), after("--model")]).toEqual(["openai", "model-1"]);
+    expect(argv.filter((arg) => /^--(?:provider|model)=/.test(arg))).toEqual([]);
+    expect(() => call("-weird-model"))
+      .toThrow("a value that reads as a flag is never a bare argument");
+  });
+
+  it.each(["claude-code", "codex", "gemini", "pi"])(
+    "resumes %s by its session id, and refuses one that would read as a flag", (engine) => {
+      const call = (session_id: string) => invocation(served().get(engine)!,
+        pureStart(engine, { session_id }), {}, { home: "/h", system: "/s", skills: [] });
+      expect(call("s-1").argv).toContain("s-1");
+      expect(() => call("--dangerously-skip-permissions"))
+        .toThrow("a value that reads as a flag is never a bare argument");
+    });
+
   it("gives Gemini its system settings in a root-owned run directory outside its home, " +
      "with folder trust", async () => {
     const start = startDoc(doors, "gemini", { config: config("gemini") });
@@ -1711,7 +1734,8 @@ describe("the route probe", () => {
   }
 
   type Probed = { engine: string; provider: string; ok: boolean; reason: string | null;
-                  turns: { exit: number; answered: boolean; resumed: boolean }[];
+                  turns: { exit: number; answered: boolean; resumed: boolean;
+                           stderr?: string }[];
                   compacted: boolean | null; requests: string[] };
   /** Every route step of the probes' plan, run in order: its lines, and 3 if any failed. */
   const routes = () => {
@@ -1780,12 +1804,24 @@ describe("the route probe", () => {
                        requests: [{
       url: "{argv:model_providers.tinyassets.base_url}/responses", body: "{history}",
       headers: { authorization: "Bearer {env:CODEX_API_KEY}" } }] });
+    // A CLI that refuses its arguments before any request (pi on `--model=<id>`): the verdict
+    // names no request, and the turn carries what the CLI said on its stderr.
+    const refusal = "Error: Unknown options: --provider, --model";
+    box.cli("pi", { lines: [], exit: 1, stderr: refusal });
     const { code, lines } = probe();
     expect(code).toBe(3);
     expect(lines.find((line) => line.engine === "claude-code")!.reason)
       .toMatch(/first turn did not complete/);
     expect(lines.find((line) => line.engine === "codex")!.reason)
       .toMatch(/no compaction request/);
+    const pi = lines.filter((each) => each.engine === "pi");
+    expect(pi.length).toBe(ROUTE_STEPS.filter((step) => step[1] === "pi").length);
+    expect(pi.length).toBeGreaterThan(0);
+    for (const line of pi) {
+      expect([line.reason, line.turns], line.provider).toEqual([
+        "no model request reached the door",
+        [{ exit: 1, answered: false, resumed: false, stderr: refusal }]]);
+    }
   });
 
   it("fails loudly when a CLI ignores its channel and calls out instead", { tags: ["large"] }, () => {

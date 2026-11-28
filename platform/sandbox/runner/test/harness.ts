@@ -379,6 +379,8 @@ export class Box {
 export interface FakeCli {
   readonly lines: readonly unknown[];
   readonly exit?: number;
+  /** What it writes to its stderr after its lines, as a CLI says why it stopped. */
+  readonly stderr?: string;
   readonly sleepMs?: number;
   /** Ignore SIGTERM (so only the kill stops it). */
   readonly stubborn?: boolean;
@@ -549,6 +551,9 @@ const done = () => {
   }
   for (const line of plan.lines) {
     process.stdout.write((typeof line === "string" ? line : JSON.stringify(line)) + "\n");
+  }
+  if (plan.stderr) {
+    process.stderr.write(plan.stderr + "\n");
   }
   const exit = () => setTimeout(() => process.exit(plan.exit || 0), plan.sleepMs || 0);
   if (plan.holdUntil) {
