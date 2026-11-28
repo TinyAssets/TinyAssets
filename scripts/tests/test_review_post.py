@@ -214,7 +214,8 @@ def test_body_inline_and_outdated_findings_are_all_listed_and_pending_ones_are_n
                 _comment(13, "Important: draft", review=2),
                 {**_comment(14, "Important: a reply", review=1), "in_reply_to_id": 10},
                 _comment(15, "Context first.\n\nImportant: x crashes\n- Important: y too",
-                         review=1)]
+                         review=1),
+                _comment(16, "Context.\nFounder question: ship X?", review=1)]
     found = rp.earlier_findings(reviews, comments, writers=frozenset({WRITER}))
     assert [(f.id, f.where, f.text) for f in found] == [
         ("comment:10#1", "a.py:2", "inline"),
@@ -222,6 +223,7 @@ def test_body_inline_and_outdated_findings_are_all_listed_and_pending_ones_are_n
         ("comment:15#1", "a.py:2", "x crashes"),
         ("comment:15#2", "a.py:2", "y too"),
         ("question:1#1", "", "indented?"),
+        ("question:comment:16#1", "a.py:2", "ship X?"),
         ("review:1#1", "", "first continued"),
         ("review:1#2", "", "second")]
 

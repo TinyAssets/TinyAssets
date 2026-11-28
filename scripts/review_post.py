@@ -211,10 +211,12 @@ def earlier_findings(reviews: list[object], comments: list[object], *,
     are read line by line. An inline `Important:` that repeats one of its
     review's (same line and text) is that finding, and a fix resolves its thread;
     one its review's body lacks is a finding of its own (`comment:<id>#<k>`).
-    An edited review (`edits`, from `edited_reviews`) or an edited thread's
-    first comment is an entry too: what it said before is gone, so it stands
-    until a review marks it. A pending review (no `submitted_at`) and its
-    comments, which nobody else can read, do not count.
+    A founder question is one in either (`question:<review id>#<k>`,
+    `question:comment:<id>#<k>`). An edited review (`edits`, from
+    `edited_reviews`) or an edited thread's first comment is an entry too: what
+    it said before is gone, so it stands until a review marks it. A pending
+    review (no `submitted_at`) and its comments, which nobody else can read, do
+    not count.
     """
     found: list[Earlier] = []
     states: dict[int, str] = {}
@@ -263,9 +265,13 @@ def earlier_findings(reviews: list[object], comments: list[object], *,
                                  "this finding was edited: " + _text(body[0] if body else "",
                                                                      body[1:])))
             continue
-        k = 0
+        k = q = 0
         for i, line in enumerate(body):
-            mark = _MARKER_RE.match(line)
+            mark, question = _MARKER_RE.match(line), _QUESTION_RE.match(line)
+            if question:
+                q += 1
+                found.append(Earlier(f"question:comment:{cid}#{q}", "question", login,
+                                     when, commit, where, question.group(1).strip()))
             if not mark or mark.group(1) != "Important":
                 continue
             k += 1
