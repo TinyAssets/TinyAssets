@@ -209,7 +209,7 @@ it.
 
 ## Problems found (untangle step 2), with the fix above each
 
-- **A sandbox names the template it was made from, and a start that finds it on another, with
+- **A sandbox names the template it was made from, and the look moves one on another, with
   nothing living, moves it.**
   - `#ensure` read `E2B_TEMPLATE` only at a create: a sandbox outlived every pin after its own,
     and nothing recorded which pin it was made from.
