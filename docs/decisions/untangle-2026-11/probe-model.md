@@ -174,7 +174,7 @@ and then makes the start require a model.
 
 ## Owed
 
-- [ ] untangle/pi-catalog: pi runs a model its pinned catalog lacks on its provider default's
+- [x] untangle/pi-catalog: pi runs a model its pinned catalog lacks on its provider default's
   API (pi 1.4.0 `buildFallbackModel`), so a pi run on an OpenRouter connection sealed with the
   Messages API, given `claude-fable-*` by `auto`, is refused at the door, and this PR's
   `anthropic-messages` route step fails the pair check the same way. Move pi to 1.6.0 (its

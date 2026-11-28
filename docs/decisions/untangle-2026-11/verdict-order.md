@@ -85,7 +85,10 @@ form, and two pre-existing holes of the same kind (items 5 and 6).
      (#5862's review, P-1). Now it waits for a review of H2.
    - The evidence is every review except a pending one: an outsider's, a comment, a
      dismissed or pre-base-change one. A review proves its commit existed then, whoever
-     wrote it, and ignoring an APPROVE only ever makes the check wait.
+     wrote it, and ignoring an APPROVE only ever makes the check wait. A thread reply
+     counts too: GitHub makes it an empty review of its own on the head it was posted
+     at (item 6's measurement), so a reply on a newer head also makes a later APPROVE
+     of an earlier head late (#5862's review, N-2, carried in #5864).
    - An APPROVE of H1 posted while H2 exists, with nobody having reviewed H2 yet, is not
      late and still carries.
 6. **An edit of a writer's review voids every verdict submitted at or before it**, as a
@@ -139,8 +142,14 @@ form, and two pre-existing holes of the same kind (items 5 and 6).
 8. **Who counts stays `push_reader`.** The design's "who counts" adds this repo's own bots
    for what the reviewer and steward read; `review.yml` keeps `push_reader` (its step 3
    counts the verdicts `latest_verdict` counted). A bot's review counting as a verdict would
-   let any workflow holding `pull-requests: write`, a PR's own among them, approve it.
-9. **Reads stay lazy.** `can_push` is asked newest first, once a login, only for a BLOCK
+   let any workflow holding `pull-requests: write`, a PR's own among them, approve it. A
+   verdict whose author GitHub does not find (404: `github-actions[bot]`, a deleted
+   account) is no writer's, as an edit's author is (item 6), so it neither holds nor
+   decides the PR; first it held the PR as an unread permission (#5862's review, P-1,
+   carried in #5864).
+9. **Reads stay lazy.** `can_push` is asked newest first, once a login (one cache of the
+   read's outcome for the verdict and edit paths; there were two, which could ask twice
+   and read a 404 in opposite ways: #5862's review, N-1, carried in #5864), only for a BLOCK
    or a not-late APPROVE that no newer counted verdict answers, and then for the author
    of each review edited at or after it: an answered verdict cannot decide, so neither
    its author's read nor an older edit's ever holds a PR. The first form read every

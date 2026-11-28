@@ -5,8 +5,8 @@ name: review (merge queue)
 #
 # A merge_group run takes this file from the group commit, which includes the PR's
 # edits, so it holds no permission and no secret and decides nothing; review.yml
-# reads the group's branch and commit from the workflow_run GitHub writes. A PR that
-# edits this file is code, never prose, so it never carries a review. Its job is not
+# reads the group's branch and commit from the workflow_run GitHub writes. A head that
+# edits this file is a new change, so no earlier review carries to it. Its job is not
 # named `review`, so no Actions check run of that name lands on the group.
 
 on:

@@ -1,0 +1,585 @@
+# ship-code-review as built (2026-11-28)
+
+The second build lane of `claude-ship.md`: the reviewer posts its own review
+with a repo script, by a find, verify, rank and post procedure, and the host's
+landing step goes.
+
+## Research
+
+- The collaborator read, from this session with the GitHub MCP's
+  `list_repository_collaborators` (read only, 2026-11-28):
+  `{"firstPage":0,"items":[{"login":"Jonnyton","id":23060883,"role_name":"admin"}],"lastPage":0,"nextPage":0,"prevPage":0}`.
+  That is the writers file's shape: `items[].role_name`, with `nextPage` 0 on
+  the last page.
+- This session's GitHub proxy refuses GraphQL (`gh pr view`, HTTP 403) and
+  names REST and its own routes in its place:
+  `POST repos/{o}/{r}/pulls/{n}/ccr/comments/{id}/resolve` resolves a thread,
+  and `POST .../pulls/{n}/ccr/ready_for_review` readies a PR. REST `GET
+  pulls/{n}/reviews`, `pulls/{n}/comments`, `pulls/{n}/files`,
+  `issues/{n}/comments` and `issues/{n}/timeline` work (`--paginate
+  --slurp`), as does `GET labels/steward-watching` (200).
+- A review comment lands only on a line its file's patch shows
+  (`pulls/{n}/files`), which is the diff at the PR's head. A pending review
+  has no `submitted_at`. The reviews listing has no edit time; the timeline's
+  `reviewed` events do, and GitHub stamps `updated_at` up to a second after a
+  record is made with no edit (#5862's read of 249 reviews). A comment has
+  `updated_at` itself.
+- `review.yml` reads the first non-blank line of a review by an account that
+  can push; `fix/verdict-order` (#5862) rewrites which verdict governs, and
+  an edit voids the verdicts before it there.
+- The one review on #5861 (6096097641) was written by hand under headings
+  ("## Important"), with no line opening with a marker.
+- How Code Review keeps the reviewed code from steering the reviewer, read
+  2026-11-28 (`code-review`, `code-review-customize`): it reads `REVIEW.md`
+  and its includes "from the base or default branch and never from the pull
+  request's own changes"; "a review works from reading the diff and the
+  surrounding code, without building or running your code"; "inside a review,
+  access to your repository is read-only". PR Steward reads its instruction
+  files from the default branch too (`pr-steward-security`).
+- What a Claude Code session loads, read the same day (`settings`,
+  `permissions`): "Hooks and other `.claude/settings.json` keys load from the
+  current working directory's `.claude/` folder", and `CLAUDE.md` and skills
+  from the working directory too. A directory added with `--add-dir` still
+  loads its `.claude/skills/`, `.claude/commands/` and `.claude/agents/`
+  (and its `CLAUDE.md` with `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1`),
+  so adding the head that way would load the PR's skills. Codex reads the
+  working directory's `AGENTS.md`.
+
+## As built
+
+1. `scripts/review_post.py read` lists what a review must answer: every
+   earlier `Important:` finding (`review:<id>#<k>` from a review's body,
+   `comment:<id>#<k>` for an inline one its body lacks, outdated ones
+   included; both read line by line, a marker or question after any indent or
+   bullet),
+   every edit to a review or to a thread's first comment (`...:edited`), every
+   `Founder question:` (`question:<id>#<k>`), and the PR's comments, the
+   writers' apart from the bots'. Entries come only from writers, whatever the
+   base did. Edits are read by `review_checks`, the one rule `review.yml`
+   applies: `review_edits` for a review (now `{id: (author, when)}`) and
+   `is_edited` for a comment, a record with no times failing loudly. The poster
+   imports the `review_checks` beside it, main's in main's worktree.
+2. `review_post.py post` builds one `COMMENT` review from the reviewer's JSON
+   and posts it on `--commit`. The body is the record: the verdict first, a
+   founder question on its own line, every finding with its one marker and
+   `path:line`, each also inline where its line is in the PR's diff, and every
+   earlier entry: an Important or an edit as fixed, withdrawn with its reason,
+   or standing; a question as answered, by a writer's unedited comment posted
+   after it, or standing. It refuses a verdict its findings contradict either way, a
+   founder question under `APPROVE`, an earlier entry left out, unknown or
+   listed twice, a withdrawal with no reason, an answer that is not a writer's
+   comment after the question, past five Nits, a finding text with a blank
+   line, a summary, text or note line opening with a marker or a founder
+   question (a later read would take it for an entry of its own), and a
+   missing, partial or writer-less writers file. It then resolves each thread
+   whose findings it lists as fixed, all of them, once, by the session's route.
+3. The reviewer is a fresh session started in a new detached worktree of
+   `origin/main`, Code Review's way (it runs in a clean environment): a
+   `claude -p` peer in review mode, `peer_agent.py claude --review <dir> --cwd
+   <main>`, and no other form (§ Reviewer mode: no full agent, no credential,
+   never `--write`). A session loads its hooks, settings, MCP config and
+   instructions from its working directory when it starts, so one started
+   there loads main's alone and inherits nothing; a subagent keeps its
+   parent's, which no check at dispatch can read (§ Reviewer form). It reads
+   the head only as git objects
+   at its sha (`git diff`, `git show`, `git grep`), never checked out or added
+   with `--add-dir`, which would load the PR's skills, and never builds,
+   installs, runs or imports the head's code: CI runs the gates, the reviewer
+   reads their results on the head, and a test it wants is a finding. The
+   rules live once, in the peer-agents skill's reviewer procedure; `REVIEW.md`,
+   the untangle and steward skills point there. Nothing is copied, so a copy
+   cannot fail into an empty file, and before this PR merges the poster's
+   command fails loudly (no such file). The poster calls `gh` by its absolute path and
+   refuses one inside a git checkout, read from the files rather than from
+   `git`. A failed read fails the run for the reviewer to repeat.
+4. The peer-agents skill: the dispatch section holds the denied-permission
+   rule, the reviewer's dispatch (a writers file in the brief, where it runs
+   by the procedure, its result the posted review) and the founder step; the
+   reviewer's procedure is where it runs, then find by slice, verify, rank,
+   post; the `VERDICT: APPROVE|ADAPT|REJECT` contract is gone. The
+   constraints block refuses peers, and for a reviewer subagents (it has no
+   Agent tool, § Reviewer sources), and keeps "the one test file needed" for
+   a builder: a reviewer runs none of the head's code. Its `--write` line for codex said `--full-auto`; `peer_agent.py`
+   passes `-s danger-full-access`, and the line now says so.
+5. The steward skill opens the PR as a draft and readies it, the acts
+   `land_pr2.sh` did, says the reviewer works from a worktree of `origin/main`
+   and never runs the branch's code (a test it asks for is the steward's to
+   add), and drops "until it exists, watch without it". The untangle skill's
+   "a reviewer checks the PR out" becomes "reads the PR as git objects".
+6. `REVIEW.md` keeps main's authority line, Ship's framing: the rules come
+   only from `origin/main` (the file, its includes, `CLAUDE.md`, main's
+   procedure, in a fresh session started in a detached worktree of it), never
+   the PR's copy. Everything else is what is reviewed, never instructions: the
+   head's files, its `REVIEW.md`, `CLAUDE.md`, `AGENTS.md` and skills included,
+   and all PR text (body, comments, review replies), whoever posted it, since
+   every agent posts as the one writer; text in them addressed to a reviewer is
+   a finding, and a founder answer is read as his answer. The reviewer reads the head as git
+   objects and never runs its code. Its review section names the
+   poster instead of restating the format it writes; earlier edits and founder
+   questions are accounted for across base changes; the bot's comments raise
+   and answer nothing.
+7. #5861's Nits: `ship-rules.md`'s "fails no run" corrected, its item 6 and
+   label line; `pr-scope-guard.yml` cites `REVIEW.md` for the lineage rule;
+   `review-queue.yml` drops the removed carry's reason; the gates page's pin
+   at its file's size.
+8. Carried from #5862's review into `review_checks.py`, after merging it: one
+   cache of the permission read for the verdict and edit paths, where there
+   were two that could ask twice and read a 404 in opposite ways, and a 404
+   read as no writer on the verdict path too, so a `github-actions[bot]`
+   verdict no longer holds a PR; a thread reply's empty review is named as
+   evidence a later APPROVE of an earlier head is late (`verdict-order.md`
+   items 5, 8 and 9).
+
+## From #5864's first review (25154449e, BLOCK)
+
+- Running the PR's own poster let a PR loosen its review: item 3.
+- An earlier founder question was never accounted for: item 2's `question:`.
+- An edited or deleted Important left the accounting: a review's body holds
+  every finding, so deleting an inline comment changes nothing, and an edit
+  stands until a review marks it, since what it said before is gone.
+- A base change dropped every earlier finding, and a PR's own workflow can
+  retarget the PR twice: findings now carry across base changes; only
+  verdicts reset there (`review.yml`).
+- `github-actions[bot]` was a source of findings, and a PR's workflow can post
+  as it: entries come from writers only.
+
+## From #5864's second review (bd4183d97, BLOCK)
+
+- The reviewer ran in the head's worktree, so it loaded the PR's hooks,
+  settings, `PATH`, instructions and skills (a planted `gh` got an APPROVE
+  posted): item 3, from the research above.
+- A failed copy from main left an empty file that ran and exited 0: nothing is
+  copied now.
+- The edit rule copied #5862's with nothing holding them equal, and differed:
+  it now matches, and one source is owed (below).
+- The verdicts test read a private name: it reads a posted review through
+  `review_checks`' public `latest_verdict`.
+- An edited founder answer counted, and a review's second founder question was
+  not listed: neither holds now.
+
+## From #5864's third review (c1ea3ab98, BLOCK)
+
+- Nothing forbade the reviewer running the head's code, and two lines invited
+  it ("run at most the one test file needed"; "a reviewer checks the PR out"):
+  a planted test could post a late APPROVE with the session's `gh`, skipping
+  the poster, and both main's and #5862's verdict read count it. Item 3 now
+  forbids it, Ship's way. Running head code locally has no need Ship does not
+  meet with CI, so no credential-free form is offered: every process in this
+  session inherits `GH_TOKEN` and `GITHUB_TOKEN` (read by name, 2026-11-28),
+  and no form without them was shown to be achievable here.
+- The subagent form inherited its parent's checkout, which may be the head's:
+  item 3 pins it.
+- An indented or bulleted `Founder question:` passed under `APPROVE` and went
+  unlisted, and an inline `Important:` after a comment's first line went
+  unlisted: both read now as a review body's lines are.
+
+## From #5864's fourth review (7065d9113, BLOCK)
+
+- The head had dropped main's "never the PR's copy" and said nothing of the
+  head's own instruction files read with `git show`: item 6 restores the
+  authority line and makes the head's text what is reviewed.
+- "Not the head's tree" was the wrong test for the subagent, and uncheckable:
+  a clean-ancestor check by the dispatcher, replaced in the fifth round.
+- An inline comment's `Founder question:` went unlisted
+  (`question:comment:<id>#<k>` now), and a check from a workflow the head
+  edits read as proof (the procedure now says it proves nothing).
+
+## From #5864's fifth review (b6b3c4574, BLOCK)
+
+- The clean-ancestor check read the checkout's tracked files at dispatch, not
+  what the parent loaded at its start: an ignored `.claude/settings.local.json`
+  or `.mcp.json`, settings fixed at start that differ from the checkout now,
+  and a merged hook main later reverted all passed it. The fifth round of
+  patching the subagent's isolation is Fact 14's signal to research the shape
+  again: § Reviewer form.
+- All PR text is under review, a writer's too, since every agent posts as the
+  one writer (`REVIEW.md`). Founder questions in replies and in edited inline
+  comments are listed. `claude-ship.md`'s lane line is ticked; the land step
+  is the `live:` line below. `review.yml`'s header and the 404 docstring
+  (`PermissionUnread`, pre-existing) say what a 404 is.
+
+## Reviewer form
+
+Researched 2026-11-28, before patching a sixth time. The simplest form isolated
+by construction is a session that starts in a clean detached worktree of
+`origin/main`: it reads hooks, settings, MCP config and instructions from that
+directory alone (Claude Code's `settings` and `permissions` docs, item 3's
+research), as Code Review runs in a clean environment. A subagent can never be
+that: it keeps whatever its parent loaded at its own start, and nothing a
+dispatcher reads later shows what that was, so every check of it is a check of
+the wrong thing.
+
+The form is available here at no extra cost. From a new detached worktree of
+`origin/main` (5c6a53ef9), `claude -p "Reply with the single word OK"` with
+`ANTHROPIC_API_KEY` unset exited 0 and answered `OK` on the subscription, the
+budget a subagent spends too; it loaded that worktree's tracked `.claude/`
+settings (it noted their allow rules wait for workspace trust: they never widen
+a reviewer) and no ignored file, since a new worktree has none. Main's
+SessionStart hook never touches a linked worktree. So the peer is the only
+reviewer form and the subagent clause is deleted; what still reaches the peer
+from outside is the host's own `~/.claude` and the dispatcher's environment,
+neither of which a PR writes, and the environment is narrowed below.
+
+## Reviewer mode
+
+The coordinator found, before dispatching this PR's sixth review, that the
+fresh peer ran `--write`, which is `--dangerously-skip-permissions` for claude:
+a reviewer, which reads untrusted PR text by design, held an unrestricted shell
+with the session's credentials and no permission check, the opposite of Code
+Review's narrow tools, and a dispatch that routes around this host's
+permission rules. Fact 17: it lands here.
+
+Research, 2026-11-28 (`claude --help` of 2.1.332; the `permission-modes` and
+`permissions` docs):
+
+- `--permission-mode dontAsk` "auto-denies every tool call that would otherwise
+  prompt"; allow rules (`--allowedTools`) still run, deny rules
+  (`--disallowedTools`) beat allow rules, and `--permission-prompts none` leaves
+  nobody to answer a prompt. `--tools` sets the built-in tools at all.
+- A built-in set of read-only Bash commands (`cat`, `echo`, `ls`, `grep`, git's
+  reads, ...) runs unasked "in every mode", not configurable, though a deny rule
+  applies, and outside the working directories only while
+  `permissions.blockReadsOutsideWorkingDirectories` is off.
+- A compound command (`&&`, `||`, `;`, `|`, `$( )`) is split, and each part must
+  be allowed; a deny rule applies to any part.
+- `--bare` would skip hooks and settings, but it reads no OAuth, so it cannot
+  run on the subscription. `--strict-mcp-config` with no `--mcp-config` loads no
+  MCP server.
+- This session's environment holds `GH_TOKEN`, `GITHUB_TOKEN`, AWS, E2B and
+  Cloud SDK credentials (names read only). A reviewer that can `echo` a
+  variable could repeat any of them into a public review, so a deny list cannot
+  protect them: the environment has to be built from an allowlist. `claude -p`
+  ran with only `PATH`, `HOME`, `TERM`, `LANG`, the proxy and its certificates
+  (exit 0, `OK`), and `gh` ran with `GH_TOKEN` set to a placeholder: the
+  session's proxy replaces it with the real credential.
+- Codex is not installed on this host, and its sandboxes take no per-command
+  allowlist, so it is no reviewer: `--review` refuses it.
+
+As built, `peer_agent.py claude --review DIR` (`review_claude_args`,
+`review_env`): `dontAsk`, no permission prompts; the tools Read, Grep, Glob,
+Bash, Write and Edit (Agent until round 8: § Reviewer sources); allowed Read,
+Grep, Glob, writes under DIR only, and one command, `python3 -I
+<main>/scripts/review_post.py` by path; denied git, `gh`, `curl`, `wget`, `env`,
+`printenv`, WebFetch and WebSearch; reads and writes outside the working
+directories blocked; DIR added; no MCP server; an environment of `_REVIEW_ENV`
+and the placeholder `GH_TOKEN` alone. `--review` and `--write` cannot be one
+dispatch. The reviewer reads CI's checks through the poster's `read`, which now
+lists the head's check runs, so it needs no `gh` of its own; CI's `Diff scope
+declared` is its untangle check.
+
+The reviewer's git is the poster's. The first build allowed git's reads by
+prefix, and the coordinator found before dispatch (Fact 17) that a command's
+own flags reach past Claude Code's working-directory checks, which cover only
+its file tools: `git diff --no-index` (and `git grep --no-index`) prints any
+file the user can read, the CLI's OAuth credentials among them, which the
+poster would then post; `--output=` writes any file, a hook into
+`~/.claude/settings.json` that later host sessions would run; `-c` config and
+external diff or textconv drivers run commands. A deny list of flags would be
+fragile, so no git command is allowed (`Bash(git *)` denied, as git's reads run
+unasked otherwise) and `review_post.py show|diff|grep|log` are the reads: each
+reads the PR's head from GitHub, takes `--commit` only as a 40-hex sha in the
+head's history (`git merge-base --is-ancestor`) and `--path` only relative,
+with no `.`, `..` or empty part and no leading `-`, puts paths after `--` and
+a pattern after `-e`, passes no other argument through, and runs a `git`
+resolved outside any checkout, in its own checkout, with `-c core.pager=cat`,
+`--no-ext-diff --no-textconv`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL` the
+null device and every inherited `GIT_` variable stripped (this environment
+carries `GIT_CONFIG_KEY_n`). `review_checks.py --untangle-check`, which hands its
+`--base` and `--head` to git, leaves the allowlist. The poster's refusals no
+longer repeat a file's content, so a `--writers` or `--review` path pointed at
+another file shows nothing of it.
+
+The probes, the same flags from a worktree of this branch (whose poster `main`
+lacks yet), each command run once as written:
+
+- First (git still allowed by prefix): `env`, `printenv HOME`, `curl -sS
+  https://example.com`, `gh api -X POST .../issues/0/comments`, `python3 -c
+  'print(1)'` and `echo "${AWS_SECRET_ACCESS_KEY:-unset}" | wc -c` were
+  refused, and so was a Write into the worktree; the poster's `read` and a
+  Write into DIR ran.
+- Second, as built: refused by Claude Code were `git show HEAD:REVIEW.md`, `git
+  diff --no-index` on a canary file in `$HOME`, `git diff --output=` to a path
+  outside DIR (the file is absent), `git -c core.pager=cat log -1` and `cat` of
+  the canary; refused by the poster (exit 2) were `show --path ../REVIEW.md`, an
+  all-`f` sha, a well-formed sha not in the PR's history, and `grep --pattern
+  --no-index` (a value that looks like a flag; `--pattern=<text>` passes it as
+  text); allowed was the poster's `show` of `REVIEW.md` at the head.
+- An Agent subagent the reviewer spawned inherits its mode, rules and
+  environment: `env`, `git log -1`, the `AWS_SECRET_ACCESS_KEY` echo and a
+  Write into the worktree were refused; the poster's `show` and a Write into
+  DIR ran. (The reviewer has had no Agent tool since round 8.)
+
+`scripts/tests/test_peer_agent_review.py` holds the flags and the environment
+and `scripts/tests/test_peer_agent_self_check.py` the self-check (56 mutations of both, each killed); `scripts/tests/test_review_post_git.py` runs the
+reads against real git in a repository whose own config, global config and
+environment would each change the output or run a command (12 mutations, each
+killed).
+
+## Reviewer sources
+
+Round 6 (99d04f34a) found auto memory writable and allow rules from settings
+files widening the reviewer; round 7 (88618388e) found a managed `policyHelper`
+or `sandbox.autoAllowBashIfSandboxed` passing the managed check, user and
+managed agent definitions still loading, and the session scratchpad writable
+outside DIR. Each round found one more source missing from a denylist, which
+is Fact 14's signal that the shape is wrong. So review mode now fails closed
+three ways, and a source nobody has listed is caught at run time if it is in
+effect then and widens one of the self-check's acts:
+
+1. **What loads at all.** `--safe-mode` (CLI 2.1.332, `cli-reference`): "CLAUDE.md,
+   skills, plugins, hooks, MCP servers, custom commands and agents, output
+   styles, workflows, ... status line and file-suggestion commands, LSP servers,
+   and auto memory do not load"; "managed plugins, managed skills, managed
+   CLAUDE.md, and policy-configured MCP servers do not"; authentication and
+   permissions work normally. Beside it, `--restricted` reads no user, project or
+   local settings file, whatever trust a host has accepted. The probe's session
+   listed only the built-in agents (`general-purpose`, `Plan`, `fork`).
+2. **Managed settings**, which both flags keep, pass an allowlist
+   (`managed_settings_problem`): only keys that narrow, each with the value
+   that narrows (`disableAllHooks`, `disableClaudeAiConnectors` and the
+   `allowManaged*Only` keys `true`; `disableAutoMode` (at the top level or, the
+   form the docs give admins, under `permissions`) and
+   `permissions.disableBypassPermissionsMode` `"disable"`; `autoMemoryEnabled`,
+   `enableArtifact`, `syncClaudeAiPlugins` `false`; any `permissions.deny`,
+   `permissions.ask`, `availableModels`, `model`, `forceLogin*`,
+   `cleanupPeriodDays`, `companyAnnouncements`). Any other key (`policyHelper`, `sandbox`,
+   `env`, `apiKeyHelper`, `otelHeadersHelper`, a key nobody has listed yet),
+   any other file in `/etc/claude-code` (a managed `CLAUDE.md`, `managed-mcp.json`,
+   managed agents), an unreadable source, or a platform whose sources this does
+   not read (macOS profiles, the Windows registry, WSL's Windows chain) refuses
+   the dispatch. Review mode runs on Linux only.
+3. **A self-check on every dispatch** (`review_self_check`). Before the review,
+   the reviewer's own session, same flags, environment and working directory,
+   is told to try acts review mode must refuse:
+   - run `python3 -c` to create a canary;
+   - write a canary outside DIR, one into its memory directory, and one into
+     its session scratchpad (`<tmp>/claude-<uid>/<cwd slug>/<session>/scratchpad`);
+   - read a canary token placed in `$HOME`, with Read and with `cat`;
+   - edit a copy of a file planted in main's worktree.
+
+   The wrapper never takes the session's report. From its stream-json
+   transcript it requires each act tried, as at least one call of that act's
+   tool whose input is exactly the act (so a compound command is no act), and
+   every such call in the final result's
+   `permission_denials`: an act never tried, or tried and not denied, stops the
+   dispatch, so a session that did nothing proves nothing. Any other call
+   naming a canary outside the working directories, in any form, is an
+   attempt too and must be denied (the copy, in main's worktree, may be read).
+   Effects stop it
+   too: a canary file, the token anywhere in its output, a changed copy, any
+   Agent or Task call, or a change to the main checkout's `.claude/worktrees`
+   (its existence, entries or mtime, so one made and removed again still
+   shows). The session runs in its own process group, killed whole on a
+   timeout. Every canary, and every directory made for one, is removed either
+   way. Then every managed source is read again and must match, byte for
+   byte, what the first check read (the server's copy is fetched again in the
+   background), and is checked again; then the review runs, resuming that same
+   session (`--session-id`, then `--resume`).
+
+   What this covers: the managed sources as read at dispatch and again before
+   `--resume`. The `--resume` launch makes its own startup fetch of the
+   server-managed settings, applied to the running review, and no check reads
+   it: a change the organisation's admin makes after the last check, or one a
+   failed self-check fetch hid, reaches the review. Only that admin writes
+   server-managed settings, through the claude.ai admin console, never a PR, so
+   it is the trusted admin's act and out of scope (§ Threat model).
+
+Round 8 (755c14fff) found the managed sources read once, before a self-check
+that can run ten minutes, and the self-check taking no effect for refused: a
+session that tried nothing passed, and `git worktree list` could not see a
+subagent's worktree made and removed again. Both are fixed as item 3 says. The
+transcript dump that showed the second: an Agent subagent with isolation
+`worktree` made `.claude/worktrees/agent-<id>` in the main checkout and removed
+it, so the reviewer has no Agent tool now and finds by itself (§ Departures).
+Its Nits: `allowManagedDomainsOnly` and `allowManagedReadPathsOnly` (sandbox
+sub-keys) and `allowManagedModsOnly` (a plugin option under `pluginConfigs`)
+matched nothing at top level and are gone, the last in round 9; a narrowing
+key passes only its narrowing value, where `false` passed too; the scratchpad
+act; the memory directories the check made are removed; the timeout kills the
+process group, not the child alone.
+
+Round 9 (b2e1c8f66) found the `--resume` launch's own fetch unread, and three
+texts claiming more than the checks do (b2e1c8f66's commit title, "checked to
+the end", among them). By the threat model that fetch is the admin's act, so
+no mechanism was added: item 3 says what the check covers, and the texts are
+corrected. Its Nits: an act matches only a call that is exactly it; `REVIEW.md`
+runs step 5's search slice by slice, with no subagents; the departure below
+gives its reason; `allowManagedModsOnly` is gone. Its fix, e7e597ddd, carries
+b2e1c8f66's commit message by mistake (history is never rewritten here); this
+paragraph is its record.
+
+Round 10 (455f96f7b) found the dispatch's comment still saying any managed
+change is refused, against item 3: it now says what item 3 says. Its Nits: an
+allowed call of another form beside a denied exact act passed, so any call
+naming a canary now counts and must be denied (`[sidecat]`);
+`permissions.disableAutoMode` `"disable"`, the docs' form, refused every
+dispatch and now passes, as at the top level; the reviewer's budget is sized
+(§ Departures). Its fix, e3b95a9ad, also carries the previous commit's
+message by mistake; this paragraph is its record.
+
+The settings also turn off the Artifact tool's scratchpad (`enableArtifact`), a
+directory outside DIR it writes without asking, and claude.ai plugin sync
+(`syncClaudeAiPlugins`, honoured from `--settings`). `--disable-slash-commands`,
+`--strict-mcp-config`, `disableAllHooks`, `autoMemoryEnabled` and
+`disableClaudeAiConnectors` repeat what safe mode does. DIR must be new and
+empty, and writes under `DIR/.claude` are denied.
+
+Instructions the host itself writes (`~/.claude/CLAUDE.md`, `~/.claude/rules/`,
+a managed `CLAUDE.md` or `claudeMd`) do not load under safe mode, and a managed
+one refuses the dispatch; none of them adds a tool.
+
+The probes:
+
+- The earlier one put its hostile `.claude/settings.local.json` in a worktree,
+  where Claude Code reads the main checkout's file instead, so it showed nothing
+  about settings files.
+- This one used a separate clone of this branch, whose own root held
+  `.claude/settings.local.json` allowing `Bash(*)`, `Write` and `Edit`; an
+  untracked local file applies without the trust step, so it stands in for an
+  accepted workspace.
+  - **Control:** the self-check on the previous round's flags (no `--safe-mode`,
+    no `--restricted`) caught a memory write and an edit of main's worktree, and
+    stopped the dispatch. Round 8's form names them: memory, copy, memory (not
+    denied), edit (not denied).
+  - **The control's Bash.** Both its Bash acts were denied ("Permission to use
+    Bash has been denied because Claude Code is running in don't ask mode"),
+    though the local file allowed `Bash(*)` and its `Write` and `Edit` rules
+    applied. The docs do not say why `Bash(*)` was not honoured there; it is
+    recorded as observed, and nothing rests on it: a widening that let Bash run
+    shows as an act tried and not denied.
+  - **Review mode:** the self-check passed, rounds 7 and 8 (every act tried
+    and denied, nothing made, the main checkout's worktrees unchanged).
+  - **The dispatch:** `peer_agent.py --review` ran the self-check, then the
+    review, which remembered the self-check (the same session); in round 8,
+    from a new worktree of `origin/main`, the self-check passed, the managed
+    sources were unchanged, and the review answered (exit 0).
+  - No canary was left.
+- Round 8's transcript dump (an earlier self-check form, which still told the
+  session to spawn an isolated subagent) left an empty `.claude/worktrees` in
+  the main checkout, with no worktree registered. It was gone by round 9's
+  probe; this session did not remove it.
+- Rounds 9 and 10's probes, with acts matched exactly and (round 10) every
+  call naming a canary held to denial: the review-mode self-check passed and a
+  full dispatch answered (exit 0); no canary was left.
+- Before round 7, a baseline on round 6's flags wrote a 5-byte file into
+  the shared memory directory. It is gone now; this session did not remove it.
+
+## Threat model
+
+What review mode defends against, and so what a round's finding is in scope
+for. Hostile text can reach the reviewer from:
+
+- the PR's author: the head's files, its `REVIEW.md`, `CLAUDE.md`, `AGENTS.md`,
+  skills, settings, hooks and tests included, read as git objects;
+- anyone whose text reaches the PR: its body, comments, review replies and
+  edits (every agent posts as the one writer, so a writer's text is no
+  safer), and what the head's own workflows write (check runs, comments as
+  `github-actions[bot]`).
+
+Any of it may tell the reviewer to run a command, write a file, read a
+credential or post a verdict. It must reach none of: code execution; a write
+outside DIR (a hook or setting later host sessions load, main's worktree, the
+shared memory); a credential, the environment's or the CLI's login; a post but
+the poster's. A finding where such text gets one is in scope.
+
+Trusted: the managed settings (`/etc/claude-code`, and the server's copy the
+organisation's admin sets in claude.ai's admin console, cached in
+`~/.claude/remote-settings.json`), the user's config (`~/.claude`,
+`~/.claude.json`), the installed CLI and its login, the dispatcher's
+environment, and `origin/main`, which only a reviewed merge changes. Not
+because the files are out of an agent's reach: every agent on this host runs
+as uid 0, so any full agent can write `/etc/claude-code` and `~/.claude`. They
+are trusted because only the founder and the founder's own sessions write them,
+and those sessions already hold the writer's token, so one could post a
+counting verdict itself (`claude-ship.md`, founder decision 2: agents keep the
+founder's account, and its indistinguishable acts are known gaps).
+
+Two gaps follow, accepted rather than defended:
+
+- **A host session steered by PR text.** A full agent that reads PR text (the
+  steward reading findings and replies, a `--write` peer) could be talked into
+  writing managed or user config, or posting a verdict, as the founder. That is
+  decision 2's accepted gap; review mode only declines to load the user's
+  config (no settings, instructions, agents, skills or MCP servers from it).
+- **A persuaded verdict.** PR text can talk the reviewer into a wrong verdict
+  posted through the poster, a misreviewed head passing. Review mode cannot
+  remove it; `REVIEW.md` makes text addressed to a reviewer a finding, the
+  poster refuses an inconsistent review, every new head gets a fresh review,
+  and CI, not the reviewer, runs the gates.
+
+Trusted sources are still checked where it is cheap, failing closed, because a
+mistake there widens every review: the managed allowlist, the environment
+allowlist, the self-check. A hostile founder or admin, a compromised CLI or
+proxy, and GitHub itself are out of scope.
+
+## Bootstrap
+
+Until this PR merges, `origin/main` has no poster, so this PR is reviewed by
+hand under main's `REVIEW.md`, which predates it:
+
+- Rounds 1 and 2 (25154449e, bd4183d97) reviewed from detached checkouts of
+  the head and ran probes that imported its poster.
+- Round 3 (c1ea3ab98) reviewed from a worktree of `origin/main` but ran the
+  head's whole `scripts/tests`, `check_context_budget.py` and
+  `test_rulebook_ratchet.py`, because the brief asked for gates.
+- Round 4 (7065d9113) ran none of the head's code.
+- Rounds 5 to 10 (b6b3c4574, 99d04f34a, 88618388e, 755c14fff, b2e1c8f66,
+  455f96f7b) were by hand too, as the coordinator's subagents, reading the
+  head as git objects.
+
+This PR stays reviewed by hand under main's rules to the end: a review in the
+form it builds needs main's poster and review mode, which main has only once
+this PR merges, and dispatching one with this head's `peer_agent.py` would run
+the head's code. No review was posted on the PR: each verdict is a host
+receipt, so this PR's `review` check comes only from the host's `land_pr2.sh`
+posting the last receipt, which the `live:` owed line deletes afterwards. The
+first PR after it is reviewed from a worktree of `origin/main` with the poster
+and review mode this PR lands, and runs none of the head's code.
+
+## Departures
+
+- **No parallel finders.** Ship's review fans out finders and a verifier as
+  subagents; this reviewer has no Agent tool (round 8, § Reviewer sources) and
+  finds slice by slice, then verifies, in its one session. Separate
+  review-mode peers per finder and for the verifier were not used: each costs
+  a session on the subscription and its own self-check of minutes, for every
+  head, and the verify is the same session's, not an independent one. So the
+  reviewer's budget is ~25 minutes, not a peer's ~10 (peer-agents'
+  constraints block): one session reads every slice and verifies each
+  candidate itself, within the dispatch's 1800s default timeout.
+- **A head past the commit read is refused**, nothing posted, where
+  `land_pr2.sh` only noted it. The poster places inline comments from the
+  head's diff, and a review covers the head it read: the reviewer reviews the
+  new head. A push between the read and the `POST` can still leave a review
+  on an earlier head, which is why `REVIEW.md`'s "one more after a `BLOCK`
+  posted late on an earlier head" stays.
+- **The review App's bot does not count**, where the design named it: it posts
+  only check runs (`review.yml`), and naming its login in the script would be
+  a live name in code. `github-actions[bot]`'s comments are listed, apart, and
+  raise and answer nothing.
+- **Reviews written before the poster** (headings, no line opening with a
+  marker) list no earlier finding. A PR reviewed that way, #5861, #5862 and
+  this one today, has its next review raise each finding that still stands
+  again as a finding of its own: the summary takes no marker line, and a later
+  read takes entries only from marker lines.
+
+## Pins
+
+The skills aggregate moves from 37,400 to 39,383 B (peer-agents 5,175 to
+6,705 B, steward 4,147 to 4,504 B, untangle 10,575 to 10,671 B) and
+`REVIEW.md`'s from 4,550 to 5,022 B: together +2,455 B, for the rules the
+reviews and the review mode added, inside the aggregate total.
+The gates page's pin drops from 1,387 to 1,231, its file's size. The
+per-file total drops from 4,403 to 4,246, and the aggregate total from 58,471
+to 58,305.
+
+## Known
+
+- The live PR body's footer is the session proxy's, which rewrites it on every
+  `PATCH` (`claude-ship.md`'s Known); `land_pr2.sh` re-appended the session
+  footer by hand. CI's Untangle check reads above it.
+
+## Owed
+
+- [x] fix/verdict-order: whichever of #5862 and this PR merges second makes `review_post.py` read review edits through `review_checks`' one rule and slack, and points `test_a_posted_verdict_is_the_one_review_checks_reads` at `standing_verdicts`
+- [ ] live: the coordinator deletes the host's `land_pr2.sh`, `land_pr.sh` and `untangle/receipt_*.md` and the brief's receipt line (the land step `claude-ship.md`'s ticked lane line leaves to this line), once one PR's review is posted with main's `review_post.py` (after `process/ship-code-review` merges)
