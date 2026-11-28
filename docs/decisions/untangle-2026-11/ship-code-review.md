@@ -259,24 +259,62 @@ Research, 2026-11-28 (`claude --help` of 2.1.332; the `permission-modes` and
 As built, `peer_agent.py claude --review DIR` (`review_claude_args`,
 `review_env`): `dontAsk`, no permission prompts; the tools Read, Grep, Glob,
 Bash, Write, Edit and Agent (its finders and verifier); allowed Read, Grep,
-Glob, Agent, writes under DIR only, git's `show`, `diff`, `log`, `grep`,
-`rev-parse` and `merge-base`, and `python3 -I <main>/scripts/review_post.py` and
-`review_checks.py --untangle-check` by path; denied `gh`, `curl`, `wget`, `env`,
-`printenv`, `git push`, WebFetch and WebSearch; reads and writes outside the
-working directories blocked; DIR added; no MCP server; an environment of
-`_REVIEW_ENV` and the placeholder `GH_TOKEN` alone. `--review` and `--write`
-cannot be one dispatch. The reviewer reads CI's checks through the poster's
-`read`, which now lists the head's check runs, so it needs no `gh` of its own.
-`git worktree` is left out: the dispatcher makes `<main>`.
+Glob, Agent, writes under DIR only, and one command, `python3 -I
+<main>/scripts/review_post.py` by path; denied git, `gh`, `curl`, `wget`, `env`,
+`printenv`, WebFetch and WebSearch; reads and writes outside the working
+directories blocked; DIR added; no MCP server; an environment of `_REVIEW_ENV`
+and the placeholder `GH_TOKEN` alone. `--review` and `--write` cannot be one
+dispatch. The reviewer reads CI's checks through the poster's `read`, which now
+lists the head's check runs, so it needs no `gh` of its own; CI's `Diff scope
+declared` is its untangle check.
 
-The probe, the same flags from a worktree of this branch (whose poster `main`
-lacks yet), told to run each command once: `env`, `printenv HOME`, `curl -sS
-https://example.com`, `gh api -X POST .../issues/0/comments`, `python3 -c
-'print(1)'` and `echo "${AWS_SECRET_ACCESS_KEY:-unset}" | wc -c` were refused,
-and so was a Write into the worktree (the file is absent); `git show
-HEAD:REVIEW.md`, the poster's `read` (through the placeholder token) and a Write
-into DIR ran. `scripts/tests/test_peer_agent_review.py` holds the flags and the
-environment (8 mutations, each killed).
+The reviewer's git is the poster's. The first build allowed git's reads by
+prefix, and the coordinator found before dispatch (Fact 17) that a command's
+own flags reach past Claude Code's working-directory checks, which cover only
+its file tools: `git diff --no-index` (and `git grep --no-index`) prints any
+file the user can read, the CLI's OAuth credentials among them, which the
+poster would then post; `--output=` writes any file, a hook into
+`~/.claude/settings.json` that later host sessions would run; `-c` config and
+external diff or textconv drivers run commands. A deny list of flags would be
+fragile, so no git command is allowed (`Bash(git *)` denied, as git's reads run
+unasked otherwise) and `review_post.py show|diff|grep|log` are the reads: each
+reads the PR's head from GitHub, takes `--commit` only as a 40-hex sha in the
+head's history (`git merge-base --is-ancestor`) and `--path` only relative,
+with no `.`, `..` or empty part and no leading `-`, puts paths after `--` and
+a pattern after `-e`, passes no other argument through, and runs a `git`
+resolved outside any checkout, in its own checkout, with `-c core.pager=cat`,
+`--no-ext-diff --no-textconv`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL` the
+null device and every inherited `GIT_` variable stripped (this environment
+carries `GIT_CONFIG_KEY_n`). `review_checks.py --untangle-check`, which hands its
+`--base` and `--head` to git, leaves the allowlist. The poster's refusals no
+longer repeat a file's content, so a `--writers` or `--review` path pointed at
+another file shows nothing of it.
+
+The probes, the same flags from a worktree of this branch (whose poster `main`
+lacks yet), each command run once as written:
+
+- First (git still allowed by prefix): `env`, `printenv HOME`, `curl -sS
+  https://example.com`, `gh api -X POST .../issues/0/comments`, `python3 -c
+  'print(1)'` and `echo "${AWS_SECRET_ACCESS_KEY:-unset}" | wc -c` were
+  refused, and so was a Write into the worktree; the poster's `read` and a
+  Write into DIR ran.
+- Second, as built: refused by Claude Code were `git show HEAD:REVIEW.md`, `git
+  diff --no-index` on a canary file in `$HOME`, `git diff --output=` to a path
+  outside DIR (the file is absent), `git -c core.pager=cat log -1` and `cat` of
+  the canary; refused by the poster (exit 2) were `show --path ../REVIEW.md`, an
+  all-`f` sha, a well-formed sha not in the PR's history, and `grep --pattern
+  --no-index` (a value that looks like a flag; `--pattern=<text>` passes it as
+  text); allowed was the poster's `show` of `REVIEW.md` at the head.
+- An Agent subagent the reviewer spawned inherits its mode, rules and
+  environment: `env`, `git log -1`, the `AWS_SECRET_ACCESS_KEY` echo and a
+  Write into the worktree were refused; the poster's `show` and a Write into
+  DIR ran.
+
+`scripts/tests/test_peer_agent_review.py` holds the flags and the environment
+(9 mutations, each killed); `scripts/tests/test_review_post_git.py` runs the
+reads against real git in a repository whose own config, global config and
+environment would each change the output or run a command (12 mutations, each
+killed).
 
 ## Bootstrap
 
@@ -318,9 +356,9 @@ and review mode this PR lands, and runs none of the head's code.
 
 ## Pins
 
-The skills aggregate moves from 37,400 to 39,153 B (peer-agents 5,175 to
-6,475 B, steward 4,147 to 4,504 B, untangle 10,575 to 10,671 B) and
-`REVIEW.md`'s from 4,550 to 4,996 B: together +2,199 B, for the rules the
+The skills aggregate moves from 37,400 to 39,235 B (peer-agents 5,175 to
+6,557 B, steward 4,147 to 4,504 B, untangle 10,575 to 10,671 B) and
+`REVIEW.md`'s from 4,550 to 4,996 B: together +2,281 B, for the rules the
 five reviews and the review mode added, inside the aggregate total.
 The gates page's pin drops from 1,387 to 1,231, its file's size. The
 per-file total drops from 4,403 to 4,246, and the aggregate total from 58,471
