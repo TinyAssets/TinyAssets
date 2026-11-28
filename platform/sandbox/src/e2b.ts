@@ -55,12 +55,9 @@ function info(value: unknown): SandboxInfo {
   };
 }
 
-/**
- * The Worker's `E2b`, on the runtime's own fetch, each call cut at `until` where it is a time,
- * and by `cut` (a move's, `control.ts` `#moveCut`).
- */
-export function runtimeE2b(key: string, until: number, cut: AbortSignal | null): E2b {
-  return new E2b(key, Number.isFinite(until) ? fetchUntil(until, cut) : runtimeFetch);
+/** The Worker's `E2b`, on the runtime's own fetch, each call cut at `until` where it is a time. */
+export function runtimeE2b(key: string, until: number): E2b {
+  return new E2b(key, Number.isFinite(until) ? fetchUntil(until) : runtimeFetch);
 }
 
 /** The sandbox Worker's E2B: the transport's calls and a sandbox's lifecycle. */

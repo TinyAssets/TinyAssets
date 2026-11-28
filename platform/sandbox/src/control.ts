@@ -17,8 +17,9 @@
  *    (`slots.ts`), and past `sandbox_concurrency_ceiling` (E2B's own team count) or refused
  *    by E2B for room, the run waits (`sandbox_waiting`) until the doorbell rings, never
  *    refused. Every resume runs `prepare` again (the lockdown re-checked, not assumed), and
- *    its row says whether that ended (`prepared`): a start that finds the sandbox running
- *    unprepared (a fault after its create, resume or adoption) prepares it first. A
+ *    its row says whether that ended (`prepared`, cleared before the resume is sent): a start
+ *    that finds the sandbox running unprepared (a fault after its create, resume or adoption,
+ *    or a resume whose answer never came) prepares it first. A
  *    start that opened the lease (`tokens`) applies its network whole and hands the runner
  *    its two secrets, the sync token and its own (`/var/lib/ta/lease.json`, in the root-only
  *    state directory), never the egress token, which the network's transform carries. A
@@ -50,12 +51,15 @@
  * sandbox's runs restart under it) must speak a protocol this Worker does (`SPEAKS`), or the
  * start is refused the same way (`sandbox_runner_protocol`) and nothing is sent to it.
  *
- * **A template move** (`#moveIdle`, after a look that failed at nothing): a paused sandbox
- * nothing lives in, made from another template than the pin (its row's `template`; none, for one
- * made before rows named it), is moved to the pin on the chain, bound whole by `MOVE_MS`: it is
- * resumed, what lives in it alone carried out and it is paused again; a new one is made from the
- * pin, the carry put in, it is paused, and the old one killed. One sandbox of the owner's runs
- * at a time, and a start that comes meanwhile waits at most the bound, inside its lease.
+ * **A template move** (`#moveIdle`, after a look that failed at nothing): a sandbox paused with
+ * nothing in it for `MOVE_QUIET_MS`, made from another template than the pin (its row's
+ * `template`; none, for one made before rows named it), is moved to the pin on the chain, bound
+ * whole by `MOVE_MS`: it is resumed, what no sync carries (the engines' stores) packed while its
+ * workspace holds nothing the sync has not sent, and it is paused again; a new one is made from
+ * the pin, the carry put in, it is paused, and the old one killed. Its workspace comes by the
+ * next run's sync-in, as a new sandbox's does. One sandbox of the owner's runs at a time, and a
+ * start that comes meanwhile waits for the move, its bound and the start's own steps inside the
+ * start's lease.
  *
  * **The look** (the alarm; the founder's rule of 2026-11-03): a sandbox may run
  * `runtime_ceiling_s` at a stretch, and a pause resets that window (probed). The window's
@@ -192,38 +196,72 @@ function roomForOne(count: number | null, reserved: number, ceiling: number): bo
  */
 const MOVE_RETRY_MAX_MS = 24 * 60 * 60_000;
 
-/**
- * A template move's measured steps, end to end: the old sandbox's resume, its `prepare` and its
- * pause; the new one's create (a resume's measured time stands for it) and `prepare`, its pause;
- * and, at `RETRY_BASE_MS` each (the slowest full request measured), the move's fifteen other
- * E2B and envd calls (info and count, the resume's info, carry-out, the read, carry-drop,
- * install's upload and command, the carry's write, carry-in, info, the list and the kill, and
- * two to spare): 24,400 ms.
- */
-const MOVE_STEPS_MS = 2 * (RESUME_MAX_MS + PREPARE_MS + PAUSE_MAX_MS) + 15 * RETRY_BASE_MS;
+/** Measured: the slower of two creates, 1,078 ms to the API's answer (`sandbox-probe.md`). */
+const CREATE_MS = 1_078;
 
 /**
- * A move's finish: the old sandbox's archive dropped and its pause (busy answers asked again,
- * `PAUSE_MAX_MS` doubling), and the kills of what it left.
+ * A move's `carry-out` (`runner.ts`), its own share of the bound and cut there: the workspace
+ * walked by the sync's own rule (a stat of each file against its mirror row, a file hashed only
+ * where its size or time says it changed), the session rows copied and the stores packed.
+ * Measured: the walk of 100,000 files, a stat and a row each, 1.05 s (warm, a Linux host,
+ * 2026-11-28, `untangle-2026-11/template-move.md`); the stores are kilobytes. A workspace whose walk takes longer fails the
+ * try, counted, and is named once it is stuck (`MOVE_STUCK_TRIES`).
  */
-const MOVE_FINISH_MS = 4 * PAUSE_MAX_MS + RESUME_MAX_MS;
+const CARRY_OUT_MS = 3_000;
 
 /**
- * A template move's whole bound, every call of it cut there: its measured steps and its finish,
- * with a fifth of the bound to spare (35,143.75 ms), so no measured move nears it; under a lease's
- * TTL, so a running sandbox's next idle look (a TTL on) never waits on one (`#movesDue`). A move
- * holds the owner's chain, and a call for it that comes meanwhile cuts the move at once
- * (`#serial`), so no start waits on a move's bound: only on its finish.
+ * A template move's steps, each at its measured worst: the old sandbox's resume (`connect`,
+ * `RESUME_MAX_MS`), its `prepare` (every resume runs one), its pause; the new one's create
+ * (`CREATE_MS`) and pause (no `prepare`: nothing runs in it but root's `carry-in`, as a create's
+ * install comes before its `prepare`, and its next resume prepares it); `carry-out`
+ * (`CARRY_OUT_MS`); and, at `RETRY_BASE_MS` each (the slowest full request measured), its 22
+ * other calls: info, the line's turn and E2B's count; the resume's network, `state`, an
+ * adoption's upload, install and `adopt`, `recover`, info and the slot given back; the carry's
+ * read and `carry-drop`, the line rung; the new one's upload and install, the carry's write,
+ * `carry-in`, info, the line rung; the old one's kill, the line rung: 23,943 ms.
+ */
+const MOVE_STEPS_MS = RESUME_MAX_MS + PREPARE_MS + 2 * PAUSE_MAX_MS + CREATE_MS + CARRY_OUT_MS
+  + 22 * RETRY_BASE_MS;
+
+/**
+ * A move's finish where it went no further: the old sandbox asked of E2B, its archive dropped
+ * and its pause (a busy answer asked again once, after the longest pause), the line rung; and
+ * what the move made listed by its token and killed, the line rung: 4,995 ms.
+ */
+const MOVE_FINISH_MS = 3 * PAUSE_MAX_MS + 6 * RETRY_BASE_MS;
+
+/**
+ * A template move's whole bound, every call of it cut there: its steps and its finish, with a
+ * fifth of the bound to spare (36,172.5 ms). A start that comes meanwhile waits for it on the
+ * chain, then takes its own steps (the resume and its `prepare`, and nine calls more: info, the
+ * line's turn and E2B's count, the network, info, the slot given back, `signin-check`, the start
+ * document's write, `launch`; 12,215 ms at the same measures), both inside the start's lease
+ * (`LEASE_TTL_S`): 48,387.5 ms of 60,000. Under a lease's TTL too, so a running sandbox's next
+ * idle look (a TTL on) never waits on one (`#movesDue`).
  */
 const MOVE_MS = (MOVE_STEPS_MS + MOVE_FINISH_MS) * 5 / 4;
+
+/**
+ * How long a sandbox is paused with nothing in it before a move is due: 30 minutes. A move's
+ * safety rests on nothing here (a start that comes mid-move waits for it, inside its lease); it
+ * only makes that wait rare, past a conversation's pace (a reply comes in minutes), at the cost
+ * of half an hour more on the older image. A fixed figure: no data of owners' gaps is kept.
+ */
+const MOVE_QUIET_MS = 30 * 60_000;
+
+/**
+ * The tries in a row after which a move is named stuck (`sandbox_move_stuck`, the canary's to
+ * alert on): three, past a cause that mends itself (E2B busy, the line full), each try at least
+ * `MOVE_QUIET_MS` and a back-off after the one before.
+ */
+const MOVE_STUCK_TRIES = 3;
 
 /**
  * The most a move carries, read whole into this isolate between the two sandboxes, so never two
  * of the owner's run at once: 16 MiB, an eighth of the isolate's 128 MiB, since other owners'
  * objects may share the isolate and move at once (each owner's moves run one at a time on its
- * own chain). A carry is the stores' sign-ins and the session copies the owner's files lack,
- * and the workspace's unsent changes; a larger one waits, backing off, until a run's end sends
- * what it can, and is named for the founder (`sandbox_move_stuck`).
+ * own chain). A carry is the engines' stores (their sign-ins, and the session copies) and the
+ * mirror's session rows, kilobytes; a larger one fails the try, counted.
  */
 const CARRY_MAX_BYTES = 16 * 1024 * 1024;
 
@@ -491,15 +529,13 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    * (`#moveIdle`, on the chain, so no other call runs meanwhile), else none.
    */
   #until = Number.POSITIVE_INFINITY;
-  /** What cuts a move under way, at once, when a call comes for the chain (`#serial`). */
-  #moveCut: AbortController | null = null;
 
   constructor(ctx: DurableObjectState, env: SandboxEnv) {
     super(ctx, env);
     this.#sql = ctx.storage.sql;
     migrate(ctx.storage, CONTROL_MIGRATIONS);
     this.#kept = new SqlKeeper(ctx.storage.sql);
-    this.#e2b = () => runtimeE2b(env.E2B_API_KEY, this.#until, this.#moveCut?.signal ?? null);
+    this.#e2b = () => runtimeE2b(env.E2B_API_KEY, this.#until);
     this.#digest = runnerDigest();
   }
 
@@ -540,13 +576,8 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     return ceilings;
   }
 
-  /**
-   * `act`, after every change before it: one at a time, whatever awaits inside. A template move
-   * under way gives way to it at once (`#moveCut`): the move ends at its finish, and `act` runs
-   * after it, its old sandbox as it was.
-   */
+  /** `act`, after every change before it: one at a time, whatever awaits inside. */
   #serial<T>(act: () => Promise<T>): Promise<T> {
-    this.#moveCut?.abort(new Error("a call came for the owner's chain"));
     const next = this.#chain.then(act, act);
     this.#chain = next.catch(() => undefined);
     return next;
@@ -678,7 +709,11 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       .toArray()[0];
     const paused = found.state === "paused" ? 1 : 0;
     if (row !== undefined && row.paused !== paused) {
-      this.#log(row.authority, paused === 1 ? "pause" : "resume");
+      if (paused === 1) {
+        this.#pausedAt(row.authority);
+      } else {
+        this.#log(row.authority, "resume");
+      }
     }
     this.#sql.exec("UPDATE sandboxes SET end_at = ?, paused = ? WHERE sandbox_id = ?",
                    Date.parse(found.endAt), paused, found.sandboxID);
@@ -686,9 +721,19 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
 
   #paused(authority: string): void {
     if (this.#row(authority)?.paused === 0) {
-      this.#log(authority, "pause");
+      this.#pausedAt(authority);
     }
     this.#sql.exec("UPDATE sandboxes SET paused = 1 WHERE authority = ?", authority);
+  }
+
+  /**
+   * The authority's sandbox paused now: logged, and no move due before it has stayed so for
+   * `MOVE_QUIET_MS` (a back-off already later kept).
+   */
+  #pausedAt(authority: string): void {
+    this.#log(authority, "pause");
+    this.#sql.exec("UPDATE sandboxes SET move_after = MAX(COALESCE(move_after, 0), ?) WHERE " +
+                     "authority = ?", Date.now() + MOVE_QUIET_MS, authority);
   }
 
   /**
@@ -846,6 +891,9 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
                 ceilings: SandboxCeilings): Promise<Box | null> {
     const e2b = this.#e2b();
     this.#ended(found);  // a pause E2B made on its own is logged before the resume
+    // Unprepared before the resume is sent: one E2B makes whose answer never comes here (a
+    // fault, a deadline) is prepared by whatever next finds it running.
+    this.#sql.exec("UPDATE sandboxes SET prepared = 0 WHERE authority = ?", row.authority);
     const resumed = await e2b.connect(found.sandboxID, ceilings.runtime_ceiling_s);
     if (resumed === null) {
       return null;
@@ -1048,27 +1096,27 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
 
   /**
    * One paused, idle sandbox moved to the pin, on the chain, every E2B and envd call of it cut
-   * at one deadline (`MOVE_MS` from its start, `#until`), and at once by a call that comes for
-   * the chain (`#moveCut`): the move then ends at its finish (`MOVE_FINISH_MS`), put off, the
-   * old sandbox paused and whole, and the call runs, in it. One sandbox runs at a time, and
-   * never two of the owner's:
-   * 1. its try charged (`moveBackoff`) before anything is made, so a move cut short backs off;
-   *    its turn and room in the platform's line (`roomForOne`) for one running sandbox;
+   * at one deadline (`MOVE_MS` from its start, `#until`; `carry-out` at its own share first). A
+   * call that comes meanwhile waits for it. One sandbox runs at a time, never two of the owner's:
+   * 1. its try charged (`moveBackoff`) before anything is sent, so every try that ends short of
+   *    the move backs off and counts (`#moveFailed`); its turn and room in the platform's line
+   *    (`roomForOne`) for one running sandbox;
    * 2. the old one resumed (memory kept, its runner made this Worker's where nothing lives, as
-   *    at any resume); its runner packs what lives in it alone (`carry-out`), at most
-   *    `CARRY_MAX_BYTES`, read whole into this isolate, the archive dropped there and the old
-   *    one paused again, as it was;
-   * 3. the new sandbox made from the pin with the old one's network and sealed route, named on
-   *    the row (`move_to`) before anything else awaits; its runner installed and prepared; the
-   *    carry written and put in place (`carry-in`);
-   * 4. in one transaction the row names the new one (`#made`) and the old, paused, one is
-   *    marked to be killed (`retiring`); the new one paused, idle, as it was; the old one killed
-   *    (`#settle`), a kill that fails or whose reply is lost left to the look.
-   * A move put off (no turn, no room, something lives, a carry past its bound) is tried again a
-   * lease's TTL on; one that fails at any step is logged (`sandbox_move_failed`), what it made
-   * killed by its id, the old one left paused with everything it had, and tried again past its
-   * back-off. An object that ends at any step leaves `move_to` set, which the next call on the
-   * chain or the look settles (`#settle`), the old one paused and whole.
+   *    at any resume, which marks it unprepared before it is sent); its runner packs what no
+   *    sync carries (`carry-out`: the stores, and the mirror's session rows), refused while a job
+   *    lives or its workspace holds what the sync has not sent, at most `CARRY_MAX_BYTES`, read
+   *    whole into this isolate; the archive dropped there and the old one paused again;
+   * 3. the new sandbox made from the pin with the old one's network and sealed route, named by
+   *    the move's token before its create is sent (`move_tag`) and by its id once it answers
+   *    (`move_to`); its runner installed; the carry written and put in place (`carry-in`);
+   * 4. in one transaction the row names the new one (`#made`, unprepared: its next resume
+   *    prepares it) and the old, paused, one is marked to be killed (`retiring`); the new one
+   *    paused, idle, as it was; the old one killed (`#settle`), a kill that fails or whose reply
+   *    is lost left to the look.
+   * A try that ends short of the move, at any step, ends at its finish: the old one paused again
+   * wherever E2B says it runs, its archive dropped, what the move made killed (by its id or its
+   * token), so the old one is left paused with everything it had. An object that ends at any step
+   * leaves `move_to` or `move_tag` set, which the next call on the chain or the look settles.
    */
   async #moveIdle(authority: string, ceilings: SandboxCeilings): Promise<void> {
     const row = this.#row(authority);
@@ -1081,49 +1129,49 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     const began = Date.now();
     const until = began + MOVE_MS - MOVE_FINISH_MS;
     this.#until = until;
-    const cut = new AbortController();
-    this.#moveCut = cut;
-    let resumed: Box | null = null;
     let committed = false;
     try {
       const e2b = this.#e2b();
       const found = await e2b.info(row.sandbox_id);
       const route = found?.metadata[ROUTE_METADATA];
       if (found === null || route === undefined || found.state !== "paused") {
+        this.#moveFailed(authority, tries, "E2B has it no more, or not paused, or unrouted");
         return;
       }
       const network = liveNetwork(found);
       const { turn, reserved } = await this.#slots().turn(this.#owner);
       if (!turn || !roomForOne(await e2b.running(), reserved, ceilings.concurrency_ceiling)) {
-        this.#moveLater(authority, "the platform's line has no room for it now");
+        this.#moveFailed(authority, tries, "the platform's line has no room for it");
         return;
       }
-      resumed = await this.#resume(row, found, null, ceilings);
-      if (resumed === null) {
+      const old = await this.#resume(row, found, null, ceilings);
+      if (old === null) {
+        this.#moveFailed(authority, tries, "E2B has it no more");
         return;
       }
-      const old = resumed;
-      // From here a try has cost a resume: one that goes no further keeps its back-off.
       if (old.runner !== this.#digest) {
-        this.#moveStuck(authority, tries, "its runner is one this Worker keeps");
+        this.#moveFailed(authority, tries, "its runner is one this Worker keeps");
         return;
       }
-      const out = await this.#own(old, [COMMAND.carryOut, authority, String(until)],
-                                  until - Date.now());
+      // Cut at its own share, here and in the sandbox alike.
+      const carryUntil = Math.min(until, Date.now() + CARRY_OUT_MS);
+      this.#until = carryUntil;
+      const out = await this.#own(old, [COMMAND.carryOut, authority, String(carryUntil)],
+                                  carryUntil - Date.now()).finally(() => { this.#until = until; });
       if (out.code === EXIT.no) {
-        this.#moveStuck(authority, tries, "a job lives in it");
+        this.#moveFailed(authority, tries,
+                         "a job lives in it, or its workspace holds what no sync has sent");
         return;
       }
       const carry = answerOf<CarryAnswer>(out.out, ANSWERS[COMMAND.carryOut]);
       if (carry.bytes > CARRY_MAX_BYTES) {
-        this.#moveStuck(authority, tries,
-                        `its carry is ${carry.bytes} bytes, past ${CARRY_MAX_BYTES}`);
+        this.#moveFailed(authority, tries,
+                         `its carry is ${carry.bytes} bytes, past ${CARRY_MAX_BYTES}`);
         return;
       }
       const bytes = await e2b.download(old, CARRY_FILE, carry.bytes);
       await this.#own(old, [COMMAND.carryDrop]);
       await this.#pauseIdle(authority, old.sandboxID, until);
-      resumed = null;
       // Named before it is sent, by a token of this move's on its metadata, so a create cut at
       // the deadline, or whose reply is lost, leaves nothing the next settle cannot find.
       const tag = randomHex(16);
@@ -1136,7 +1184,6 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
                      authority);
       const made: Box = { ...created, runner: this.#digest };
       await this.#install(made);
-      await this.#run(made, [COMMAND.prepare, ...network.dnsServers], until - Date.now());
       await e2b.upload(made, CARRY_FILE, bytes);
       if ((await this.#own(made, [COMMAND.carryIn, carry.sha256, String(until)],
                            until - Date.now())).code !== EXIT.ok) {
@@ -1149,7 +1196,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       this.ctx.storage.transactionSync(() => {
         // The old one's time on the meter ended at its pause; gone before it, here.
         this.#forget(authority);
-        this.#made(authority, made.sandboxID, Date.parse(info.endAt), 1);
+        this.#made(authority, made.sandboxID, Date.parse(info.endAt), 0);
         this.#sql.exec("INSERT INTO retiring (sandbox_id) VALUES (?) ON CONFLICT DO NOTHING",
                        old.sandboxID);
       });
@@ -1158,30 +1205,18 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         made.sandboxID} on ${this.env.E2B_TEMPLATE}`);
       await this.#pauseIdle(authority, made.sandboxID, until);
     } catch (error) {
-      if (cut.signal.aborted && !committed) {
-        // A call came for the chain: put off, not failed, its try given back.
-        this.#sql.exec("UPDATE sandboxes SET move_tries = ?, move_after = ? WHERE authority = ?",
-                       row.move_tries, Date.now() + LEASE_TTL_S * 1000, authority);
-        console.log(`sandbox_move_deferred: the ${authority} sandbox's move gave way to a call`);
+      if (committed) {
+        console.error(`sandbox_move_failed: sandbox ${row.sandbox_id} moved to ${
+          String(this.#row(authority)?.sandbox_id)}, which is paused by the idle reaper`, error);
       } else {
-        console.error(committed
-          ? `sandbox_move_failed: sandbox ${row.sandbox_id} moved to ${
-            String(this.#row(authority)?.sandbox_id)}, which is paused by the idle reaper`
-          : `sandbox_move_failed: sandbox ${row.sandbox_id} stays on ${String(row.template)}, ` +
-            "paused with everything it had; its move is tried again past its back-off", error);
+        this.#moveFailed(authority, tries, "a step failed", error);
       }
     } finally {
-      // The finish (the old one's archive dropped and its pause, the kills) has its own share
-      // of the bound, cut by nothing else, so the whole move ends by `MOVE_MS`, and one cut by a
-      // call ends within the finish.
-      this.#moveCut = null;
-      const finish = Math.min(began + MOVE_MS, Date.now() + MOVE_FINISH_MS);
-      this.#until = finish;
-      if (resumed !== null) {
-        const old = resumed;
-        await this.#own(old, [COMMAND.carryDrop]).catch(() => undefined);
-        await this.#pauseIdle(authority, old.sandboxID, finish).catch((left: unknown) => {
-          console.error(`sandbox_move_failed: sandbox ${old.sandboxID} is paused by the idle ` +
+      // The finish has its own share of the bound, so the whole move ends by `MOVE_MS`.
+      this.#until = Math.min(began + MOVE_MS, Date.now() + MOVE_FINISH_MS);
+      if (!committed) {
+        await this.#moveBack(authority, row.sandbox_id).catch((left: unknown) => {
+          console.error(`sandbox_move_failed: sandbox ${row.sandbox_id} is paused by the idle ` +
                         "reaper", left);
         });
       }
@@ -1193,12 +1228,37 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   }
 
   /**
-   * A move whose try cost a resume and went no further: its back-off (charged at the try) kept,
-   * so it is tried again no sooner, doubling to a day; named for the founder as an error.
+   * A move's try that ended short of the move: logged (`sandbox_move_failed`), its back-off
+   * (charged at the try) kept, so it is tried again no sooner, doubling to a day; and from its
+   * `MOVE_STUCK_TRIES`th in a row, named stuck (`sandbox_move_stuck`), for the canary.
    */
-  #moveStuck(authority: string, tries: number, why: string): void {
-    console.error(`sandbox_move_stuck: the ${authority} sandbox's move went no further (try ${
-      tries}): ${why}; tried again past its back-off`);
+  #moveFailed(authority: string, tries: number, why: string, error?: unknown): void {
+    console.error(`sandbox_move_failed: the ${authority} sandbox stays where it is, paused with ${
+      ""}everything it had (try ${tries}): ${why}; tried again past its back-off`,
+                  ...error === undefined ? [] : [error]);
+    if (tries >= MOVE_STUCK_TRIES) {
+      console.error(`sandbox_move_stuck: the ${authority} sandbox's move failed ${tries} tries ${
+        ""}in a row: ${why}`);
+    }
+  }
+
+  /**
+   * The old sandbox of a move that went no further, as E2B tells it now: running (resumed,
+   * whether or not its resume's answer came), its archive dropped and paused again; paused or
+   * gone, as it is.
+   */
+  async #moveBack(authority: string, sandboxId: string): Promise<void> {
+    const found = await this.#e2b().info(sandboxId);
+    const row = this.#row(authority);
+    const box = found === null || row === null ? null : handleOf(found, row);
+    if (box === null) {
+      return;
+    }
+    if (box.runner === this.#digest) {
+      await this.#own(box, [COMMAND.carryDrop]).catch(() => undefined);
+    }
+    this.#ended(found!);  // its resume logged, where its answer never came
+    await this.#pauseIdle(authority, sandboxId, this.#until);
   }
 
   /**

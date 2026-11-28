@@ -19,7 +19,8 @@
  * the record's carry path (answered by its size and digest), `carry-in` taking only an upload
  * there of the digest it names, `carry-drop` dropping the archive, and every other command
  * done, answering nothing. An upload can be refused (a full disk), a command's reply lost after
- * it ran (`lost`), a kill's reply lost after it killed (`killLost`), and a command held before
+ * it ran (`lost`), a kill's, a create's or a resume's reply lost after it was done (`killLost`,
+ * `createLost`, `connectLost`), and a command held before
  * it runs until the test lets it go (`hold`, `/release`).
  */
 import { env } from "cloudflare:workers";
@@ -82,6 +83,8 @@ interface Script {
   killLost: boolean;
   /** The next create makes its sandbox, but its reply is lost (answered 502). */
   createLost: boolean;
+  /** The next resume resumes its sandbox, but its reply is lost (answered 502). */
+  connectLost: boolean;
   /** The size `carry-out` reports of its archive, in place of the archive's own. */
   carryBytes: number | null;
   /**
@@ -123,7 +126,7 @@ function reset(): void {
                   refuseResume: false, broken: null, tampered: null,
                   protocol: (env as unknown as { RUNNER_PROTOCOL: number }).RUNNER_PROTOCOL,
                   room: null, lost: null, killLost: false, createLost: false,
-                  carryBytes: null, hold: null };
+                  connectLost: false, carryBytes: null, hold: null };
 }
 reset();
 
@@ -301,6 +304,10 @@ async function api(request: Request, url: URL): Promise<Response> {
     box.state = "running";
     box.startedAt = Date.now();
     box.timeout = (body as { timeout: number }).timeout;
+    if (fake.script.connectLost) {
+      fake.script.connectLost = false;
+      return new Response("the reply was lost", { status: 502 });
+    }
     return connected(box, 201);
   }
   if (action === "network" && request.method === "PUT") {

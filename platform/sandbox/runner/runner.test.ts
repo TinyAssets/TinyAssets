@@ -2948,28 +2948,24 @@ describe("a template move's carry", () => {
 
   /**
    * The sandbox's disk as runs and syncs leave it: a sign-in in the store and a generation, a
-   * session row, a file as synced, one changed since (its row its base), one never sent, one
-   * removed and not sent, a path the sync-ignore keeps out, and an agent's scratch.
+   * session row, the workspace as synced (each file's row its size and change time), an owner's
+   * file this sandbox has not taken (its row unread, no file), a path the sync-ignore keeps out,
+   * and an agent's scratch.
    */
   function lived(): void {
     box.write(STORE_FILE, "{\"token\":\"vendor-secret\"}");
     chmodSync(box.path(STORE_FILE), 0o600);
     box.write("/var/lib/ta/generations/claude-code", "2");
     box.write("/workspace/synced.md", "as synced");
-    // An edit of the same size whose change time the row holds: no sync finds it, a move does.
-    box.write("/workspace/same.md", "edited: AB");
-    box.write("/workspace/notes/changed.md", "changed here");
-    box.write("/workspace/notes/new.md", "never sent");
-    chmodSync(box.path("/workspace/notes/new.md"), 0o755);
+    box.write("/workspace/notes/also.md", "also synced");
     box.write("/workspace/node_modules/x/index.js", "a cache");
     box.write("/scratch/main/build.o", "scratch");
-    const synced = statSync(box.path("/workspace/synced.md"));
-    const same = statSync(box.path("/workspace/same.md"));
     const mirror = openMirror(box.path(MIRROR));
-    mirror.put("/workspace/synced.md", { ...row(1, "as synced"), mtime_ms: synced.mtimeMs });
-    mirror.put("/workspace/same.md", { ...row(5, "edited: XY"), mtime_ms: same.mtimeMs });
-    mirror.put("/workspace/notes/changed.md", row(2, "the base"));
-    mirror.put("/workspace/removed.md", row(3, "gone here"));
+    for (const [path, text] of [["/workspace/synced.md", "as synced"],
+                                ["/workspace/notes/also.md", "also synced"]] as const) {
+      mirror.put(path, { ...row(1, text), mtime_ms: statSync(box.path(path)).mtimeMs });
+    }
+    mirror.put("/workspace/theirs.md", { ...row(2, "the owner's"), unread: true });
     mirror.put(SESSION, row(4, "a session"));
     mirror.setCursor(9);
     mirror.close();
@@ -2990,8 +2986,8 @@ describe("a template move's carry", () => {
     expect(placed.code, placed.why).toBe(0);
   }
 
-  it("carries the sign-ins, the session rows and the unsent changes into a new sandbox, and " +
-     "nothing else", () => {
+  it("carries the sign-ins and the session rows into a new sandbox, and no workspace file",
+     () => {
     lived();
     next = new Sandbox();
     moved(box, next);
@@ -3002,24 +2998,17 @@ describe("a template move's carry", () => {
     // alone, though the old one left them open.
     expect(statSync(next.path("/var/lib/ta/store/claude-code")).mode & 0o7777).toBe(0o700);
     expect(readFileSync(next.path("/var/lib/ta/generations/claude-code"), "utf8")).toBe("2");
-    // The unsent changes, the sync agent's to send, its exec bit kept; nothing synced, kept
-    // out or scratch.
-    expect(readFileSync(next.path("/workspace/notes/changed.md"), "utf8")).toBe("changed here");
-    expect(readFileSync(next.path("/workspace/notes/new.md"), "utf8")).toBe("never sent");
-    expect(readFileSync(next.path("/workspace/same.md"), "utf8")).toBe("edited: AB");
-    expect(statSync(next.path("/workspace/notes/new.md")).mode & 0o777).toBe(0o775);
-    expect(statSync(next.path("/workspace/notes/changed.md")).uid).toBe(SYNC_UID);
-    for (const gone of ["/workspace/synced.md", "/workspace/node_modules", "/scratch/main"]) {
+    // No workspace file, kept-out path or scratch: the first sync-in reads the owner's files.
+    for (const gone of ["/workspace/synced.md", "/workspace/notes", "/workspace/node_modules",
+                        "/scratch/main"]) {
       expect(existsSync(next.path(gone)), gone).toBe(false);
     }
-    // The mirror: the changed file's base, the removal not sent, the session's row; its cursor
-    // 0, so the first sync-in reads the rest from the owner's files.
+    // The mirror: the session's row alone, its cursor 0.
     const mirror = openMirror(next.path(MIRROR));
     try {
       expect(mirror.cursor()).toBe(0);
-      expect(mirror.page("", 100)).toEqual([SESSION, "/workspace/notes/changed.md",
-                                            "/workspace/removed.md", "/workspace/same.md"]);
-      expect(mirror.get("/workspace/notes/changed.md")).toEqual(row(2, "the base"));
+      expect(mirror.page("", 100)).toEqual([SESSION]);
+      expect(mirror.get(SESSION)).toEqual(row(4, "a session"));
     } finally {
       mirror.close();
     }
@@ -3032,9 +3021,42 @@ describe("a template move's carry", () => {
     expect(existsSync(box.path(`${SYNC_HOME}/carry`))).toBe(false);
   });
 
+  it("is refused while the workspace holds what sync-out would send, by sync-out's own rule",
+     () => {
+    lived();
+    const refused = (what: string) => {
+      const out = box.runner(COMMAND.carryOut, "owner", soon());
+      expect(out.code, `${what}: ${out.why}`).toBe(3);
+      expect(existsSync(box.path(CARRY_FILE)), what).toBe(false);
+      expect(existsSync(box.path(`${SYNC_HOME}/carry`)), what).toBe(false);
+    };
+    // A file changed since its sync (another size).
+    box.write("/workspace/synced.md", "changed since");
+    refused("a changed file");
+    box.write("/workspace/synced.md", "as synced");
+    const mirror = () => openMirror(box.path(MIRROR));
+    const keep = mirror();
+    keep.put("/workspace/synced.md", { ...row(1, "as synced"),
+                                       mtime_ms: statSync(box.path("/workspace/synced.md"))
+                                         .mtimeMs });
+    keep.close();
+    // A file never sent (no row).
+    box.write("/workspace/notes/new.md", "never sent");
+    refused("a file never sent");
+    rmSync(box.path("/workspace/notes/new.md"));
+    // A removal not sent (a row whose file is gone, not the owner's own to take).
+    rmSync(box.path("/workspace/notes/also.md"));
+    refused("a removal not sent");
+    // Each sent (its row gone with it): carried again, kept-out paths and unread rows aside.
+    const gone = mirror();
+    gone.drop("/workspace/notes/also.md");
+    gone.close();
+    box.write("/workspace/node_modules/x/index.js", "a cache, changed");
+    expect(box.runner(COMMAND.carryOut, "owner", soon()).code).toBe(0);
+  });
+
   it("stops at its deadline mid-carry, and leaves no archive and no carry behind", async () => {
     box.write(STORE_FILE, "{\"token\":\"vendor-secret\"}");
-    box.write("/workspace/notes/new.md", "never sent");
     // The sync agent's lock held by a live process of its own user: the carry's sync agent waits
     // on it, so the deadline lands inside the carry's sync phase, every time.
     const holding = box.execAsync(["setpriv", `--reuid=${SYNC_UID}`, `--regid=${SYNC_UID}`,
@@ -3056,30 +3078,6 @@ describe("a template move's carry", () => {
     expect(existsSync(box.path(CARRY_FILE))).toBe(false);
     expect(existsSync(box.path(`${SYNC_HOME}/carry`))).toBe(false);
     expect(readFileSync(box.path(STORE_FILE), "utf8")).toBe("{\"token\":\"vendor-secret\"}");
-  });
-
-  it("stops a carry-out under way at carry-drop, its sync agent with it, and leaves nothing",
-     async () => {
-    box.write(STORE_FILE, "{\"token\":\"vendor-secret\"}");
-    // The sync agent's lock held, so the carry-out waits inside its sync phase until stopped.
-    const holding = box.execAsync(["setpriv", `--reuid=${SYNC_UID}`, `--regid=${SYNC_UID}`,
-                                   "--clear-groups", "sleep", "120"]);
-    await waitFor(() => box.processesOf(SYNC_UID).length > 0);
-    const holder = box.processesOf(SYNC_UID)[0]!;
-    const inBox = /^NSpid:.*\s([0-9]+)\s*$/m.exec(readFileSync(`/proc/${holder}/status`,
-                                                                  "utf8"))![1];
-    box.write(`${SYNC_HOME}/sync.lock`,
-              `${inBox} ${readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()}`);
-    chownSync(box.path(`${SYNC_HOME}/sync.lock`), SYNC_UID, SYNC_UID);
-    const carrying = box.runnerAsync(COMMAND.carryOut, "owner", String(Date.now() + 100_000));
-    await waitFor(() => box.processesOf(SYNC_UID).length > 1);  // its sync agent, waiting
-    expect(box.runner(COMMAND.carryDrop).code).toBe(0);
-    expect(await carrying).not.toBe(0);
-    await holding;
-    expect(box.processesOf(SYNC_UID)).toEqual([]);
-    for (const left of [CARRY_FILE, `${SYNC_HOME}/carry`, "/var/lib/ta/carry.pid"]) {
-      expect(existsSync(box.path(left)), left).toBe(false);
-    }
   });
 
   it("is refused while a job lives, and into a sandbox that holds a store, or of other bytes",

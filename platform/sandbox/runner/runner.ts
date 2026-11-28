@@ -49,9 +49,9 @@
  *   again from its session (`resume_argv`).
  * - `carry-out <authority> <until>`, `carry-in <sha256> <until>` and `carry-drop`: a template
  *   move's carry, sent to this runner alone by the Worker that ships it (`control.ts`
- *   `#moveIdle`), each step stopped at the Worker's deadline: what lives in the sandbox alone
- *   packed while nothing lives, then put in place in a new one, or dropped where the move went
- *   no further.
+ *   `#moveIdle`), each step stopped at the Worker's deadline: what no sync carries (the stores,
+ *   and the sync's session rows) packed while nothing lives and the workspace holds nothing
+ *   unsent, then put in place in a new one, or dropped where the move went no further.
  * - `sync` (internal, as `ta-sync`, its job on stdin): the sync agent and the projection.
  * - `decide` and `hooks` (internal, as a run's user, by its CLI's hook file): the hook helper
  *   (`decide.ts`) and the agent's own hooks' dispatcher (`hooks.ts`), taken by the hook
@@ -700,14 +700,12 @@ function adopt(): number {
 /**
  * What a template move carries of the state directory, each whole: the engines' stores (their
  * sign-ins, which only this sandbox holds, and their session copies) and their generations.
- * The workspace's part is the sync agent's (`sync.ts` `carryOut`). Nothing else of the disk
- * lives in this sandbox alone: the jobs' states are read only while a job lives, the caches
- * and the agents' scratch are caches, and every other file is the owner's or the image's.
+ * The sync's part is its session rows (`sync.ts` `carryOut`); the workspace is the owner's
+ * files', synced in. Nothing else of the disk lives in this sandbox alone: the jobs' states are
+ * read only while a job lives, the caches and the agents' scratch are caches, and every other
+ * file is the owner's or the image's.
  */
 const CARRIED = Object.freeze([STORE, GENERATIONS]);
-
-/** The pid of a carry-out under way, so a `carry-drop` stops it. */
-const CARRY_PID = `${STATE}/carry.pid`;
 
 /**
  * A carry command's deadline (`until`, ms since the epoch, the Worker's own for its move), read
@@ -747,9 +745,8 @@ async function fileSha(path: string): Promise<string> {
 /**
  * A tree unpacked from a carry held to what a carry holds, directories and regular files
  * alone (a link or a node refused, loudly), each given to `owner` with a mode set here: a
- * directory 0700, a file 0600, or 0700 where its owner could run it (the exec bit the workspace's
- * carry keeps, `carryIn`). No mode the old sandbox wrote (setuid, one others may write) comes
- * across.
+ * directory 0700, a file 0600, or 0700 where its owner could run it. No mode the old sandbox
+ * wrote (setuid, one others may write) comes across.
  */
 function ownTree(dir: string, owner: { uid: number; gid: number }): void {
   const stat = lstatSync(dir);
@@ -767,12 +764,13 @@ function ownTree(dir: string, owner: { uid: number; gid: number }): void {
 
 /**
  * `carry-out <authority> <until>` (a template move, `control.ts` `#moveIdle`, in the sandbox it
- * leaves): what lives in this sandbox alone packed into `CARRY_FILE`, root's alone, while
- * nothing lives (3 otherwise): `CARRIED`, and the workspace's carry (`carryOut`, by the sync
- * agent as itself, for that authority's sandbox); answered by the archive's size and SHA-256.
- * Every step stops at `until`, the Worker's deadline, and a carry that does not end by it
- * leaves no archive. Nothing else changes, so a move that goes no further leaves the sandbox as
- * it was (`carry-drop`, or its next `prepare`, drops an archive).
+ * leaves): what lives in this sandbox alone and no sync carries packed into `CARRY_FILE`, root's
+ * alone: `CARRIED`, and the sync's session rows (`carryOut`, by the sync agent as itself, for
+ * that authority's sandbox); answered by the archive's size and SHA-256. Refused (3), packing
+ * nothing, while a job lives or the workspace holds what sync-out would send. Every step stops
+ * at `until`, the Worker's deadline, and a carry that does not end by it leaves no archive.
+ * Nothing else changes, so a move that goes no further leaves the sandbox as it was
+ * (`carry-drop`, or its next `prepare`, drops an archive).
  */
 async function carryOutCommand(authority: string, untilArg: string): Promise<number> {
   if (!AUTHORITY.test(authority)) {
@@ -788,9 +786,13 @@ async function carryOutCommand(authority: string, untilArg: string): Promise<num
   for (const dir of CARRIED) {
     safeDirs("/", dir, 0o700);
   }
-  writeJson(CARRY_PID, process.pid);
   try {
-    await syncAgent({ direction: "carry-out", authority }, atUntil(until));
+    const { report } = await syncAgent({ direction: "carry-out", authority }, atUntil(until));
+    if (report?.["carried"] !== true) {
+      process.stderr.write("ta-runner: the workspace holds what no sync has sent; nothing is " +
+                           "carried\n");
+      return NO;
+    }
     tarUntil(["-c", "-f", CARRY_FILE, "-C", STATE, ...CARRIED.map((dir) => relative(STATE, dir)),
               "-C", SYNC_HOME, relative(SYNC_HOME, SYNC_CARRY)], until, "packed");
     chmodSync(CARRY_FILE, 0o600);
@@ -804,16 +806,15 @@ async function carryOutCommand(authority: string, untilArg: string): Promise<num
     throw error;
   } finally {
     remove(SYNC_CARRY);
-    remove(CARRY_PID);
   }
 }
 
 /**
- * `carry-in <sha256> <until>` (a template move, in the sandbox it makes, once prepared; every
- * step stopped at `until`): the archive
- * the Worker put at `CARRY_FILE` checked to be those bytes, unpacked root's into a directory
- * of root's own, held to what a carry holds (`ownTree`), then `CARRIED` put in place and the
- * workspace's carry handed to the sync agent (`carryIn`). Refused, changing nothing, in a
+ * `carry-in <sha256> <until>` (a template move, in the sandbox it makes, its runner installed;
+ * every step stopped at `until`): the archive the Worker put at `CARRY_FILE` checked to be those
+ * bytes, unpacked root's into a directory of root's own, held to what a carry holds
+ * (`ownTree`), then `CARRIED` put in place and the sync's carry handed to the sync agent
+ * (`carryIn`). Refused, changing nothing, in a
  * sandbox that already holds a store or a generation (or a mirror, `carryIn`): a carry goes
  * into a new sandbox only. The archive and what was unpacked go whatever follows.
  */
@@ -854,23 +855,10 @@ async function carryInCommand(sha: string, untilArg: string): Promise<number> {
 }
 
 /**
- * `carry-drop` (in the sandbox a move left, when it went no further): a carry-out under way
- * stopped, and its archive, a copy of the sign-ins, never left at rest for the run that goes on
- * there.
+ * `carry-drop` (in the sandbox a move left, when it went no further): its archive, a copy of
+ * the sign-ins, never left at rest for the run that goes on there.
  */
-async function carryDropCommand(): Promise<number> {
-  // A carry-out still going (its Worker gave up on it) is stopped first, its sync agent with it:
-  // nothing lives in a sandbox a carry runs in, so every process of the sync agent's user is the
-  // carry's.
-  const pid = existsSync(CARRY_PID) ? Number(readFileSync(CARRY_PID, "utf8")) : null;
-  if (pid !== null && pid !== process.pid && alive(pid)) {
-    process.kill(pid, "SIGKILL");
-  }
-  if (livingJobs() === 0) {
-    await killAll(user(SYNC_USER));
-  }
-  remove(CARRY_PID);
-  remove(SYNC_CARRY);
+function carryDropCommand(): number {
   remove(CARRY_FILE);
   return OK;
 }
@@ -1051,18 +1039,19 @@ async function syncCommand(): Promise<number> {
 
 async function syncLocked(job: SyncJob | CarryJob): Promise<number> {
   if (job.direction === "carry-in") {
-    await carryIn({ local: WORKSPACE }, SYNC_CARRY, SYNC_MIRROR);
+    carryIn(SYNC_CARRY, SYNC_MIRROR);
     process.stdout.write(JSON.stringify({ ok: true }));
     return OK;
   }
   if (job.direction === "carry-out") {
     const mirror = openMirror(SYNC_MIRROR);
     try {
-      await carryOut({ local: WORKSPACE, authority: job.authority }, mirror, SYNC_CARRY);
+      const carried = await carryOut({ local: WORKSPACE, authority: job.authority }, mirror,
+                                     SYNC_CARRY);
+      process.stdout.write(JSON.stringify({ carried }));
     } finally {
       mirror.close();
     }
-    process.stdout.write(JSON.stringify({ ok: true }));
     return OK;
   }
   try {
