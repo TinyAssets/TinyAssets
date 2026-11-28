@@ -217,9 +217,11 @@ export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
   connection_secrets: "sealed credentials (ADR-039 decision 2.12: credentials are never exported)",
   connection_credit: "what each connection's key can pay for: the provider's, read again for " +
     "each active connection, and a restored connection is connected again",
-  connection_models: "each connection's models by the gateway's catalog, as its vendor serves " +
+  connection_records: "each connection's models by the gateway's catalog, as its vendor serves " +
     "them, and their scores: the gateway's and the vendor's, read again for each active " +
     "connection, and a restored connection is connected again",
+  connection_model_reads: "when each connection's models are read next: the lane's, and a " +
+    "restored connection is connected again",
   connection_flows: "an OAuth connect in flight: its PKCE verifier and state",
   owner_sessions: "the owner's session hashes",
   socket_tickets: "single-use socket ticket hashes",

@@ -308,9 +308,7 @@ describe("an egress call", () => {
     const [charge] = await charges(r);
     // Held for the model the call names: its input at that model's context window, not the
     // body's bytes, and its output at that model's cap.
-    const [{ models }] = (await r.sql("SELECT models FROM connections WHERE id = ?",
-                                      connection)) as [{ models: string }];
-    const named = (JSON.parse(models) as ModelRecord[]).find((model) => model.id === MODEL)!;
+    const named = (await recordsOf(r, connection)).find((model) => model.id === MODEL)!;
     const output = opened.metering!.max_output_tokens;
     expect(output).toBe(named.maxTokens);
     expect(charge).toMatchObject({ source: "anthropic", charge: "held", cost: null,
@@ -735,11 +733,15 @@ const OPENROUTER = Object.freeze({
                 methods: ["GET", "POST"] }],
 });
 
+/** A connection's models as the object keeps them (`connection_records`). */
+async function recordsOf(r: Gated, connection: string): Promise<ModelRecord[]> {
+  return (await r.sql("SELECT record FROM connection_records WHERE connection = ?", connection))
+    .map(({ record }) => JSON.parse(String(record)) as ModelRecord);
+}
+
 /** A connection's priced models, each with what one call of it holds at most (µ$). */
 async function pricedModels(r: Gated, connection: string) {
-  const [{ models }] = (await r.sql("SELECT models FROM connections WHERE id = ?",
-                                    connection)) as [{ models: string }];
-  return (JSON.parse(models) as ModelRecord[]).filter((model) => model.cost.output > 0)
+  return (await recordsOf(r, connection)).filter((model) => model.cost.output > 0)
     .map((model) => ({ model, holds: egressPrice([model], model.contextWindow,
                                                  model.maxTokens) }))
     .sort((a, b) => a.holds - b.holds);
@@ -772,9 +774,7 @@ describe("a call's reservation", () => {
      async () => {
     const r = await gated();
     const connection = await r.connect("sk-good", OPENROUTER as never);
-    const [row] = await r.sql("SELECT models FROM connections WHERE id = ?", connection) as
-      { models: string }[];
-    const models = JSON.parse(row!.models) as { id: string; api?: string }[];
+    const models = await recordsOf(r, connection);
     const claude = models.find((model) => model.id === "anthropic/claude-opus-5.5")!;
     const chat = models.find((model) => model.api === "openai-completions"
       && !model.id.startsWith("openrouter/") && !model.id.endsWith(":free"))!;
@@ -831,9 +831,7 @@ describe("a call's reservation", () => {
     const r = await gated();
     const connection = await r.connect("sk-good", OPENROUTER as never, "Key", undefined,
                                        "openrouter_user_models_v1");
-    const [{ models: listed }] = (await r.sql("SELECT models FROM connections WHERE id = ?",
-                                              connection)) as [{ models: string }];
-    const models = JSON.parse(listed) as ModelRecord[];
+    const models = await recordsOf(r, connection);
     const router = models.find((model) => model.id === "openrouter/auto")!;
     const free = models.find((model) => model.id.endsWith(":free"))!;
     expect(router.cost).toMatchObject({ input: 0, output: 0 });
@@ -865,10 +863,7 @@ describe("a call's reservation", () => {
     expect(await refusedWith(r, lease.as(), connection, { path, model: "openrouter/auto" }))
       .toBe("egress_spend_refused");
     expect((await charges(r)).at(-1)).toMatchObject({ rule: "run_cost" });
-    const [{ models: listed }] = (await r.sql("SELECT models FROM connections WHERE id = ?",
-                                              connection)) as [{ models: string }];
-    const free = (JSON.parse(listed) as ModelRecord[])
-      .find((model) => model.id.endsWith(":free"))!;
+    const free = (await recordsOf(r, connection)).find((model) => model.id.endsWith(":free"))!;
     expect((await admitted(r, lease, connection, { path, model: free.id })).metering)
       .toMatchObject({ routed: false });
   });
@@ -1102,9 +1097,7 @@ describe("the spend caps", () => {
   it("refuse a call the caps leave fewer than the floor's output tokens", async () => {
     const r = await gated();
     const connection = await r.connect("sk-good");
-    const [{ models }] = (await r.sql("SELECT models FROM connections WHERE id = ?",
-                                      connection)) as [{ models: string }];
-    const window = (JSON.parse(models) as ModelRecord[]).find((model) => model.id === MODEL)!
+    const window = (await recordsOf(r, connection)).find((model) => model.id === MODEL)!
       .contextWindow;
     // Room for the input and 500 output tokens: under the 1,024 a call is worth.
     const lease = await cappedLeased(r, { ...ROOMY, turn_tokens: window + 500 });
@@ -1639,10 +1632,7 @@ describe("the sandbox's lease", () => {
     const connection = await r.connect("sk-good", OPENROUTER as never);
     const started = async (engine: string, model?: string) => (await ownerRun(r.stub, r.bind(), {
       engine, connection, scopes: [], ...(model === undefined ? {} : { model }) })).start;
-    const [row] = await r.sql("SELECT models FROM connections WHERE id = ?", connection) as
-      { models: string }[];
-    const apis = new Map((JSON.parse(row!.models) as { id: string; api: string }[])
-      .map((model) => [model.id, model.api]));
+    const apis = new Map((await recordsOf(r, connection)).map((model) => [model.id, model.api]));
     const paths: Readonly<Record<string, string>> = { "anthropic-messages": "/api",
                                                       "openai-completions": "/api/v1" };
     const base = (start: SandboxStart) => `https://egress.tinyassets.io/r/${start.run}/${
