@@ -133,15 +133,16 @@ Weighed:
   look, after one that failed at nothing, while nothing else of the owner's needs the look
   within the move's bound. It holds the owner's serial chain, so no start, release, sign-in or
   erasure of the owner's runs during it, and every E2B and envd call of it is cut at one deadline
-  (`MOVE_MS`, half a lease's TTL), so a start that comes meanwhile waits at most that, inside its
-  lease. The old sandbox is resumed, carried out and paused again before the new one is made, so
+  (`MOVE_MS`, sized from its measured steps) and, at once, by any call that comes for the chain
+  (`#moveCut`): the move then ends at its finish, put off, and the call runs in the old sandbox,
+  so a start that comes meanwhile waits only for the finish, never for the move. The old sandbox is resumed, carried out and paused again before the new one is made, so
   two of the owner's never run at once; the carry (small: the sign-ins, the session copies the
   owner's files lack, the unsent changes) rests in the isolate's memory between them, bounded
   (`CARRY_MAX_BYTES`). The sign-ins move VM to VM as before, through the Worker that already
   reaches every sandbox's envd as root.
 
 Chosen: (ii). By construction a start never meets a moving sandbox (the chain), no run waits
-past its lease (the bound), two sandboxes of the owner's never run at once (the old one paused
+on a move (the cut: only its finish, `MOVE_FINISH_MS`), two sandboxes of the owner's never run at once (the old one paused
 before the create), and nothing is left unnamed by a row replaced or erased mid-move (both are
 calls on the chain the move holds). A Worker that ends mid-move leaves the old sandbox paused and
 whole, and the new one, if made, named on the row (`move_to`) for the next call to kill.
@@ -152,8 +153,8 @@ whole, and the new one, if made, named on the row (`move_to`) for the next call 
 the owner's serial chain, bound whole by `MOVE_MS`: it is resumed, what lives in it alone
 carried out, and it is paused again; a new sandbox is made from the pin, the carry put in, it is
 paused, and the old one killed. A start never moves a sandbox and never meets one being moved;
-one that comes meanwhile waits at most the bound. A move that cannot finish leaves the old
-sandbox paused and whole.**
+one that comes meanwhile cuts the move, waits for its finish, and runs in the old sandbox. A move
+that cannot finish leaves the old sandbox paused and whole.**
 
 1. **Which template a sandbox is on** is its row's (`template`, set when this Worker makes it,
    from the pin it makes it from). A row kept from before names none, so it moves once, costing
@@ -195,11 +196,11 @@ sandbox paused and whole.**
      the new sandbox) keeps the back-off it was charged and is named for the founder as an error
      (`sandbox_move_stuck`), never put off at a lease's TTL;
    - `carry-out`, read whole, the archive dropped there, the old one paused again;
-   - the new sandbox begun only with `MOVE_TAIL_MS` of the bound left (its `prepare` and, within
-     a renewal's measured whole, its create, install, carry and `carry-in`), named before its
-     create is sent by a token of the move's (`move_tag`, on its metadata `ta_move`) and, once
-     the create answers, by its id (`move_to`): a create cut at the deadline, or whose reply is
-     lost, is found by its token and killed (`#settle`);
+   - the new sandbox named before its create is sent by a token of the move's (`move_tag`, on
+     its metadata `ta_move`) and, once the create answers, by its id (`move_to`): a create cut
+     at the deadline, or whose reply is lost, is found by its token and killed (`#settle`), the
+     token kept until a list past its create's window (`move_tag_until`, the create's cut and a
+     lease's TTL past it) finds nothing by it;
    - its runner installed and prepared; the carry written and put in place (`carry-in`);
    - in one transaction the row names the new one (`#made`, the create's own; the old one
      forgotten as the look forgets one, its time on the meter ended at its pause, or here if it
@@ -261,6 +262,22 @@ nothing is billed twice; nothing is orphaned. Zero hosts: the Worker alone moves
   tagged `large`), so one case ran 54 to 59 s against the medium budget of 47 s, the other 11 to
   20 s. The carry needs no `prepare`; those calls are gone (CI: 0.6 s and 1.6 s), and the large
   prepare test holds that it drops an archive a failed move left.
+
+## Review findings (#5857, at 2b86b2768), with the fix above each
+
+- **The bound is sized from the move's measured steps** (`MOVE_STEPS_MS`), and no remainder is
+  split off for a tail: "hands its steps a bound that holds the move's measured steps with a
+  fifth to spare" (the 30 s split fails it).
+  - By the code's own constants the old 30 s split left the old sandbox 9.3 s against its
+    8.6 s of timed steps and six calls more, so nearly every try ended stuck.
+- **A call that comes for the chain cuts a move at once** (`#serial`, `#moveCut`): the move ends
+  at its finish, its try given back, and the call runs in the old sandbox; a start never waits
+  on a move's bound. `carry-drop` stops a carry-out still going in the old sandbox, its sync
+  agent with it, so the run that follows meets no carry: "gives way at once to a start that
+  comes mid-move", and the runner's "stops a carry-out under way at carry-drop".
+- Nits: a move's token is kept until a list past its create's window finds nothing; the stuck
+  move is in the canary's owed alerts (`tasks.md`); the line's calls and a step held to the bound
+  itself are said (Left).
 
 ## Review findings (#5857, at 9ee259851), with the fix above each
 
@@ -333,9 +350,20 @@ Each of the four is impossible by construction in shape (ii), and tested:
   download: the transport's upload was probed with whole bytes (`transport.ts` header). The
   first live move shows it; until then a move that fails there leaves the old sandbox serving,
   tried again a day at most later.
-- **A move's time on the stage is not measured here** (no live act from this change): it is
-  bound by `MOVE_MS`, half a lease's TTL, and a move past it is cut and put off. Measured at the
-  first live move.
+- **A move's time on the stage is not measured here** (no live act from this change). Its bound
+  is sized from the measured steps (`MOVE_STEPS_MS`: two resumes, `prepare`s and pauses, a create
+  and fifteen calls at the slowest full request, 24.4 s; with the finish, a fifth to spare,
+  35.1 s), and a move past it is cut and put off. `prepare` is kept at a resume: the lockdown is
+  re-checked at every resume by the design's rule, not assumed (its 7 s is the boot's
+  measurement, the most it takes). Measured at the first live move.
+- **Tests at the measured latencies**: the fake E2B answers at once, and a move at the measured
+  latencies runs about 25 s, past the workerd tests' budget, with no large leg of the sandbox's
+  workerd tests. So the test holds the bound the move hands its steps against the measured steps
+  as the measurements state them ("hands its steps a bound that holds the move's measured
+  steps"), which the 30 s split failed; and the cut is tested by a held step a start overtakes.
+  No test holds a step until the bound itself (it would run 35 s).
+- **The calls to the line** (`SandboxSlots`: `turn`, `freed`) are Durable Object calls, not cut
+  by the deadline fetch; a start's cut of the move does not wait on them.
 - **A carry past `CARRY_MAX_BYTES`** (an owner with large session copies the owner's files
   lack, or large unsent changes) waits until a run's end sends what it can; one that never
   shrinks keeps that sandbox on its template. Each try costs a resume, a `prepare` and a
@@ -353,8 +381,8 @@ Each of the four is impossible by construction in shape (ii), and tested:
 
 - A run on a sandbox of an older template runs there. The move happens afterwards, at the look,
   once the sandbox is paused with nothing in it, so the next run after it runs on the new image,
-  from a paused sandbox resumed as any other. A start that comes during a move waits for it, at
-  most half its lease (`MOVE_MS`), and then runs.
+  from a paused sandbox resumed as any other. A start that comes during a move cuts it, waits for
+  its finish (a few seconds), and runs in the old sandbox; the move is tried again later.
 - Signed-in engines stay signed in; the conversations resume; unsent files and removals are sent
   at that run's end against their bases, as they would have been.
 - The run's first sync-in reads every file again (a new sandbox's own), so a large workspace's
@@ -373,7 +401,8 @@ Each of the four is impossible by construction in shape (ii), and tested:
   look next needs a row, shared by `#arm` and the move; `#pauseIdle`; `#settle`, run on the
   chain by `#ensure`, the look and the move; `#until`, the deadline every E2B and envd call is
   cut at during a move; `#own`, which sends `OWN_COMMANDS` to this Worker's runner alone;
-  `roomForOne`; `moveBackoff`, `MOVE_MS`, `MOVE_FINISH_MS`, `MOVE_TAIL_MS`, `CARRY_MAX_BYTES`;
+  `roomForOne`; `moveBackoff`, `MOVE_STEPS_MS`, `MOVE_FINISH_MS`, `MOVE_MS`, `CARRY_MAX_BYTES`;
+  `#moveCut`;
   `#moveStuck`; `#create`'s token (`MOVE_TAG_METADATA`). `#ensure` moves nothing. The header
   says it. `src/schema.ts` migration 8 (`template`, `move_to`, `move_tag`,
   `move_tries`, `move_after`, `retiring`), pinned.

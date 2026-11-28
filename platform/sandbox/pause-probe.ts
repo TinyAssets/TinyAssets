@@ -404,7 +404,7 @@ async function main(argv: readonly string[]): Promise<number> {
   summary.line(`### E2B long-pause probe: ${mode}`);
   summary.line();
   try {
-    const e2b = runtimeE2b(process.env["E2B_API_KEY"] ?? "", Number.POSITIVE_INFINITY);
+    const e2b = runtimeE2b(process.env["E2B_API_KEY"] ?? "", Number.POSITIVE_INFINITY, null);
     await (mode === "start" ? start(e2b, summary) : mode === "check" ? check(e2b, summary, ids)
       : cleanup(e2b, summary));
     return 0;

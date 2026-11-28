@@ -3058,6 +3058,30 @@ describe("a template move's carry", () => {
     expect(readFileSync(box.path(STORE_FILE), "utf8")).toBe("{\"token\":\"vendor-secret\"}");
   });
 
+  it("stops a carry-out under way at carry-drop, its sync agent with it, and leaves nothing",
+     async () => {
+    box.write(STORE_FILE, "{\"token\":\"vendor-secret\"}");
+    // The sync agent's lock held, so the carry-out waits inside its sync phase until stopped.
+    const holding = box.execAsync(["setpriv", `--reuid=${SYNC_UID}`, `--regid=${SYNC_UID}`,
+                                   "--clear-groups", "sleep", "120"]);
+    await waitFor(() => box.processesOf(SYNC_UID).length > 0);
+    const holder = box.processesOf(SYNC_UID)[0]!;
+    const inBox = /^NSpid:.*\s([0-9]+)\s*$/m.exec(readFileSync(`/proc/${holder}/status`,
+                                                                  "utf8"))![1];
+    box.write(`${SYNC_HOME}/sync.lock`,
+              `${inBox} ${readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()}`);
+    chownSync(box.path(`${SYNC_HOME}/sync.lock`), SYNC_UID, SYNC_UID);
+    const carrying = box.runnerAsync(COMMAND.carryOut, "owner", String(Date.now() + 100_000));
+    await waitFor(() => box.processesOf(SYNC_UID).length > 1);  // its sync agent, waiting
+    expect(box.runner(COMMAND.carryDrop).code).toBe(0);
+    expect(await carrying).not.toBe(0);
+    await holding;
+    expect(box.processesOf(SYNC_UID)).toEqual([]);
+    for (const left of [CARRY_FILE, `${SYNC_HOME}/carry`, "/var/lib/ta/carry.pid"]) {
+      expect(existsSync(box.path(left)), left).toBe(false);
+    }
+  });
+
   it("is refused while a job lives, and into a sandbox that holds a store, or of other bytes",
      async () => {
     const release = "/tmp/release-carry";

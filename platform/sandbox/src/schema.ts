@@ -78,6 +78,7 @@ export const CONTROL_MIGRATIONS: readonly Migration[] = Object.freeze([
     "ALTER TABLE sandboxes ADD COLUMN template TEXT",
     "ALTER TABLE sandboxes ADD COLUMN move_to TEXT",
     "ALTER TABLE sandboxes ADD COLUMN move_tag TEXT",
+    "ALTER TABLE sandboxes ADD COLUMN move_tag_until REAL",
     "ALTER TABLE sandboxes ADD COLUMN move_tries INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE sandboxes ADD COLUMN move_after REAL",
     "CREATE TABLE retiring (sandbox_id TEXT PRIMARY KEY)",

@@ -1725,6 +1725,22 @@ describe("a template move", () => {
     expect(ranIn(state, made.id, before)).not.toContain("carry-out");
   });
 
+  it("hands its steps a bound that holds the move's measured steps with a fifth to spare",
+     async () => {
+    // The move's steps as the measurements state them, written here rather than read from the
+    // code: the old sandbox's resume (895 ms, `e2b-resume-measurement.md`), `prepare` (7 s,
+    // `sandbox-probe.md`) and pause (705 ms); the new one's create (a resume's 895 ms), `prepare`
+    // and pause; and fifteen other E2B and envd calls at the slowest full request, 480 ms.
+    const MEASURED_STEPS_MS = 2 * (895 + 7_000 + 705) + 15 * 480;
+    const who = owner();
+    await madeFrom(who, OLD);
+    const before = Date.now();
+    await look(who);
+    const carryOut = (await seen()).commands.find((command) => command.argv[1] === "carry-out")!;
+    // The deadline it hands the carry is the steps' own: all of them fit before it.
+    expect(Number(carryOut.argv[3]) - before).toBeGreaterThanOrEqual(MEASURED_STEPS_MS * 1.25);
+  });
+
   it("moves a sandbox made before rows named a template, once", async () => {
     const who = owner();
     const old = await madeFrom(who, null);
@@ -1738,22 +1754,32 @@ describe("a template move", () => {
       .not.toContain("carry-out");
   });
 
-  it("holds a start that comes mid-move on the chain, then runs it in the sandbox the move " +
-     "made: no run meets a sandbox being moved", async () => {
+  it("gives way at once to a start that comes mid-move: the move ends at its finish, put off, " +
+     "and the run goes on in the old sandbox while the move's step is still held", async () => {
     const who = owner();
     const old = await madeFrom(who, OLD);
+    // The carry takes as long as the test holds it.
     await e2b("/script", { hold: "carry-out" });
     const moving = look(who);
     await seenOnce((state) => state.held.includes("carry-out"), "the move's carry-out held");
-    const starting = stub(who).start(opening());
+    expect(await stub(who).start(opening())).toEqual({ started: true });
+    let state = await seen();
+    expect(state.held).toEqual(["carry-out"]);  // answered while the move's step still waits
+    expect(state.sandboxes.map((box) => box.id)).toEqual([old]);
+    expect(state.commands.filter((command) => command.argv[1] === "launch").at(-1)!.sandbox)
+      .toBe(old);
     await e2b("/release", {});
     await moving;
-    expect(await starting).toEqual({ started: true });
-    const state = await seen();
-    const made = state.sandboxes.find((box) => box.id !== old);
-    expect(state.sandboxes.map((box) => box.id)).not.toContain(old);
-    expect(state.commands.filter((command) => command.argv[1] === "launch").at(-1)!.sandbox)
-      .toBe(made!.id);
+    // Put off, its try given back: a lease's TTL on, no back-off charged.
+    expect(await rowOf(who)).toMatchObject({ sandbox_id: old, move_tries: 0, move_to: null });
+    state = await seen();
+    expect(state.sandboxes.map((box) => box.id)).toEqual([old]);
+    expect(state.files[`${old}:${CARRY_FILE}`]).toBeUndefined();
+    // Once the run is over and the put-off passed, the next look moves it.
+    await stub(who).release({ lease_id: leaseOf() });
+    await setRow(who, "move_after = 0");
+    await look(who);
+    expect((await seen()).sandboxes.map((box) => box.id)).not.toContain(old);
   });
 
   for (const fault of [{ broken: "carry-out" }, { lost: "carry-out" }, { broken: "carry-in" },
@@ -1783,8 +1809,8 @@ describe("a template move", () => {
       expect(state.sandboxes.map((box) => box.id)).toEqual([old]);
       expect(state.commands.slice(before).map((command) => command.argv[1]))
         .not.toContain("carry-out");
-      // Past it, the next look moves it.
-      await setRow(who, "move_after = 0");
+      // Past it (and past its token's window), the next look moves it.
+      await setRow(who, "move_after = 0, move_tag_until = 0");
       await look(who);
       expect((await seen()).sandboxes.map((box) => box.id)).not.toContain(old);
     });
@@ -1831,7 +1857,15 @@ describe("a template move", () => {
     await look(who);
     const state = await seen();
     expect(state.sandboxes.map((box) => box.id)).toEqual([old]);
-    expect(await rowOf(who)).toMatchObject({ sandbox_id: old, move_to: null, move_tag: null });
+    // Its token kept for its create's window, so one E2B places late is found too; past it, a
+    // list that finds nothing lets it go.
+    const row = await rowOf(who);
+    expect(row).toMatchObject({ sandbox_id: old, move_to: null });
+    expect(row["move_tag"]).toMatch(/^[0-9a-f]{32}$/);
+    expect(await alarmOf(who)).toBeGreaterThan(Date.now() + LEASE_TTL_S * 1000 / 2);
+    await setRow(who, "move_tag_until = 0, move_after = ?", Date.now() + 3_600_000);
+    await look(who);
+    expect(await rowOf(who)).toMatchObject({ move_tag: null, move_tag_until: null });
   });
 
   it("keeps the new sandbox, never the old, when the old one's kill answers lost", async () => {

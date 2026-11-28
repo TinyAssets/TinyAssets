@@ -706,6 +706,9 @@ function adopt(): number {
  */
 const CARRIED = Object.freeze([STORE, GENERATIONS]);
 
+/** The pid of a carry-out under way, so a `carry-drop` stops it. */
+const CARRY_PID = `${STATE}/carry.pid`;
+
 /**
  * A carry command's deadline (`until`, ms since the epoch, the Worker's own for its move), read
  * from its argument: one past, or not a time, is refused.
@@ -785,6 +788,7 @@ async function carryOutCommand(authority: string, untilArg: string): Promise<num
   for (const dir of CARRIED) {
     safeDirs("/", dir, 0o700);
   }
+  writeJson(CARRY_PID, process.pid);
   try {
     await syncAgent({ direction: "carry-out", authority }, atUntil(until));
     tarUntil(["-c", "-f", CARRY_FILE, "-C", STATE, ...CARRIED.map((dir) => relative(STATE, dir)),
@@ -800,6 +804,7 @@ async function carryOutCommand(authority: string, untilArg: string): Promise<num
     throw error;
   } finally {
     remove(SYNC_CARRY);
+    remove(CARRY_PID);
   }
 }
 
@@ -849,10 +854,23 @@ async function carryInCommand(sha: string, untilArg: string): Promise<number> {
 }
 
 /**
- * `carry-drop` (in the sandbox a move left, when it went no further): its archive, a copy of
- * the sign-ins, never left at rest for the run that goes on there.
+ * `carry-drop` (in the sandbox a move left, when it went no further): a carry-out under way
+ * stopped, and its archive, a copy of the sign-ins, never left at rest for the run that goes on
+ * there.
  */
-function carryDropCommand(): number {
+async function carryDropCommand(): Promise<number> {
+  // A carry-out still going (its Worker gave up on it) is stopped first, its sync agent with it:
+  // nothing lives in a sandbox a carry runs in, so every process of the sync agent's user is the
+  // carry's.
+  const pid = existsSync(CARRY_PID) ? Number(readFileSync(CARRY_PID, "utf8")) : null;
+  if (pid !== null && pid !== process.pid && alive(pid)) {
+    process.kill(pid, "SIGKILL");
+  }
+  if (livingJobs() === 0) {
+    await killAll(user(SYNC_USER));
+  }
+  remove(CARRY_PID);
+  remove(SYNC_CARRY);
   remove(CARRY_FILE);
   return OK;
 }

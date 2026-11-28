@@ -54,11 +54,13 @@ type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;
  */
 export const runtimeFetch: Fetcher = (url, init) => fetch(url, init);
 
-/** The runtime's fetch, each call cut at `until` (ms since the epoch). */
-export function fetchUntil(until: number): Fetcher {
-  return (url, init) => runtimeFetch(url, { ...init,
-                                            signal: AbortSignal.timeout(Math.max(0,
-                                              until - Date.now())) });
+/** The runtime's fetch, each call cut at `until` (ms since the epoch), and by `cut`. */
+export function fetchUntil(until: number, cut: AbortSignal | null): Fetcher {
+  return (url, init) => {
+    const timeout = AbortSignal.timeout(Math.max(0, until - Date.now()));
+    return runtimeFetch(url, { ...init,
+                               signal: cut === null ? timeout : AbortSignal.any([timeout, cut]) });
+  };
 }
 
 /** A running sandbox, as envd is reached. */
