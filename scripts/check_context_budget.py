@@ -123,11 +123,13 @@ class Aggregate:
 # endpoints and claims) and grow when the product does, which is not rulebook
 # growth. Every other docs/reference file is procedure, and procedure is capped.
 AGGREGATES: tuple[Aggregate, ...] = (
-    Aggregate("docs/reference/*.md", "docs/reference/*.md", 5615,
+    Aggregate("docs/reference/*.md", "docs/reference/*.md", 5459,
               exclude=("environment-variables.md", "workos-authkit-integration.md"),
               note="Procedure docs. A new gate here displaces an old one."),
-    Aggregate(".agents/skills/*/SKILL.md", ".agents/skills/*/SKILL.md", 34467,
+    Aggregate(".agents/skills/*/SKILL.md", ".agents/skills/*/SKILL.md", 37400,
               note="Skills are rulebook too -- a rule moved into a skill is still a rule."),
+    Aggregate("REVIEW.md", "REVIEW.md", 4550,
+              note="The reviewer's rules; the skills it includes are pinned above."),
     Aggregate("docs/reviews/*", "docs/reviews/*", 0,
               note="Retired reviews cannot grow back outside the document homes."),
 )

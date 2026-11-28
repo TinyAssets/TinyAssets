@@ -12,7 +12,7 @@ name: review
 #   APPROVE at A, carries(A, head)     -> success, naming A and why it carries
 #   a verdict that does not carry      -> failure, naming the review the delta needs
 #
-# `carries` is the same change, or a delta of Markdown prose only. Only reviews
+# `carries` is the same change only; any other delta gets a fresh review. Only reviews
 # submitted after the PR's last base change count: a retarget changes what was read.
 # Only a review by an account that can push counts (write, maintain or admin, from
 # any grant), read with this run's own token from GitHub's permission endpoint. It
