@@ -46,7 +46,7 @@ Facts measured for this file:
   Some agent comments carry no App marker (7057154858, 7194785637), so nothing
   GitHub records tells the founder's act from an agent's.
 - `review.yml` counts a verdict only from a review by an account that can push
-  (`latest_verdict` and `push_reader` in `scripts/review_checks.py`), on the
+  (`latest_verdict`, now `standing_verdicts`, and `push_reader` in `scripts/review_checks.py`), on the
   commit it read, after the PR's last base change; a permission read that fails
   is no verdict. A verdict stands for a later head only across the same change
   or a prose-only delta (`carries`); any other delta gets, in its own words, "a
@@ -119,7 +119,7 @@ since 2026-11-24 (`brief_lane.md`'s "Ship's separation of duties"), which
 | Ship | Ours today | Verdict |
 |---|---|---|
 | A policy file `.claude/approvals.yml` decides who approves, with seats, overrides, classifiers, `findings`, `reuse`, observe then enforce | `review.yml`: a writer's verdict, `APPROVE` with no Important open, is the required `review` check | **Keep** (decision 5). In Ship's terms ours is one rule, the starter's override alone: `{ paths: ["**"], if: "claude/code_review = pass", verdict: { claude: approves, seats: 0 } }`, with no person's seat. One rule with no seats needs no policy file; a `.claude/approvals.yml` nothing of ours reads would also switch on Ship's billed Approvals if the Claude App were ever linked to a qualifying org |
-| Only accounts with write access count | `latest_verdict` counts only a review by an account that can push; a failed read is no verdict | Matches, and stays: no other GitHub user's review can pass `review` |
+| Only accounts with write access count | `standing_verdicts` counts only a review by an account that can push; a failed read is no verdict | Matches, and stays: no other GitHub user's review can pass `review` |
 | The required check pinned to the app's id as its source | `review` pinned to the review App (5634948), whose key only a `main`-only environment can mint | Matches |
 | Merge-queue commits are stamped | `review-queue.yml` signals with no permission; `review.yml` decides the group's PR afresh at its head | **Keep**: it does the stamp's job, and a `merge_group` run cannot reach the `main`-only key, which is why the two-step exists |
 | Claude posts an approving review; GitHub requires one approval and dismisses stale ones | A `COMMENT` review; no `pull_request` rule | **Keep** (decision 5): the one writer account cannot approve its own PR (ADR-038), and `review` already holds a verdict to the commit it read |
@@ -150,7 +150,7 @@ since 2026-11-24 (`brief_lane.md`'s "Ship's separation of duties"), which
   review or fix happens, a known gap against Direction 8, the founder's choice.
 - **The reviewer's verdict is any agent's word**, as today: separation of
   duties holds by the skills, since all agents write as the founder (decision
-  2). Outsiders are held off by `latest_verdict`'s writer test.
+  2). Outsiders are held off by `standing_verdicts`' writer test.
 - **One decision, one place.** What the founder is asked is part of the
   review's verdict, not a second machine-read line: there is no second reader
   to disagree with `review.yml` about which review governs a head.
@@ -181,11 +181,14 @@ since 2026-11-24 (`brief_lane.md`'s "Ship's separation of duties"), which
    and one more after a founder answer or after a `BLOCK` posted late on an
    earlier head.
 3. **`review.yml`**, unchanged but for the prose carry, its ask text and which
-   verdict governs. Counted verdicts are those `latest_verdict` counts today
-   (by an account that can push, not voided by a dismissal, after the last
-   base change) on a commit in the head's history (`git merge-base
-   --is-ancestor` on the objects `review.yml` already fetches); a verdict on a
-   commit outside it, force-pushed away, is ignored, so the check waits. A
+   verdict governs. Counted verdicts are those `standing_verdicts` counts
+   (by an account that can push, not voided by a dismissal or an edit of a writer's review,
+   after the last base change, and not a late `APPROVE`: one of a commit
+   whose descendant was already reviewed) on a commit in the head's history (`git merge-base
+   --is-ancestor` on the objects `review.yml` already fetches); an `APPROVE` on
+   a commit outside it, force-pushed away, is ignored, and a writer's `BLOCK`
+   there stands, red and named, until a counted verdict on the head is
+   submitted after it, each later head needing its own (`verdict-order.md` item 4). A
    `BLOCK` stands until a counted verdict is submitted after it on the same
    commit or a descendant. `review` passes only when no `BLOCK` stands and the
    latest counted verdict on the most descendant reviewed commit is `APPROVE`
@@ -252,7 +255,7 @@ with decision 5; the separate steward lane folds into `process/ship-rules`,
 since the steward's procedure is skill text and the coordinator already starts
 one per PR.
 
-- [ ] The live verdict-order bug (Fact 17), its own small PR first: `fix/verdict-order`
+- [x] The live verdict-order bug (Fact 17), its own small PR first: `fix/verdict-order` Done (`fix/verdict-order`, `verdict-order.md`).
 - [x] Rules into the repo, the steward procedure, the prose carry and the delta-only ask gone: `process/ship-rules`
 - [ ] The reviewer's procedure and poster, the coordinator's founder step, the land step gone: `process/ship-code-review`
 - [ ] No force-push or deletion of `main`, one source for it: `process/ship-main-guard`
@@ -270,7 +273,8 @@ one per PR.
    only, H2 the same change: pass; (6) on H2, `APPROVE` t1 then `BLOCK` t2:
    fail, and `BLOCK` t1 then `APPROVE` t2: pass; (7) a dismissed review at t2
    voids the verdicts at or before it; (8) H1 force-pushed away to H1': its
-   verdict is ignored and the check waits; (9) cases 1 to 6 with
+   `APPROVE` is ignored and the check waits, and a late `BLOCK@H1` stands
+   over H1''s earlier `APPROVE`; (9) cases 1 to 6 with
    `--group-sha`, the group following its PR. Gates: those tests, the existing
    `test_review_check.py` and `test_review_writers.py`, actionlint and
    `ci_structural_guards.py` if `review.yml` changes, `--untangle-check`.
