@@ -324,8 +324,8 @@ is named. Zero hosts: the Worker alone moves it.
   from the third. The owner is told of the refusal at each run's end already
   (`ta.sync_refused`); once it is sent or removed, the next try moves.
 - **A workspace whose walk outlasts `carry-out`'s share** (some 250,000 files at the measured
-  rate) never moves, each try counted, named stuck from the third. Owed: the walk measured on
-  E2B at the first live move.
+  rate) never moves, each try counted, named stuck from the third. Its time on E2B is owed to
+  the `live:` wait below.
 - **A mode alone changed is not sent or carried**: the mirror keeps no mode, so neither a sync
   nor the unsent check can tell one, and the new sandbox's first sync-in takes the owner's.
   Holding it needs a mode in the mirror, a format change of its own in two deploys.
