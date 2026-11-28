@@ -29,10 +29,14 @@
  */
 import { LEASE_TTL_S } from "../../contract/src/limits";
 
+import runnerSpeaks from "./runner-speaks.json" with { type: "json" };
 import speaks from "./speaks.json" with { type: "json" };
 
-/** The protocol this runner speaks. */
-export const PROTOCOL = 5;
+/**
+ * The protocol this runner speaks; data (`runner-speaks.json`), so the deploy kit holds it to
+ * the protocols the serving sandbox Worker speaks (`deploy/handed.ts`).
+ */
+export const PROTOCOL: number = runnerSpeaks;
 /**
  * The runner protocols the Worker speaks: its runner's, and at most the ones either side; data
  * (`speaks.json`), so the deploy kit reads a serving commit's.
@@ -133,6 +137,11 @@ export const INBOX = `${STATE_DIR}/inbox`;
 export const CODE_SUFFIX = ".code";
 /** The lease's secrets, as the start or sign-in that opened it hands them (`LeaseFile`). */
 export const LEASE_FILE = `${STATE_DIR}/lease.json`;
+/**
+ * A template move's carry (`carry-out`'s archive, `carry-in`'s upload): what lives in one
+ * sandbox alone, on its way to the next, in the root-only state directory.
+ */
+export const CARRY_FILE = `${STATE_DIR}/carry.tar`;
 
 /** A runner's upload, by its digest. */
 export function incoming(digest: string): string {
