@@ -40,18 +40,31 @@ def _writer(login: str) -> bool:
     return login == "writer"
 
 
+def _line(older: str, newer: str) -> bool:
+    """`in_line` for a PR whose history is A then B (real git: the cases below)."""
+    return older == newer or (older, newer) == (A, B)
+
+
+def _standing(reviews, **kwargs):
+    return gate.standing_verdicts(reviews, head=B, in_line=_line, can_push=_writer, **kwargs)
+
+
 def _latest(reviews, **kwargs):
-    return gate.latest_verdict(reviews, can_push=_writer, **kwargs)
+    """The newest standing verdict, or None."""
+    return next(iter(_standing(reviews, **kwargs)), None)
 
 
-def test_the_latest_trusted_verdict_wins():
+def test_a_newer_verdict_on_the_same_commit_or_a_descendant_answers_an_older_one():
     approve = _review("APPROVE\n\nread it all", ident=1)
     block = _review("BLOCK\n\nthe lock is wrong", ident=2, when="2026-11-04T11:00:00Z")
-    assert _latest([approve]) == gate.Verdict("APPROVE", A, approve["html_url"])
-    assert _latest([block, approve]).verdict == "BLOCK"
+    assert _standing([approve]) == [gate.Verdict("APPROVE", A, approve["html_url"])]
+    assert _standing([block, approve]) == [gate.Verdict("BLOCK", A, block["html_url"])]
     later = _review("APPROVE", B, ident=3, when="2026-11-04T12:00:00Z")
-    assert _latest([approve, block, later]) == gate.Verdict(
-        "APPROVE", B, later["html_url"])
+    assert _standing([approve, block, later]) == [gate.Verdict(
+        "APPROVE", B, later["html_url"])]
+    # A newer verdict on an ancestor answers nothing: both stand.
+    late = _review("BLOCK", A, ident=4, when="2026-11-04T13:00:00Z")
+    assert [v.commit for v in _standing([later, late])] == [A, B]
 
 
 @pytest.mark.parametrize("review", [
@@ -84,7 +97,7 @@ def test_a_dismissal_voids_every_verdict_at_or_before_it():
     block = _review("BLOCK", ident=2, when="2026-11-04T11:00:00Z", state="DISMISSED")
     assert _latest([approve, block]) is None
     assert gate.review_check([approve, block], base="0" * 40, head=A, can_push=_writer,
-                             carry=lambda commit: "this head").conclusion is None
+                             in_line=_line, carry=lambda commit: "this head").conclusion is None
     # A dismissed ordinary comment, or one by anyone, voids just the same.
     chat = _review("why?", ident=2, when="2026-11-04T11:00:00Z", state="DISMISSED",
                    login="reader")
@@ -205,7 +218,7 @@ def test_an_unreadable_commit_does_not_carry(repo):
 
 def _state(reviews, carry=lambda commit: None, head=B):
     return gate.review_check(reviews, base="0" * 40, head=head, carry=carry,
-                             can_push=_writer)
+                             in_line=_line, can_push=_writer)
 
 
 def test_no_review_is_pending_not_red():
@@ -237,7 +250,8 @@ def _cli(path, reviews, timeline, base, head, *more, pr="12"):
          "--reviews-file", str(reviews), "--timeline-file", str(timeline), "--pr", pr,
          "--repo", "o/r", "--base", base, "--head", head, *more],
         cwd=path, capture_output=True, text=True,
-        env={**_ENV, **_fake_gh(path, {"check_runs": [], "permissions": {"writer": "write"}})})
+        env={**_ENV, **_fake_gh(path, {"check_runs": [],
+                                       "permissions": {"writer": "write", "reader": "read"}})})
 
 
 def test_the_cli_prints_the_check_run_for_its_pr(tmp_path, repo):
@@ -254,7 +268,197 @@ def test_the_cli_prints_the_check_run_for_its_pr(tmp_path, repo):
     assert _cli(path, reviews, timeline, base, approved).returncode == 2
 
 
-# ---- a base change voids the reviews before it ----------------------------------------
+# ---- which verdict decides, across heads: real commits, as review.yml decides -----------
+#
+# #5856's review of f83cc0f15 (I-1) named the first nine, #5862's review of b58494bfd
+# the rest; head H2 unless stated, t1 < t2 < t3 < t4. H1 is the PR's reviewed commit.
+# H2 is H1 and an empty commit (the same change) or a code edit (a code delta). H1' is
+# H1's change committed again on the base, as a force-push leaves it: the same change,
+# not in H1's line; H1'+ is H1' and an empty commit; `c` is a commit never fetched.
+# A row is (verdict, commit, submitted, [login]); DISMISSED is a dismissed BLOCK
+# (optionally with its dismissal's time), EDITED a review edited at its fourth field
+# to the body in its fifth, by the author in its sixth, BASE the base changing;
+# `stranger`'s permission read answers 404. Each case runs as the PR's decision and
+# as its merge group's, which follows it.
+
+_T1, _T2, _T3, _T4 = (f"2026-11-04T1{hour}:00:00Z" for hour in range(4))
+_T1_1S = "2026-11-04T10:00:01Z"
+
+
+@pytest.fixture
+def heads(repo):
+    path, base, h1 = repo
+    same = _commit(path, {}, "the same change")
+    _git(path, "checkout", "-q", "-b", "code", h1)
+    code = _commit(path, {"tinyassets/x.py": "x = 3\n"}, "a code delta")
+    _git(path, "checkout", "-q", "--detach", base)
+    again = _commit(path, {"tinyassets/x.py": "x = 2\n"}, "H1 force-pushed again")
+    later = _commit(path, {}, "H1' and the same change")
+    _git(path, "checkout", "-q", "--detach", again)
+    _git(path, "merge", "-q", "--no-edit", h1)
+    both = _git(path, "rev-parse", "HEAD")
+    return path, base, {"H1": h1, "same": same, "code": code, "H1'": again, "H1'+": later,
+                        "both": both, "c": "c" * 40}
+
+
+def _history(rows: list[tuple], commits: dict[str, str]) -> tuple[list[dict], list[dict]]:
+    """The reviews and timeline a table row describes."""
+    reviews, timeline = [], []
+    for at, (verdict, on, when, *more) in enumerate(rows, 1):
+        if verdict == "BASE":
+            timeline.append({"event": "base_ref_changed", "created_at": when})
+            continue
+        login = more[2] if verdict == "EDITED" and len(more) > 2 else (
+            more[0] if verdict in _VERDICT_ROWS and more else "writer")
+        body = more[1] if verdict == "EDITED" else (
+            "BLOCK" if verdict == "DISMISSED" else verdict)
+        state = "DISMISSED" if verdict == "DISMISSED" else "COMMENTED"
+        reviews.append(_review(body, commits[on], ident=at, when=when, login=login,
+                               state=state))
+        if verdict == "EDITED" or (verdict == "DISMISSED" and more):
+            timeline.append({"event": "reviewed", "id": at, "state": state.lower(),
+                             "submitted_at": when, "updated_at": more[0],
+                             "user": {"login": login}})
+    return reviews, timeline
+
+
+_VERDICT_ROWS = {"APPROVE", "BLOCK"}
+
+
+@pytest.mark.parametrize(("head", "reviews", "decided"), [
+    pytest.param("same", [("BLOCK", "H2", _T1), ("APPROVE", "H1", _T2)], "failure",
+                 id="1 a late APPROVE of H1 leaves H2's BLOCK standing"),
+    pytest.param("code", [("APPROVE", "H2", _T1), ("BLOCK", "H1", _T2)], "failure",
+                 id="2 a late BLOCK of H1 stands over H2's APPROVE"),
+    pytest.param("same", [("APPROVE", "H2", _T1), ("BLOCK", "H1", _T2)], "failure",
+                 id="3 as 2, the same change"),
+    pytest.param("code", [("BLOCK", "H1", _T1), ("APPROVE", "H2", _T2)], "success",
+                 id="4 an APPROVE of H2 after H1's BLOCK"),
+    pytest.param("same", [("BLOCK", "H1", _T1), ("APPROVE", "H2", _T2)], "success",
+                 id="4 the same change"),
+    pytest.param("same", [("APPROVE", "H1", _T1)], "success",
+                 id="5 H1's APPROVE carries to the same change"),
+    pytest.param("code", [("APPROVE", "H1", _T1)], "failure",
+                 id="5 not to a code delta"),
+    pytest.param("code", [("APPROVE", "H2", _T1), ("BLOCK", "H2", _T2)], "failure",
+                 id="6 APPROVE then BLOCK on H2"),
+    pytest.param("code", [("BLOCK", "H2", _T1), ("APPROVE", "H2", _T2)], "success",
+                 id="6 BLOCK then APPROVE on H2"),
+    pytest.param("code", [("APPROVE", "H2", _T1), ("APPROVE", "H1", _T2)], "success",
+                 id="the most descendant commit decides, not the latest time"),
+    pytest.param("same", [("APPROVE", "H2", _T1), ("BLOCK", "H1", _T2, "reader")], "success",
+                 id="a late BLOCK by a reader counts for nothing"),
+    pytest.param("same", [("APPROVE", "H2", _T1), ("DISMISSED", "H2", _T2)], "in_progress",
+                 id="7 a dismissal voids the verdicts at or before it"),
+    pytest.param("same", [("BLOCK", "H2", _T1), ("DISMISSED", "H1", _T2),
+                          ("APPROVE", "H2", _T3)], "success",
+                 id="7 a verdict on H2 after the dismissal counts"),
+    pytest.param("same", [("BLOCK", "H2", _T1), ("DISMISSED", "H2", _T2),
+                          ("APPROVE", "H1", _T3)], "in_progress",
+                 id="7 a late APPROVE of H1 after a dismissal is still late"),
+    pytest.param("same", [("DISMISSED", "H2", _T1, _T3), ("APPROVE", "H2", _T2)], "success",
+                 id="7 a dismissal voids from the dismissed review's time, not its own"),
+    pytest.param("same", [("BLOCK", "H2", _T1), ("BASE", None, _T2), ("APPROVE", "H1", _T3)],
+                 "in_progress", id="a late APPROVE of H1 after a base change is still late"),
+    pytest.param("same", [("BLOCK", "H2", _T1), ("BASE", None, _T2), ("APPROVE", "H2", _T3)],
+                 "success", id="an APPROVE of H2 after a base change counts"),
+    pytest.param("same", [("EDITED", "H2", _T1, _T2, "APPROVE")], "in_progress",
+                 id="a BLOCK edited to APPROVE is no verdict"),
+    pytest.param("same", [("APPROVE", "H2", _T1), ("EDITED", "H2", _T2, _T3, "fine")],
+                 "in_progress", id="a BLOCK edited out of its verdict voids the APPROVE before"),
+    pytest.param("same", [("EDITED", "H2", _T1, _T2, "APPROVE"), ("APPROVE", "H2", _T3)],
+                 "success", id="a verdict after the edit counts"),
+    pytest.param("same", [("EDITED", "H2", _T1, _T1_1S, "APPROVE")], "success",
+                 id="an update 1 s after submitting is not an edit"),
+    pytest.param("same", [("APPROVE", "H2", _T1), ("EDITED", "H2", _T2, _T3, "x", "reader")],
+                 "success", id="a reader's edit voids nothing"),
+    pytest.param("same", [("EDITED", "H2", _T1, _T2, "looks odd", "stranger"),
+                          ("APPROVE", "H2", _T3)], "success",
+                 id="an edit a newer verdict on the head answers is never read"),
+    pytest.param("same", [("APPROVE", "H2", _T1), ("EDITED", "H2", _T2, _T3, "odd", "stranger")],
+                 "success", id="an edit whose author GitHub does not find voids nothing"),
+    pytest.param("H1'", [("APPROVE", "H1", _T1)], "in_progress",
+                 id="8 an APPROVE of H1, force-pushed away, is ignored"),
+    pytest.param("H1'", [("BLOCK", "H1", _T1), ("APPROVE", "H2", _T2)], "success",
+                 id="8 H1's BLOCK is answered by a review of H1' after it"),
+    pytest.param("H1'", [("APPROVE", "H2", _T1), ("BLOCK", "H1", _T2)], "failure",
+                 id="8 a late BLOCK of H1, force-pushed away, stands over H1''s APPROVE"),
+    pytest.param("H1'+", [("BLOCK", "H1", _T1), ("APPROVE", "H1'", _T2)], "failure",
+                 id="8 only a review of the head itself answers a BLOCK force-pushed away"),
+    pytest.param("same", [("BLOCK", "H2", _T1), ("BLOCK", "H1'", _T2), ("APPROVE", "H1", _T3)],
+                 "failure", id="a BLOCK force-pushed away never answers H2's BLOCK"),
+    pytest.param("same", [("BLOCK", "H2", _T1), ("BLOCK", "c", _T2), ("APPROVE", "H1", _T3)],
+                 "failure", id="nor does one on a commit never fetched"),
+    pytest.param("same", [("BLOCK", "H2", _T1), ("BLOCK", "H1'", _T2, "reader"),
+                          ("APPROVE", "H1", _T3)], "failure",
+                 id="nor a reader's, force-pushed away"),
+    pytest.param("same", [("BLOCK", "H2", _T1), ("BLOCK", "H1'", _T2), ("APPROVE", "H2", _T3)],
+                 "success", id="a review of H2 after both answers both"),
+    pytest.param("both", [("APPROVE", "H1", _T1), ("APPROVE", "H1'", _T2)], "failure",
+                 id="two reviewed commits in no line need a review of the head"),
+])
+def test_the_decision_across_heads(tmp_path, heads, head, reviews, decided):
+    path, base, commits = heads
+    reviews, events = _history(reviews, {**commits, "H2": commits[head]})
+    data = tmp_path / "reviews.json"
+    data.write_text(json.dumps(reviews), encoding="utf-8")
+    timeline = tmp_path / "timeline.json"
+    timeline.write_text(json.dumps(events), encoding="utf-8")
+    for group in ((), ("--group-sha", B)):
+        done = _cli(path, data, timeline, base, commits[head], *group)
+        assert done.returncode == 0, done.stderr
+        run = json.loads(done.stdout)
+        want = decided if not group else "success" if decided == "success" else "failure"
+        assert run.get("conclusion", run["status"]) == want, run["output"]["title"]
+
+
+def test_a_block_outside_the_history_reads_red_and_names_itself(tmp_path, heads):
+    path, base, c = heads
+    data = tmp_path / "reviews.json"
+    data.write_text(json.dumps([_review("APPROVE", c["H1'"], ident=1, when=_T1),
+                                _review("BLOCK", c["c"], ident=2, when=_T2)]), encoding="utf-8")
+    timeline = tmp_path / "timeline.json"
+    timeline.write_text("[]", encoding="utf-8")
+    head = c["H1'"]
+    run = json.loads(_cli(path, data, timeline, base, head).stdout)
+    assert run["conclusion"] == "failure"
+    assert run["output"]["title"] == (f"BLOCK at {c['c']}, which is not in {head}'s "
+                                      f"history; each head needs a review of it after that")
+
+
+def test_an_edit_is_read_from_the_timeline():
+    def event(updated: str, **more) -> dict:
+        return {"event": "reviewed", "id": 1, "state": "commented", "submitted_at": _T1,
+                "updated_at": updated, "user": {"login": "writer"}, **more}
+
+    assert gate.review_edits([event(_T1), event(_T1_1S), event(_T2, state="dismissed"),
+                              {"event": "committed"}]) == []
+    assert gate.review_edits([event("2026-11-04T10:00:11Z")]) == [
+        ("writer", "2026-11-04T10:00:11Z")]
+    # Review 6096259332 on #5862, read live (verdict-order.md item 6): as submitted, then
+    # after its body's edit. Resolving its thread, replying in it and editing its inline
+    # comment afterwards left `updated_at` at the edit.
+    submitted = {"submitted_at": "2026-11-28T06:24:05Z"}
+    assert gate.review_edits([event("2026-11-28T06:24:05Z", **submitted)]) == []
+    assert gate.review_edits([event("2026-11-28T06:24:37Z", **submitted)]) == [
+        ("writer", "2026-11-28T06:24:37Z")]
+    with pytest.raises(ValueError):
+        gate.review_edits([{"event": "reviewed", "state": "commented"}])
+
+
+def test_in_line_is_git_ancestry_and_a_missing_head_decides_nothing(heads):
+    path, base, c = heads
+
+    def line(older: str, newer: str) -> bool:
+        return gate.in_line(older, newer, cwd=path)
+
+    assert line(c["H1"], c["H1"]) and line(c["H1"], c["same"]) and line(base, c["H1"])
+    assert not line(c["same"], c["H1"]) and not line(c["H1"], c["H1'"])
+    # Not here, with the head here: force-pushed away and not fetched.
+    assert not line("c" * 40, c["H1"])
+    for older, newer in ((c["H1"], "c" * 40), ("short", c["H1"])):
+        with pytest.raises(ValueError):
+            line(older, newer)
 
 
 def test_a_review_before_the_base_changed_counts_for_nothing(tmp_path, repo):
@@ -269,7 +473,7 @@ def test_a_review_before_the_base_changed_counts_for_nothing(tmp_path, repo):
     run = json.loads(_cli(path, reviews, timeline, base, approved).stdout)
     assert run["status"] == "in_progress"
     assert "the base changed at 2026-11-04T11:00:00Z" in run["output"]["title"]
-    later = _review("APPROVE", approved, ident=2, when="2026-11-04T11:30:00Z")
+    later = _review("APPROVE", ident=2, when="2026-11-04T11:30:00Z")
     assert _latest([later], since="2026-11-04T11:00:00Z").verdict == "APPROVE"
 
 
@@ -841,6 +1045,26 @@ def test_a_merge_group_with_no_group_commit_writes_nothing(pr_checkout):
     done, calls, _ = _decide(tmp_path, path, data, **_queue(GROUP_SHA=""))
     assert done.returncode == 1 and _writes(calls) == []
     assert "not a merge group commit" in done.stdout
+
+
+@pytest.mark.parametrize("kind", [{}, _queue()])
+def test_review_yml_keeps_a_late_block_of_an_earlier_head(tmp_path, heads, kind):
+    """Case 3 of the decision across heads, through review.yml's own script."""
+    path, base, c = heads
+    data = {"base": base, "head": c["same"], "timeline": [], "check_runs": [],
+            "permissions": {"writer": "write"},
+            "reviews": [_review("APPROVE", c["same"], ident=1, when=_T1),
+                        _review("BLOCK", c["H1"], ident=2, when=_T2)]}
+    done, calls, after = _decide(tmp_path, path, data, **kind)
+    assert done.returncode == 0, done.stderr
+    ((_, _, run),) = _writes(calls)
+    assert run["conclusion"] == "failure"
+    assert f"BLOCK: the same change as {c['H1']}" in run["output"]["title"]
+    data["reviews"].append(_review("APPROVE", c["same"], ident=3, when=_T3))
+    done, calls, after = _decide(tmp_path, path, data, **kind)
+    assert done.returncode == 0, done.stderr
+    ((_, _, run),) = _writes(calls)
+    assert run["conclusion"] == "success"
 
 
 def test_a_merge_group_retarget_after_an_approve_fails_the_group(pr_checkout):
