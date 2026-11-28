@@ -61,8 +61,8 @@
         "citation": "@google/gemini-cli 0.66.0 bundle/chunk-HJ5KJXNZ.js authWithUserCode: Authorization timed out after 5 minutes (setTimeout 3e5), read 2026-11-03"
       },
       "hosted_use": {
-        "verdict": "unclear",
-        "citation": "gemini-cli docs/resources/tos-privacy.md: third-party software using Gemini CLI OAuth to reach its services is a violation; a platform hosting the unmodified CLI for the user's own sign-in is not addressed (subscription-engines.md section 11)"
+        "verdict": "forbidden",
+        "citation": "ADR-040 decision 9 (read 2026-11-28): Google AI Pro and Ultra moved to Antigravity CLI on June 18, 2026 (the gemini-cli README), and Antigravity's FAQ says wrapping agy inside third-party applications \"is not supported under consumer plans\" and recommends \"a Gemini Enterprise or Google AI Studio API key\" for a third-party coding agent (antigravity.google/docs/faq). Gemini CLI's terms call accessing its services \"using third-party software, tools, or services\" a violation (docs/resources/tos-privacy.md). So a platform runs Gemini on your Google API key, not your sign-in"
       },
       "model": {
         "id": "gemini-3.1-pro-preview",
@@ -79,14 +79,14 @@
     "unattended": {
       "vendor_login_in_sandbox": {
         "allowed": false,
-        "reason": "Unclear: Google's Gemini CLI terms do not say whether a platform may run the unmodified CLI unattended on a member's own Google sign-in, and no Google page read permits it (subscription-engines \u00a73, \u00a711).",
-        "cite": "https://github.com/google-gemini/gemini-cli/blob/main/docs/resources/tos-privacy.md",
-        "read": "2026-11-01"
+        "reason": "Google's route for a third-party coding agent is an API key, \"a Gemini Enterprise or Google AI Studio API key\"; Gemini CLI no longer serves Google AI Pro or Ultra, and its terms call accessing its services through third-party software a violation (ADR-040 decision 9).",
+        "cite": "https://antigravity.google/docs/faq",
+        "read": "2026-11-28"
       },
       "api_key": {
         "allowed": true,
         "cite": "https://github.com/google-gemini/gemini-cli/blob/main/docs/get-started/authentication.mdx",
-        "read": "2026-11-01"
+        "read": "2026-11-28"
       }
     },
     "per_credential": {
