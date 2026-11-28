@@ -81,14 +81,23 @@ def change_entries(raw: bytes) -> dict[bytes, bytes]:
 # event COMMENT, whose body's first non-blank line is exactly `APPROVE` or
 # `BLOCK`, the evidence below it. The review records natively which commit was
 # read, so nothing is repeated in the PR body. A trusted workflow turns the
-# latest verdict into the `review` check run on the PR's head:
+# standing verdicts (`standing_verdicts`) into the `review` check run on the head:
 #
-# * no verdict -> in progress, "waiting for review of <head>" (pending, not red);
-# * the latest verdict is BLOCK and it carries to the head -> failure;
-# * the latest verdict is APPROVE at A and `carries(A, head)` -> success;
-# * a verdict that does not carry -> failure, naming the review the change since A
+# * no verdict on a commit in the head's history -> in progress, "waiting for
+#   review of <head>" (pending, not red);
+# * a BLOCK stands -> failure. It stands until a verdict is posted after it on the
+#   same commit or a descendant;
+# * else the latest verdict on the most descendant reviewed commit, an APPROVE at
+#   A, with `carries(A, head)` -> success;
+# * an APPROVE that does not carry -> failure, naming the review the change since A
 #   needs. In progress, it waited with no event for a review nobody knew to ask
 #   for (#5725, #5727: 3 h, 2026-11-21); a failure is an event and reads red.
+#
+# Never the latest by time alone: reviews of two heads overlap, so the head read
+# last is not always the one posted last (#5856's reviews, 2026-11-28). A late
+# APPROVE of an earlier head must not void a newer head's BLOCK, nor a late BLOCK
+# of an earlier head lose to an APPROVE of a newer one. Commit order is git
+# ancestry (docs/decisions/untangle-2026-11/verdict-order.md).
 #
 # COMMENT, not APPROVE, because the one writer account cannot approve its own
 # PR (ADR-038 decision 2).
@@ -117,21 +126,34 @@ class Verdict:
     url: str
 
 
-def latest_verdict(reviews: list[object], *, can_push: Callable[[str], bool],
-                   since: str | None = None) -> Verdict | None:
-    """The latest review by an account that can push whose first line is a verdict.
+def standing_verdicts(reviews: list[object], *, head: str,
+                      in_line: Callable[[str, str], bool],
+                      can_push: Callable[[str], bool],
+                      since: str | None = None) -> list[Verdict]:
+    """The verdicts that still stand for `head`, newest first.
 
     `reviews` is `GET /repos/{r}/pulls/{n}/reviews`. A review is a verdict when it is
     not dismissed or pending and its body's first non-blank line, with surrounding
     whitespace removed, is exactly `APPROVE` or `BLOCK`. Anything else is an ordinary
-    review comment and changes nothing. The latest verdict by `submitted_at` (then id)
-    whose author `can_push` wins, so a BLOCK after an APPROVE voids it; a verdict by
-    anyone else is an ordinary comment.
+    review comment and changes nothing.
 
-    `can_push(login)` is asked newest first, once a login, and stops at the first
-    author who can. When it raises `PermissionUnread`, so does this: that author may
-    be a writer whose BLOCK would decide, so skipping them could bring back an older
-    APPROVE.
+    A verdict counts when its commit is in the head's history (`in_line(commit,
+    head)`: the commit is `head` or an ancestor of it) and its author `can_push`; a
+    verdict by anyone else is ignored. A counted verdict stands unless a counted
+    verdict submitted after it (by `submitted_at`, then id) is on the same commit or
+    a descendant. So a BLOCK stands until one is, and the latest verdict on the most
+    descendant commit reviewed always stands.
+
+    A commit force-pushed away is in no order with the head's: an APPROVE on it is
+    ignored, and a writer's BLOCK on it voids every verdict before it, as a
+    dismissal does, so the check waits for a review posted after it. Ignored, that
+    BLOCK would lose to an earlier APPROVE of the same change pushed again.
+
+    Verdicts are read newest first, and `can_push(login)` is asked once a login,
+    only for a verdict in the head's history that no newer counted verdict already
+    answers: one that is answered cannot decide, so its author's read never holds a
+    PR. When it raises `PermissionUnread`, so does this: that author may be a writer
+    whose BLOCK stands.
 
     A dismissed review, by anyone, voids every verdict at or before it: dismissing
     a BLOCK must not bring back the APPROVE it answered (#3989's failure), so the
@@ -178,17 +200,60 @@ def latest_verdict(reviews: list[object], *, can_push: Callable[[str], bool],
             continue
         verdicts.append((when, ident, login,
                          Verdict(first, commit, str(review.get("html_url") or ""))))
+    lines: dict[tuple[str, str], bool] = {}
+
+    def line(older: str, newer: str) -> bool:
+        if (older, newer) not in lines:
+            lines[older, newer] = in_line(older, newer)
+        return lines[older, newer]
+
     pushes: dict[str, bool] = {}
+    standing: list[Verdict] = []
     for _, _, login, verdict in sorted(verdicts, key=lambda v: v[:2], reverse=True):
+        outside = not line(verdict.commit, head)
+        if (outside and verdict.verdict == "APPROVE") or any(
+                line(verdict.commit, newer.commit) for newer in standing):
+            continue
         if login not in pushes:
             pushes[login] = can_push(login)
+        if pushes[login] and outside:
+            break
         if pushes[login]:
-            return verdict
-    return None
+            standing.append(verdict)
+    return standing
+
+
+def in_line(older: str, newer: str, *, cwd: Path | None = None) -> bool:
+    """Whether commit `older` is `newer` or an ancestor of it (`in_line` for
+    `standing_verdicts`), by `git merge-base --is-ancestor`.
+
+    `newer` must be a commit here: review.yml fetches the head and so its whole
+    history. An `older` that is not one here is then not in that history (a commit
+    force-pushed away that could not be fetched). Raises ValueError on anything git
+    cannot answer: an ancestry nobody can read decides nothing.
+    """
+    def git(*args: str) -> int:
+        try:
+            return subprocess.run(["git", *args], cwd=cwd, capture_output=True,
+                                  timeout=60).returncode
+        except (subprocess.SubprocessError, OSError) as exc:
+            raise ValueError(f"cannot read whether {older} is in {newer}'s history: "
+                             f"{exc}") from exc
+
+    if not (_SHA_RE.fullmatch(older) and _SHA_RE.fullmatch(newer)):
+        raise ValueError(f"not two commits: {older!r} {newer!r}")
+    if git("cat-file", "-e", f"{newer}^{{commit}}") != 0:
+        raise ValueError(f"commit {newer} is not here")
+    if git("cat-file", "-e", f"{older}^{{commit}}") != 0:
+        return False
+    answer = git("merge-base", "--is-ancestor", older, newer)
+    if answer not in (0, 1):
+        raise ValueError(f"git cannot say whether {older} is in {newer}'s history")
+    return answer == 0
 
 
 def push_reader(repo: str) -> Callable[[str], bool]:
-    """`can_push` for `latest_verdict`, from GitHub's permission read with `gh`.
+    """`can_push` for `standing_verdicts`, from GitHub's permission read with `gh`.
 
     `admin` and `write` (maintain among them) can push; `read` and `none` cannot.
     Anything else, a failed read included, raises `PermissionUnread` with its reason.
@@ -436,14 +501,16 @@ def carries(
 ) -> str | None:
     """Why a verdict on `approved` stands for `head`, or None when it does not.
 
+    Asked only for a commit in the head's history (`standing_verdicts`), so a
+    rebased or force-pushed head never carries a verdict: it waits for a review.
     Compares the two PRs' changes path by path: each is
     `git diff --raw --no-renames` of merge-base(base, commit)..commit, so a path
     differs when its before or after blob or mode differs, or it is in one
     change and not the other (a rename counts both its paths). The verdict
     carries when:
 
-    1. no path differs: the same change, so a rebase or a
-       merge of main that touched none of the PR's files carries;
+    1. no path differs: the same change, so a merge of main that touched none of
+       the PR's files carries;
     2. every differing path is prose (`is_prose`: Markdown nothing runs or
        loads), a regular non-executable file on both sides. A gate, a workflow
        or any code is never prose, so it always gets a fresh review.
@@ -486,14 +553,19 @@ def review_check(
     base: str,
     head: str,
     carry: Callable[[str], str | None],
+    in_line: Callable[[str, str], bool],
     can_push: Callable[[str], bool],
     since: str | None = None,
 ) -> CheckState:
-    """The `review` check for `head`, from the PR's reviews, `carry(commit)` and
-    `can_push(login)`.
+    """The `review` check for `head`, from the PR's reviews, `carry(commit)`,
+    `in_line(older, newer)` and `can_push(login)` (`standing_verdicts`).
 
-    Only reviews after `since`, the PR's last base change, count. A permission that
-    cannot be read is no verdict, its reason in the title and summary: never a pass.
+    The newest standing BLOCK fails it. With none, the standing verdict on the most
+    descendant commit decides: all the others are APPROVEs on its ancestors. With no
+    one such commit (two reviewed commits neither in the other's history, after a
+    force-push merged back), the head needs a review. Only reviews after `since`,
+    the PR's last base change, count. A permission that cannot be read is no
+    verdict, its reason in the title and summary: never a pass.
     """
     ask = (
         f"A reviewer who can push posts a PR review on the commit it read ({head}), its "
@@ -501,16 +573,24 @@ def review_check(
         "review gets a one-round delta review of only that delta."
     )
     try:
-        verdict = latest_verdict(reviews, can_push=can_push, since=since)
+        standing = standing_verdicts(reviews, head=head, in_line=in_line,
+                                     can_push=can_push, since=since)
     except PermissionUnread as exc:
         return CheckState(None, f"no verdict counts: {exc}",
                           f"A verdict counts only from an account that can push, and {exc}. "
                           f"Rerun review.yml once the read works.\n\n{ask}")
-    if verdict is None:
+    if not standing:
         title = f"waiting for review of {head}"
         if since is not None:
             title += f" (the base changed at {since})"
         return CheckState(None, title, ask)
+    blocks = [v for v in standing if v.verdict == "BLOCK"]
+    tops = [v for v in standing if all(in_line(o.commit, v.commit) for o in standing)]
+    if not (blocks or tops):
+        commits = ", ".join(sorted({v.commit for v in standing}))
+        return CheckState("failure", f"reviewed commits {commits} are not one line of "
+                          f"history; {head} needs a review", ask)
+    verdict = (blocks or tops)[0]
     why = carry(verdict.commit)
     if why is None:
         owed = "a fresh review" if verdict.verdict == "BLOCK" else "a delta review"
@@ -601,7 +681,7 @@ def _review_check(argv: list[str]) -> int:
         state = review_check(
             reviews, base=args.base, head=args.head, since=last_base_change(events),
             carry=lambda commit: carries(args.base, commit, args.head),
-            can_push=push_reader(args.repo),
+            in_line=in_line, can_push=push_reader(args.repo),
         )
     except (OSError, ValueError) as exc:
         print(f"cannot decide the review check: {exc}", file=sys.stderr)

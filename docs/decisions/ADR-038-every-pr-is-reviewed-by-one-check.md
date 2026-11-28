@@ -36,12 +36,15 @@ Two gates for one verdict are two copies of it, and only the check can say BLOCK
    job can satisfy it.
 2. **A verdict is a PR review on the commit the reviewer read** (`commit_id`), event
    `COMMENT`, whose first non-blank line is exactly `APPROVE` or `BLOCK`, with the
-   evidence after it. The latest verdict by an account that can push to the
-   repository (write, maintain or admin), after the PR's last base change, decides;
-   a permission GitHub cannot read is no verdict (`untangle-2026-11/p2-review-writers.md`).
+   evidence after it. Verdicts by an account that can push to the repository (write,
+   maintain or admin), after the PR's last base change, on a commit in the head's
+   history, decide: a `BLOCK` stands until a verdict after it on the same commit or a
+   descendant, and else the most descendant commit's latest verdict decides
+   (`untangle-2026-11/verdict-order.md`); a permission GitHub cannot read is no
+   verdict (`untangle-2026-11/p2-review-writers.md`).
    `COMMENT`, because the one writer account cannot approve its own PR.
-3. **A verdict carries to a later head** only across the same change or a delta of
-   Markdown prose. Any other delta needs a review of that delta.
+3. **A verdict carries to a later head** in its history only across the same change
+   or a delta of Markdown prose. Any other delta needs a review of that delta.
 4. **A merge group decides its PR afresh** from the PR's reviews, never from its
    `review` runs.
 5. **Each decision is one new check run**, never an edit of one. Readers take the
