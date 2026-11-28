@@ -210,12 +210,12 @@ const MOVE_FINISH_MS = 4 * PAUSE_MAX_MS + RESUME_MAX_MS;
 
 /**
  * A template move's whole bound, every call of it cut there: its measured steps and its finish,
- * with a fifth of the bound to spare (35,144 ms), so no measured move nears it; under a lease's
+ * with a fifth of the bound to spare (35,143.75 ms), so no measured move nears it; under a lease's
  * TTL, so a running sandbox's next idle look (a TTL on) never waits on one (`#movesDue`). A move
  * holds the owner's chain, and a call for it that comes meanwhile cuts the move at once
  * (`#serial`), so no start waits on a move's bound: only on its finish.
  */
-const MOVE_MS = Math.ceil((MOVE_STEPS_MS + MOVE_FINISH_MS) * 1.25);
+const MOVE_MS = (MOVE_STEPS_MS + MOVE_FINISH_MS) * 5 / 4;
 
 /**
  * The most a move carries, read whole into this isolate between the two sandboxes, so never two

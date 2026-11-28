@@ -220,7 +220,7 @@ that cannot finish leaves the old sandbox paused and whole.**
 
 Checked against the intent: a new pin reaches every owner's sandbox at the look after its next
 use, once it is paused with nothing in it (for the stage owner, the run after its next `auto` pi
-run runs on the new image); no run is lost, a start waiting at most half its lease behind a move;
+run runs on the new image); no run is lost, a start that comes during a move waiting only its finish;
 nothing is billed twice; nothing is orphaned. Zero hosts: the Worker alone moves it.
 
 ## Problems found (untangle step 2), with the fix above each
