@@ -24,7 +24,7 @@ import { profileNames } from "../../contract/src/doors";
 import type { Binding, Origin } from "../../contract/src/binding";
 import { jsonBytes } from "../../contract/src/encoded";
 import { PLACE_BYTES } from "../../contract/src/limits";
-import { CODE_ANSWER_TOO_LARGE, CODE_NOT_SERVED, CODE_OUT_OF_MEMORY } from "../src/codemode";
+import { CODE_ANSWER_TOO_LARGE, CODE_NOT_SERVED, CODE_VM_LIMIT } from "../src/codemode";
 import { unportable } from "../../contract/src/paths";
 import { CONTROL_FRESH_MS, ControlGate, objectKeeper } from "../src/control-gate";
 import { WriteGate } from "../src/gate";
@@ -369,7 +369,8 @@ describe("the code door", () => {
       "not_found: no such file"], calls: { ok: 0, error: 4, cancelled: 0 } });
     expect(await ran(r, r.bind(null), { script:
       "const all = []; for (;;) { all.push('x'.repeat(1 << 20) + all.length); }" }))
-      .toMatchObject({ ok: false, error: { kind: "script", message: CODE_OUT_OF_MEMORY } });
+      .toMatchObject({ ok: false,
+                       error: { kind: "script", message: `out of memory: ${CODE_VM_LIMIT}` } });
     expect(await ran(r, r.bind(null), { script: "return 1;" }))
       .toMatchObject({ ok: true, value: 1 });
   });

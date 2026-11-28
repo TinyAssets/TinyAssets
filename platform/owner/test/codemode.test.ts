@@ -15,7 +15,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  CODE_COMPUTE_LIMIT, CODE_OUT_OF_MEMORY, type CodemodeService, codemodeSandbox, metLimit,
+  CODE_COMPUTE_LIMIT, CODE_VM_LIMIT, type CodemodeService, codemodeSandbox, metLimit,
 } from "../src/codemode";
 import { sha256Hex } from "../../contract/src/digest";
 import { DEFAULT_POLICY_JSON, validate } from "../../contract/src/policy-document";
@@ -105,13 +105,13 @@ describe("code mode's executor", () => {
       const thrown = await sandbox.execute("throw new Error('boom');");
       expect([looped, held, thrown].map((end) => end.ok ? null : metLimit(end.error))).toEqual([
         { kind: "timeout", message: CODE_COMPUTE_LIMIT },
-        { kind: "script", message: CODE_OUT_OF_MEMORY },
+        { kind: "script", message: `out of memory: ${CODE_VM_LIMIT}` },
         { kind: "script", message: "boom" }]);
     } finally {
       await small.close();
       await sandbox.close();
     }
-    expect(CODE_OUT_OF_MEMORY).toMatch(/32 MiB at once.*a file past 4 MiB is uploaded/);
+    expect(CODE_VM_LIMIT).toMatch(/32 MiB at once.*a file past 4 MiB is uploaded/);
     expect(CODE_COMPUTE_LIMIT).toMatch(/50,000 interrupt polls.*Date\.now\(\) never ends/);
   });
 

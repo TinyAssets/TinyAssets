@@ -105,10 +105,12 @@ technical ceiling (`limits-audit.md`'s row restated). H2's probe 1 measures the 
 **Cause.** The VM's cap is 32 MiB (`CODEMODE_MEMORY_BYTES`, a quarter of the isolate's 128 MB),
 and the VM's own words were passed on as they were.
 
-**Fix.** A script past it is answered `CODE_OUT_OF_MEMORY`: the cap, to hold less at once, to
-read a file a window at a time, and that a file past 4 MiB is uploaded (the owner app's
-`files/upload` doors, or made in a run's sandbox, whose sync uploads it), never written
-through a script. `UPLOAD_LARGER` (`owner/src/files.ts`) is that sentence once: `file_write`'s
+**Fix.** The VM's own error (QuickJS's `InternalError`, which it raises past its memory, its
+message "out of memory") is answered with `CODE_VM_LIMIT` after its words: the cap, to hold
+less at once, to read a file a window at a time, and that a file past 4 MiB is uploaded (the
+owner app's `files/upload` doors, or made in a run's sandbox, whose sync uploads it), never
+written through a script. It is known by the error's name, never its message, which the
+refusal guard holds no code reads (`ci/kit/refusals.ts`). `UPLOAD_LARGER` (`owner/src/files.ts`) is that sentence once: `file_write`'s
 own refusal past 4 MiB says it too, where it said only "larger ones are uploaded".
 
 **No whole file is buffered needlessly.** A script reads a file through `file_read` and

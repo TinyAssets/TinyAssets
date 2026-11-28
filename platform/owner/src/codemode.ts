@@ -186,24 +186,26 @@ export const CODE_COMPUTE_LIMIT = "the script computed past code mode's limit of
   "computing without a tool call), so it was stopped. Its clock stands still while it " +
   "computes, so a loop that waits on Date.now() never ends. Compute less in one script, or " +
   "split the work across several code calls";
-/** The VM's own words when a script passes its memory (pi-codemode's `memoryLimitBytes`). */
-const VM_OUT_OF_MEMORY = "out of memory";
-/** A script past its VM memory, saying how much that is and what to do instead. */
-export const CODE_OUT_OF_MEMORY = "out of memory: the script held more than code mode's " +
+/**
+ * What follows the VM's own error (QuickJS's `InternalError`, which it raises past its memory,
+ * pi-codemode's `memoryLimitBytes`: "out of memory"): the cap, and what to do instead.
+ */
+export const CODE_VM_LIMIT = "the script met a limit of its VM, which holds " +
   `${CODEMODE_MEMORY_BYTES / 2 ** 20} MiB at once. Hold less: read a file a window at a ` +
   `time (file_read's offset and max_bytes); ${UPLOAD_LARGER}, never through a script`;
 
 /**
- * A script's error as its caller reads it: a limit it met named, with what to do instead
- * (`CODE_COMPUTE_LIMIT`, `CODE_OUT_OF_MEMORY`); any other as pi-codemode said it.
+ * A script's error as its caller reads it: a limit it met named, with what to do instead (its
+ * compute, `CODE_COMPUTE_LIMIT`; its VM's own error, by its name, `CODE_VM_LIMIT` after it);
+ * any other as pi-codemode said it.
  */
-export function metLimit(error: { readonly kind: string; readonly message: string }):
-    { kind: string; message: string } {
+export function metLimit(error: { readonly kind: string; readonly message: string;
+                                  readonly name?: string }): { kind: string; message: string } {
   if (error.kind === "timeout") {
     return { kind: error.kind, message: CODE_COMPUTE_LIMIT };
   }
-  if (error.kind === "script" && error.message === VM_OUT_OF_MEMORY) {
-    return { kind: error.kind, message: CODE_OUT_OF_MEMORY };
+  if (error.kind === "script" && error.name === "InternalError") {
+    return { kind: error.kind, message: `${error.message}: ${CODE_VM_LIMIT}` };
   }
   return { kind: error.kind, message: error.message };
 }
