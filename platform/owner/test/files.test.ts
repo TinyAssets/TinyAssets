@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 
 import { sqlIn } from "../../ci/workerd";
 import { CHUNK_BYTES, INLINE_BYTES } from "../../contract/src/limits";
-import { type Entry } from "../src/files";
+import { type Entry, FILE_CONFLICT, UPLOAD_LARGER } from "../src/files";
 import { sha256Hex } from "../../contract/src/digest";
 import type { OwnerDO } from "../src/owner-do";
 import type { Binding } from "../../contract/src/binding";
@@ -64,13 +64,14 @@ describe("a file write", () => {
     expect(made).toMatchObject({ path: `${W}/a.txt`, kind: "file", size: 3, mode: 0,
                                  writer: "owner" });
     // A second create, and a swap on a stale etag, are answered with the entry as it stands.
-    expect(await write(r, `${W}/a.txt`, "two", "")).toEqual({ conflict: made });
-    expect(await write(r, `${W}/a.txt`, "two", "f".repeat(64))).toEqual({ conflict: made });
+    const lost = (current: Entry | null) => ({ conflict: current, message: FILE_CONFLICT });
+    expect(await write(r, `${W}/a.txt`, "two", "")).toEqual(lost(made));
+    expect(await write(r, `${W}/a.txt`, "two", "f".repeat(64))).toEqual(lost(made));
     const next = entryOf(await write(r, `${W}/a.txt`, "two", made.etag));
-    expect(await write(r, `${W}/a.txt`, "three", made.etag)).toEqual({ conflict: next });
+    expect(await write(r, `${W}/a.txt`, "three", made.etag)).toEqual(lost(next));
     expect(new TextDecoder().decode(await readAll(r, `${W}/a.txt`))).toBe("two");
     // An etag for a missing file is a conflict carrying null.
-    expect(await write(r, `${W}/b.txt`, "x", made.etag)).toEqual({ conflict: null });
+    expect(await write(r, `${W}/b.txt`, "x", made.etag)).toEqual(lost(null));
   });
 
   it("writes unconditionally with a null etag", async () => {
@@ -257,7 +258,7 @@ describe("a file write", () => {
                            "x".repeat(4 * 1024 * 1024 + 1)]) {
       expect((await failure(() => r.stub.fileWrite(r.bind(null), {
         path: `${W}/x`, expected_etag: null, content }))).message)
-        .toBe("a written file is bytes or text, at most 4 MiB; larger ones are uploaded");
+        .toBe(`a written file is bytes or text, at most 4 MiB; ${UPLOAD_LARGER}`);
     }
     // Text is written as its UTF-8 (`file_write`).
     await r.stub.fileWrite(r.bind(null), { path: `${W}/t.md`, expected_etag: null,

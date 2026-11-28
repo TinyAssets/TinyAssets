@@ -48,7 +48,7 @@ import { PLATFORM_CALLER } from "../../contract/src/binding";
 import { QUEUES as QUEUE_NAMES } from "../../contract/src/queue-names";
 import { sealRoute } from "../../contract/src/routing-mac";
 import {
-  closedToAll, CONTROL_KEY, outsideOpen, ownerOpen, parseControl,
+  closedToAll, CONTROL_KEY, gateClosed, parseControl,
 } from "../../contract/src/control";
 import { E2bAdmin } from "../../sandbox/e2b/admin";
 import { annotate, maskLine, output, runLink, runOf, summarize } from "../actions";
@@ -4465,7 +4465,8 @@ describe("the operator path's modes", () => {
     expect(live(w)).toEqual(OPENED);
     const read = { kind: "read", control: parseControl(live(w))!,
                    text: JSON.stringify(live(w)) } as const;
-    expect([outsideOpen(read, "user_alice"), ownerOpen(read, "user_alice")]).toEqual([true, true]);
+    expect([gateClosed(read, "user_alice", "outside"), gateClosed(read, "user_alice", "owner")])
+      .toEqual([null, null]);
     // The previous kept before the write, and the write read back after it.
     const at = order(w.events, [`cf PUT ${RECORD_AT.replace(/[^/]+$/, encodeURIComponent(KEPT))}`,
                                 `cf PUT ${RECORD_AT.replace(/[^/]+$/, encodeURIComponent(CONTROL_KEY))}`,
@@ -4537,8 +4538,8 @@ describe("the operator path's modes", () => {
     expect(work.plan).toContain("the record then admits no owner: closed to all");
     const control = parseControl(live(w))!;
     expect(closedToAll(control)).toBe(true);
-    expect(outsideOpen({ kind: "read", control, text: JSON.stringify(live(w)) }, "user_bob"))
-      .toBe(false);
+    expect(gateClosed({ kind: "read", control, text: JSON.stringify(live(w)) }, "user_bob",
+                      "outside")).not.toBeNull();
     // The dark record is closed to all, outside on or off; a canary owner opens it.
     const dark = world({ held: true });
     expect((await runMode(dark, "control", ["--set", "outside=on"])).plan)

@@ -10,11 +10,11 @@ product work: "Claude Ship is process improvement so it is prioritized and
 implemented."
 
 Rewritten 2026-11-28, after five reviews of #5856 and the founder's answers. On
-approvals he answered: "I don't understand all this about approvals. How we have
+approvals the founder answered: "I don't understand all this about approvals. How we have
 been doing it is working for me so I don't know what all this is even all
 about." That answer is the stated reason we keep our approval model, so the
 Approvals rows below say "Keep". It covers approvals only; everything else Ship
-does that he did not reject is adopted (Direction 6: less process).
+does that the founder did not reject is adopted (Direction 6: less process).
 
 ## Sources
 
@@ -133,7 +133,7 @@ since 2026-11-24 (`brief_lane.md`'s "Ship's separation of duties"), which
 | Require ≥1 approval; dismiss stale approvals on push | None | **Keep** (decision 5); `review` does the freshness work |
 | Block force pushes where you don't want them (pr-steward-setup step 4) | Classic protection on `main` blocks both, but not for an admin (`enforce_admins` false), and every agent is an admin; no ruleset has either rule | **Adopt**: a second ruleset on the default branch with `non_fast_forward` and `deletion` and no bypass actor, so the admin bypass does not void it. It replaces the classic protection, which holds nothing else and is deleted, so `main`'s protection has one source and drift reads it. Decision 5 covers approvals only; a repo setting is the agent's call (Fact 4) |
 | The App off the bypass list; agents act as an App, apart from people | The admin role bypasses the merge-queue ruleset always, and every agent is that admin | **Keep, a known gap** (decision 2) |
-| Warning: no person required + auto-merge or a merge queue merges with nobody acting | That is the founder's intent: `auto-enroll` arms every ready PR | **Keep** (decisions 1 and 5); a PR whose review asks the founder is held by its `BLOCK` until he answers (§ Target pipeline) |
+| Warning: no person required + auto-merge or a merge queue merges with nobody acting | That is the founder's intent: `auto-enroll` arms every ready PR | **Keep** (decisions 1 and 5); a PR whose review asks the founder is held by its `BLOCK` until the founder answers (§ Target pipeline) |
 
 ### Our own gates, which Ship has no equivalent of
 
@@ -209,8 +209,8 @@ file; a missing, empty or failed list is refused, never read as "everyone".
 4. **The steward** fixes what the review and CI raise, merging the base in on a
    conflict, and the new head is reviewed again.
 5. **The founder** is asked before the PR lands. A `Founder question:` line
-   means the PR's `review` fails, so it waits. The coordinator asks him in
-   chat, posts his answer on the PR as a comment quoting it with the date, and
+   means the PR's `review` fails, so it waits. The coordinator asks the founder in
+   chat, posts their answer on the PR as a comment quoting it with the date, and
    asks for a fresh review, which reads the answer only from a comment by an
    account that counts; feedback goes to the steward first.
 6. **Merge**: `auto-enroll` arms the PR; the queue merges it once `review`,
@@ -374,11 +374,11 @@ one per PR.
 1. **Consulted by judgment, not paths** (2026-11-24): "I should be consulted
    when design frame or shape or project drift or feedback is needed." The
    reviewer asks the question in its review, which holds the PR; the
-   coordinator asks him in chat before it lands.
+   coordinator asks the founder in chat before it lands.
 2. **Agents keep the founder's account** (2026-11-24); no machine user or App.
    The admin bypass of the merge-queue ruleset and the indistinguishable acts
    are known gaps.
-3. **Reviews and fixes stay in Claude sessions on his subscription**
+3. **Reviews and fixes stay in Claude sessions on the founder's subscription**
    (2026-11-24); no API key, no CI-hosted review or steward.
 4. **Branch rules at enforce** (2026-11-24): superseded by 5; there is no
    enforce step. The force-push and deletion rules were never an approval rule

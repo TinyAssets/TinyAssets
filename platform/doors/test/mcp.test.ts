@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { apiKeyOrigin } from "../../contract/src/binding";
 import { MCP_RESOURCE } from "../../contract/src/identity";
 import { DEFINITION_BYTES_MAX } from "../../contract/src/limits";
+import { unportable } from "../../contract/src/paths";
 import { NOT_AN_AGENT } from "../../contract/src/refusal";
 import { slotBusy } from "../../contract/src/slots";
 import { mcpOrigin } from "../src/binder";
@@ -206,12 +207,14 @@ describe.each([
       "names changes.";
     const skills = answerOf(await client.callTool({ name: "file_stat", arguments: {
       path: "/workspace/.agents" } })) as { entry: { etag: string } };
-    // A stat answers a missing path, and a remove at its old etag a conflict; a read refuses it.
+    // A stat answers a missing path, and a remove at its old etag a conflict saying what to
+    // do; a read refuses it.
     expect(answerOf(await client.callTool({ name: "file_stat", arguments: {
       path: "/workspace/gone.md" } }))).toEqual({ entry: null });
     expect(answerOf(await client.callTool({ name: "file_remove", arguments: {
       path: "/workspace/gone.md", expected_etag: written.entry.etag, recursive: false } })))
-      .toEqual({ conflict: null });
+      .toEqual({ conflict: null, message: expect.stringMatching(
+        /^the file is not at the etag you sent: .*Read it again/) });
     for (const [name, args, said] of [
       ["file_read", { path: "/workspace/gone.md" }, "not_found: no such file"],
       ["fetch", { id: "/workspace/gone.md" }, "not_found: no such file"],
@@ -226,6 +229,36 @@ describe.each([
       expect([name, refused.isError, refused.content]).toEqual(
         [name, true, [{ type: "text", text: `${said}${final}` }]]);
     }
+    await client.close();
+  });
+
+  it("refuses a NUL in a path, and a name some place cannot hold, each as the tool's error " +
+     "saying why, nothing made, and the connection serves the next call", async () => {
+    const client = await mcpClient(await connect(await registerClient(), { owner: owner() }),
+                                   mode);
+    const malformed = "\nThis refusal is final: the call is malformed, and is refused again " +
+      "until it is corrected.";
+    for (const path of ["/workspace/back\\slash.md", "/workspace/a\u0001b.md",
+                        "/workspace/a\nb.md", "/workspace/CON.md", "/workspace/notes.",
+                        "/workspace/a\u0000b.md"]) {
+      const said = path.includes("\0") ? "a path holds no NUL character"
+        : unportable(path.slice("/workspace/".length))!;
+      for (const name of ["file_write", "file_append"] as const) {
+        const refused = await client.callTool({ name, arguments: {
+          path, content: "x", ...name === "file_write" ? { expected_etag: "" } : {} } });
+        expect([path, name, refused.isError, refused.content]).toEqual(
+          [path, name, true, [{ type: "text", text: `${said}${malformed}` }]]);
+      }
+      if (!path.includes("\0")) {
+        expect(answerOf(await client.callTool({ name: "file_stat", arguments: { path } })))
+          .toEqual({ entry: null });
+      }
+    }
+    expect(unportable("back\\slash.md")).toBe("the name \"back\\\\slash.md\" holds \\, which " +
+      "a Windows file name cannot hold (none of \\ : * ? \" < > |); the owner's files reach " +
+      "Windows computers, so choose another name");
+    expect((await client.callTool({ name: "file_write", arguments: {
+      path: "/workspace/fine.md", expected_etag: "", content: "x" } })).isError).toBeFalsy();
     await client.close();
   });
 

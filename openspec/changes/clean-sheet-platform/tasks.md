@@ -66,7 +66,7 @@ end.
   `untangle-2026-11/founder-answers.md` call 10; `codemode-off.md`): its probe owners turn it
   on in their own policy first, and its pass alone turns it on by default (`CODEMODE_DEFAULTS`
   and `CODE_MODE_OFF`, changed together). It probes a script past its
-  interrupt budget against the Worker's `cpu_ms`; 10 s of one owner's script compute against
+  interrupt budget against the Worker's `cpu_ms`; one owner's script computing to its budget against
   another owner's; whether `exchange` calls count as subrequests of the owner object or of the
   code mode Worker; whether a script whose caller waits runs 10 minutes of tool calls back to
   back, no clock of ours ending it, and whether the owner object's limit on one invocation then
@@ -127,7 +127,7 @@ end.
 
 ## 8. Founder live test
 
-- [ ] The founder's own test, last on the live stage (§10 step 8), with a stage account: his
+- [ ] The founder's own test, last on the live stage (§10 step 8), with a stage account: the founder's
   main account never signs in to the stage and starts fresh at the cutover (d3 §H). Fixes land
   in the new stack only. It covers what only a real account shows:
   - a completed sign-in on each vendor, and how long a real sign-in with 2FA takes, which sets
@@ -1163,5 +1163,5 @@ and GitHub apps; a Backblaze B2 account for the off-account copy; the stage's tw
 canary's dispatch token and free-tier model key (d3 §J4); the imported owners' notice wording
 (d3 §N7); the window's credentials; asking E2B for workload identity (gateway research §13); the
 end-of-hold deletions; the Direction text's replacement lines, drafted by the coordinator
-(2026-11-21); raising E2B's tier, once the canary's E2B metrics near the ceiling. Optional: a zone WAF rule with his own number
+(2026-11-21); raising E2B's tier, once the canary's E2B metrics near the ceiling. Optional: a zone WAF rule with the founder's own number
 (`platform/deploy/checklist.md`).

@@ -12,7 +12,8 @@
  *
  * 1. A script past its interrupt budget, against the codemode Worker's `cpu_ms`: when and how
  *    it is stopped.
- * 2. The blocking isolation: 10 s of A's compute, and B's one call meanwhile.
+ * 2. The blocking isolation: A's script computing to its interrupt budget (a loop waiting on
+ *    `Date.now()`, which stands still while it computes), and B's one call meanwhile.
  * 3. Whether `exchange` calls count as subrequests: 1,100 tool calls in one script.
  * 4. A script whose caller waits, calling tools back to back for 10 minutes: it ends with its
  *    value, no clock of ours ending it, or the owner object's limit on one invocation shows,
@@ -78,8 +79,8 @@ async function main(): Promise<void> {
   row("1 interrupt budget vs cpu_ms", await code(a, "let i = 0; for (;;) { i++; }"));
   const busy = code(a, "const t = Date.now(); while (Date.now() - t < 10000) {} return 1;");
   await new Promise((done) => setTimeout(done, 500));
-  row("2 another owner's call during 10 s of compute", await code(b, "return 1;"));
-  row("2 the 10 s script", await busy);
+  row("2 another owner's call during A's compute", await code(b, "return 1;"));
+  row("2 A's script, to its interrupt budget", await busy);
   row("3 1,100 tool calls in one script", await code(a,
     "let n = 0; for (let i = 0; i < 1100; i++) { await tools.agents_list({}); n++; } return n;"));
   row("4 tool calls back to back for 10 minutes, the caller waiting", await code(a,

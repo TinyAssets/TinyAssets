@@ -258,9 +258,11 @@ function readme(owner: Owner, policy: PolicyImport): string {
   }
   if (tree.refused.length > 0) {
     lines.push(`\`refused.tar\` keeps ${tree.refused.length} entries that cannot be stored ` +
-               "here, unchanged: names that are not UTF-8, or longer than 255 bytes a name or " +
-               "4,096 a path, with everything in them; and links whose target is not UTF-8, " +
-               "which `links.txt` does not list.", "");
+               "here, unchanged: names that are not UTF-8, longer than 255 bytes a name or " +
+               "4,096 a path, or that a Windows computer cannot hold (a control character, " +
+               "one of \\ : * ? \" < > |, a trailing space or dot, or a device name such as CON " +
+               "or NUL), with everything in them; and links whose target is not UTF-8, which " +
+               "`links.txt` does not list.", "");
   }
   if (tree.ignoredTrees.length > 0) {
     lines.push(`\`ignored.tar\` keeps ${tree.ignored} files your agents can rebuild ` +

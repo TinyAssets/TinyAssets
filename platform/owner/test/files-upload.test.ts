@@ -12,7 +12,7 @@ import { describe, expect, it } from "vitest";
 import { sqlIn } from "../../ci/workerd";
 import { CHUNK_BYTES, GC_GRACE_S, INLINE_BYTES, MAX_INTENT_CHUNKS } from "../../contract/src/limits";
 import {
-  DELETE_FLOOR_MS, type Entry, HOUSEKEEPING_SLACK_S, INTENT_TTL_S,
+  DELETE_FLOOR_MS, type Entry, FILE_CONFLICT, HOUSEKEEPING_SLACK_S, INTENT_TTL_S,
   MAX_HELD_CHUNKS, MAX_OPEN_INTENTS, WHOLE_BYTES,
 } from "../src/files";
 import { chunkedId, inlineId } from "../../contract/src/content";
@@ -781,7 +781,7 @@ describe("history retention", () => {
                                                                content: text("two") }));
     expect(await r.stub.fileRestore(r.bind(null), { path: `${W}/a`, version: one.version,
                                                     expected_etag: one.etag }))
-      .toEqual({ conflict: two });
+      .toEqual({ conflict: two, message: FILE_CONFLICT });
     const restored = entryOf(await r.stub.fileRestore(r.bind(null), {
       path: `${W}/a`, version: one.version, expected_etag: two.etag }));
     expect(restored.version).toBeGreaterThan(two.version);

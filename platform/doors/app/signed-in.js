@@ -29,10 +29,25 @@
     begun = null;
   }
   sessionStorage.removeItem("ta.app.signin");
-  if (error !== null || code === null || begun === null || state !== begun.state
-      || (issuer !== null && issuer !== location.origin)) {
-    say(error !== null ? "The sign-in was not finished. Go back to the app to try again."
-                       : "This sign-in was not started in this tab. Go back to the app to try again.");
+  const again = "Go back to the app to try again.";
+  if (begun === null || state !== begun.state || (issuer !== null && issuer !== location.origin)) {
+    say(`This sign-in was not started in this tab. ${again}`);
+    return;
+  }
+  // This tab's own sign-in refused: the doors' reason (`error_description`, the doors' own
+  // words: `authorize.ts`, `refused.ts`), shown only for a sign-in this tab began, so no link
+  // made elsewhere puts its words on this page.
+  if (error !== null) {
+    const reason = query.get("error_description") ?? "";
+    const said = reason === "" ? null : `${reason[0].toUpperCase()}${reason.slice(1)}.`;
+    say(`${said ?? (error === "temporarily_unavailable"
+      ? "TinyAssets can't finish a sign-in right now."
+      : error === "access_denied" ? "The sign-in was cancelled or refused."
+        : `The sign-in was not finished (${error}).`)} ${again}`);
+    return;
+  }
+  if (code === null) {
+    say(`The sign-in was not finished. ${again}`);
     return;
   }
   fetch("/oauth/token", {

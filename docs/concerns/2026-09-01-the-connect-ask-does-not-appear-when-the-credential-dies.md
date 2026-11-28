@@ -7,7 +7,7 @@ summary: the rail asks only when NO binding exists, so a bound-but-expired unive
 
 # The "connect a model" ask appears only when nothing is bound, not when the credential dies
 
-**Filed:** 2026-09-01, from the founder's instruction after his universe stopped
+**Filed:** 2026-09-01, from the founder's instruction after the founder's universe stopped
 answering:
 
 > "i cant do as you ask and reconnect cause a naevie user wouldnt know that. if

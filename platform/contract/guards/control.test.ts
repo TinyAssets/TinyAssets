@@ -8,8 +8,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   CONTROL_KEY, CONTROL_TEXT_MAX, type ControlKeeper, type ControlRead, type ControlStore,
-  FRESH_ONLY, type FreshAct, freshRecord, inboundGate, type Kept, outsideOpen, ownerOpen,
-  parseControl, readControl, requireFresh, RUNS_CEILING, TIER_STORAGE_MAX,
+  FRESH_ONLY, type FreshAct, freshRecord, gateClosed, inboundGate, type Kept, MAINTENANCE,
+  OUTSIDE_OFF, parseControl, readControl, requireFresh, RUNS_CEILING, TIER_STORAGE_MAX,
 } from "../src/control";
 
 const GATES = Object.freeze({ outside: "on", ordinary: "all", canary: [], inbound: true });
@@ -138,12 +138,12 @@ describe("a kept copy", () => {
   const read: ControlRead = { kind: "read", control: kept.control, text: OPEN };
 
   it("opens every gate the copy opens", () => {
-    expect([outsideOpen(kept, "a"), ownerOpen(kept, "a"), inboundGate(kept)])
-      .toEqual([true, true, kept.control]);
+    expect([gateClosed(kept, "a", "outside"), gateClosed(kept, "a", "owner"), inboundGate(kept)])
+      .toEqual([null, null, kept.control]);
     const off = { ...kept, control: { ...kept.control, outside: "off", ordinary: "none",
                                       inbound: false } } as const;
-    expect([outsideOpen(off, "a"), ownerOpen(off, "a"), inboundGate(off)])
-      .toEqual([false, false, "off"]);
+    expect([gateClosed(off, "a", "outside"), gateClosed(off, "a", "owner"), inboundGate(off)])
+      .toEqual([OUTSIDE_OFF, MAINTENANCE, "off"]);
   });
 
   it("refuses each act that needs a fresh read, for a while, and none on any other read", () => {

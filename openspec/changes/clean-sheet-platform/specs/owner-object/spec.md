@@ -623,7 +623,11 @@ Each subscribe (the agent's client's MCP Events `wakeSubscribe`, or the owner's 
 - **THEN** the revoke erases the old callback only, and the agent's new callback still rings
 
 ### Requirement: The owner's file manifest keeps the revision rules on file entries
-Each file change SHALL be a compare-and-swap on the entry's etag (null writes unconditionally, empty only creates), stamped with the next owner-wide seq, which names the version and never repeats across a delete, a re-create or a history prune; a lost swap SHALL be answered with the entry as it stands. Paths SHALL be stored verbatim, never normalized, and SHALL never become a bucket key. Files of 4 KiB or less SHALL be kept inline in the object.
+Each file change SHALL be a compare-and-swap on the entry's etag (null writes unconditionally, empty only creates), stamped with the next owner-wide seq, which names the version and never repeats across a delete, a re-create or a history prune; a lost swap SHALL be answered with the entry as it stands and a message saying to read it again and write against its etag. Paths SHALL be stored verbatim, never normalized, and SHALL never become a bucket key. A name SHALL be made only when every place the owner's files reach can hold it: no control character, none of `\ : * ? " < > |`, no trailing space or dot, and no device name Windows reserves; the one place an entry is made SHALL refuse any other, saying why, whichever writer asks (a file tool, an upload, the sync, a rename, a restore), and a name held before the rule SHALL stay readable, writable, removable and renamable. Files of 4 KiB or less SHALL be kept inline in the object.
+
+#### Scenario: A name Windows cannot hold
+- **WHEN** an agent writes `/workspace/back\slash.md`, or a sandbox's sync commits `/workspace/a:b.md`
+- **THEN** each is refused `invalid`, naming the character and why, and nothing is made
 
 #### Scenario: A file deleted and made again
 - **WHEN** the owner writes `/workspace/a`, removes it and writes it again

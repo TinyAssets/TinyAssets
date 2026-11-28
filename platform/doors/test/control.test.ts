@@ -10,7 +10,7 @@ import { ORIGIN } from "../../contract/src/identity";
 
 import { writeControl } from "../../ci/fixtures";
 import {
-  CONTROL_KEY, type Control, MAINTENANCE, OUTSIDE_OFF, outsideOpen, ownerOpen, parseControl,
+  CONTROL_KEY, type Control, CANARY_ONLY, gateClosed, MAINTENANCE, OUTSIDE_OFF, parseControl,
   staleRefusal,
 } from "../../contract/src/control";
 import type { DoorsEnv } from "../src/env";
@@ -106,28 +106,41 @@ describe("the control record", () => {
     }
   });
 
-  it("opens outside work only when read on; the owner's when missing or admitting", () => {
+  it("opens outside work only when read on; the owner's when missing or admitting; each " +
+     "closed gate saying why, an owner the canary gate leaves out told so", () => {
     const read = (control: Omit<Control, "sandbox" | "signins">) =>
       ({ kind: "read", control: { ...control, sandbox: null, signins: null },
          text: JSON.stringify(control) }) as const;
     for (const kind of ["missing", "malformed", "unreadable"] as const) {
-      expect(outsideOpen({ kind }, "a")).toBe(false);
+      expect(gateClosed({ kind }, "a", "outside")).toBe(OUTSIDE_OFF);
     }
-    expect(outsideOpen(read({ ...OPEN, outside: "off" }), "a")).toBe(false);
-    expect(outsideOpen(read(OPEN), "a")).toBe(true);
-    expect(ownerOpen({ kind: "missing" }, "a")).toBe(true);
-    expect(ownerOpen({ kind: "malformed" }, "a")).toBe(false);
-    expect(ownerOpen({ kind: "unreadable" }, "a")).toBe(false);
-    expect(ownerOpen(read({ ...OPEN, outside: "off" }), "a")).toBe(true);
-    expect(ownerOpen(read({ ...OPEN, ordinary: "none" }), "a")).toBe(false);
+    expect(gateClosed(read({ ...OPEN, outside: "off" }), "a", "outside")).toBe(OUTSIDE_OFF);
+    expect(gateClosed(read(OPEN), "a", "outside")).toBeNull();
+    expect(gateClosed({ kind: "missing" }, "a", "owner")).toBeNull();
+    expect(gateClosed({ kind: "malformed" }, "a", "owner")).toBe(MAINTENANCE);
+    expect(gateClosed({ kind: "unreadable" }, "a", "owner")).toBe(MAINTENANCE);
+    expect(gateClosed(read({ ...OPEN, outside: "off" }), "a", "owner")).toBeNull();
+    const none = read({ ...OPEN, ordinary: "none" });
+    expect([gateClosed(none, "a", "owner"), gateClosed(none, "a", "outside")])
+      .toEqual([MAINTENANCE, MAINTENANCE]);
+    // The canary gate: its owners pass both gates; any other is told only they get in.
+    const canary = read({ ...OPEN, ordinary: "canary", canary: ["a"] });
+    expect([gateClosed(canary, "a", "owner"), gateClosed(canary, "a", "outside")])
+      .toEqual([null, null]);
+    expect([gateClosed(canary, "b", "owner"), gateClosed(canary, "b", "outside")])
+      .toEqual([CANARY_ONLY, CANARY_ONLY]);
+    // Naming none, it admits nobody: maintenance.
+    expect(gateClosed(read({ ...OPEN, ordinary: "canary", canary: [] }), "b", "owner"))
+      .toBe(MAINTENANCE);
   });
 });
 
 describe.each([
-  MISSING, MALFORMED, NOT_JSON,
-  ["switched off", record({ ...OPEN, outside: "off" })],
-  ["in maintenance", record({ ...OPEN, ordinary: "none" })],
-] as const)("the outside gate, with the record %s", (_what, state) => {
+  [...MISSING, OUTSIDE_OFF], [...MALFORMED, OUTSIDE_OFF], [...NOT_JSON, OUTSIDE_OFF],
+  ["switched off", record({ ...OPEN, outside: "off" }), OUTSIDE_OFF],
+  // Outside access on, but the maintenance gate admitting no owner: that is the reason.
+  ["in maintenance", record({ ...OPEN, ordinary: "none" }), MAINTENANCE],
+] as const)("the outside gate, with the record %s", (_what, state, why) => {
   it("refuses an MCP call 503, before the object", async () => {
     const alice = owner();
     const tokens = await connect(await registerClient(), { owner: alice });
@@ -141,7 +154,7 @@ describe.each([
     const { key } = await mintKeyFor(owner());
     const response = await api(key, await state());
     expect([response.status, response.headers.get("Retry-After"), await response.json()])
-      .toEqual([503, "60", { error: OUTSIDE_OFF }]);
+      .toEqual([503, "60", { error: why }]);
   });
 
   it("refuses an outside client's authorization", async () => {
@@ -203,7 +216,8 @@ describe("the canary gate", () => {
     const otherTokens = await connect(client, { owner: other });
     await setControl({ ...OPEN, ordinary: "canary", canary: [canary] });
     expect((await listTools(canaryTokens.access_token)).status).toBe(200);
-    expect((await listTools(otherTokens.access_token)).status).toBe(503);
+    const refused = await listTools(otherTokens.access_token);
+    expect([refused.status, await refused.json()]).toEqual([503, { error: CANARY_ONLY }]);
   });
 
   it("checks the owner's own sign-in", async () => {
@@ -211,9 +225,11 @@ describe("the canary gate", () => {
     await setControl({ ...OPEN, ordinary: "canary", canary: [canary] });
     const admitted = await appCallback({ owner: canary });
     expect(new URL(admitted.back.headers.get("Location")!).searchParams.get("code")).toBeTruthy();
-    const refused = await appCallback({ owner: owner() });
-    expect(new URL(refused.back.headers.get("Location")!).searchParams.get("error"))
-      .toBe("temporarily_unavailable");
+    // Any other account is told why, naming no account: the return page shows it.
+    const refused = new URL((await appCallback({ owner: owner() })).back.headers.get("Location")!)
+      .searchParams;
+    expect([refused.get("error"), refused.get("error_description")])
+      .toEqual(["temporarily_unavailable", CANARY_ONLY]);
   });
 });
 

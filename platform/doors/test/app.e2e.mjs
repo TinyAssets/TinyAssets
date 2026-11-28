@@ -32,7 +32,9 @@ import { keyring as newKeyring, OPEN, writeControl } from "../../ci/fixtures.ts"
 import { PLATFORM } from "../../ci/paths.ts";
 import { auxiliary, fake, pool, workerConfig } from "../../ci/workers.ts";
 import { EGRESS_HOST, EGRESS_ORIGIN } from "../../contract/src/egress.ts";
+import { CANARY_ONLY, MAINTENANCE } from "../../contract/src/control.ts";
 import { HOST, ORIGIN, waitingPage } from "../../contract/src/identity.ts";
+import { ERASED_SIGN_IN, STALE_SIGN_IN } from "../../contract/src/signin.ts";
 import { AUTHKIT } from "./fake-providers.ts";
 
 installed();
@@ -1271,6 +1273,43 @@ test("the return pages exchange no stranger's code and send no one off-site", { 
   await page.locator("#status", { hasText: "not finished" }).waitFor();
   assert.equal(page.url(), `${ORIGIN}/app/connected`);
   assert.ok(!seen.slice(from).some((r) => r.url.startsWith("https://evil.test")));
+});
+
+test("the sign-in return page says each refusal's reason in words, with what to do, only for " +
+     "a sign-in its tab began", { timeout: 60_000 }, async () => {
+  const probe = await context.newPage();
+  // This tab began a sign-in of state `s1`, as the app does before it leaves for /authorize.
+  await probe.addInitScript(() => sessionStorage.setItem("ta.app.signin",
+    JSON.stringify({ state: "s1", verifier: "v" })));
+  const again = "Go back to the app to try again.";
+  const shown = async (query) => {
+    await probe.goto(`${ORIGIN}/app/signed-in?${new URLSearchParams(query)}`);
+    const status = probe.locator("#status");
+    await status.filter({ hasText: again }).waitFor();
+    return status.textContent();
+  };
+  const upstream = "the sign-in was refused: access_denied: The user cancelled";
+  for (const [error, reason, said] of [
+    ["temporarily_unavailable", CANARY_ONLY, "This account can't use TinyAssets here for now: " +
+      "only the accounts this deployment is being tested with can (on the stage, sign in with " +
+      "a stage account)."],
+    ["temporarily_unavailable", MAINTENANCE, "TinyAssets is in maintenance."],
+    ["access_denied", STALE_SIGN_IN, "The sign-in is too old to use: sign in again."],
+    ["access_denied", ERASED_SIGN_IN, "This account was erased, so it can't sign in again: " +
+      "sign in with another account."],
+    ["access_denied", upstream, "The sign-in was refused: access_denied: The user cancelled."],
+    ["access_denied", null, "The sign-in was cancelled or refused."],
+    ["temporarily_unavailable", null, "TinyAssets can't finish a sign-in right now."],
+    ["server_error", null, "The sign-in was not finished (server_error)."],
+  ]) {
+    const query = { error, state: "s1", ...reason === null ? {} : { error_description: reason } };
+    assert.equal(await shown(query), `${said} ${again}`, `${error}: ${reason}`);
+  }
+  // A link made elsewhere, of no sign-in this tab began: its words are never shown.
+  assert.equal(await shown({ error: "access_denied", state: "forged",
+                             error_description: "call this number to unlock your account" }),
+               `This sign-in was not started in this tab. ${again}`);
+  await probe.close();
 });
 
 test("a leaked token alone changes no agent's definition, and a missing door is a real 404",

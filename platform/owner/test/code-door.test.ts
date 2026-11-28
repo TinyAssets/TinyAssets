@@ -24,7 +24,8 @@ import { profileNames } from "../../contract/src/doors";
 import type { Binding, Origin } from "../../contract/src/binding";
 import { jsonBytes } from "../../contract/src/encoded";
 import { PLACE_BYTES } from "../../contract/src/limits";
-import { CODE_ANSWER_TOO_LARGE, CODE_NOT_SERVED } from "../src/codemode";
+import { CODE_ANSWER_TOO_LARGE, CODE_NOT_SERVED, CODE_OUT_OF_MEMORY } from "../src/codemode";
+import { unportable } from "../../contract/src/paths";
 import { CONTROL_FRESH_MS, ControlGate, objectKeeper } from "../src/control-gate";
 import { WriteGate } from "../src/gate";
 import type { OwnerDO } from "../src/owner-do";
@@ -348,6 +349,29 @@ describe("the code door", () => {
     later(CONTROL_FRESH_MS / 1000 + 1);
     expect((await failure(() => ran(r, r.bind(MUSE), { script: "return 1;" })))
       .message).toBe(OUTSIDE_OFF);
+  });
+
+  it("answers a script's bad path and missing file as each call's refusal, saying why, and " +
+     "its memory past the cap naming it, the object serving the next script", async () => {
+    const r = await onRig();
+    const result = await ran(r, r.bind(null), { script: lines(
+      "const seen = [];",
+      "for (const path of ['/workspace/a\\u0000b.md', '/workspace/a\\u0001b.md',",
+      "                    '/workspace/back\\\\slash.md']) {",
+      "  try { await tools.file_write({ path, expected_etag: '', content: 'x' }); }",
+      "  catch (error) { seen.push(error.message.split('\\n')[0]); }",
+      "}",
+      "try { await tools.file_read({ path: '/workspace/missing.md' }); }",
+      "catch (error) { seen.push(error.message.split('\\n')[0]); }",
+      "return seen;") });
+    expect(result).toMatchObject({ ok: true, value: [
+      "a path holds no NUL character", unportable("a\u0001b.md"), unportable("back\\slash.md"),
+      "not_found: no such file"], calls: { ok: 0, error: 4, cancelled: 0 } });
+    expect(await ran(r, r.bind(null), { script:
+      "const all = []; for (;;) { all.push('x'.repeat(1 << 20) + all.length); }" }))
+      .toMatchObject({ ok: false, error: { kind: "script", message: CODE_OUT_OF_MEMORY } });
+    expect(await ran(r, r.bind(null), { script: "return 1;" }))
+      .toMatchObject({ ok: true, value: 1 });
   });
 
   it("cuts output past one answer, saying so, and refuses only a value past it", async () => {

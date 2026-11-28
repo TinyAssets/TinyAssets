@@ -17,7 +17,8 @@
  *   until its isolation probe passes, `CODEMODE_DEFAULTS`).
  * - **How long:** while its caller waits (`codeRun`'s `left`: the doors close the caller's
  *   stop once it stops waiting, `doors/src/tools.ts`), and within the codemode Worker's
- *   interrupt budget of compute and VM memory, which no owner sets.
+ *   interrupt budget of compute and VM memory, which no owner sets: asked for in every
+ *   request, and named, with what to do instead, when a script meets one (`metLimit`).
  */
 import { randomUUID } from "node:crypto";
 
@@ -26,12 +27,16 @@ import {
 } from "../../contract/src/doors";
 import { fitted, jsonBytes } from "../../contract/src/encoded";
 import { sha256Hex } from "../../contract/src/digest";
+import {
+  CODEMODE_INTERRUPT_BUDGET, CODEMODE_MEMORY_BYTES,
+} from "../../contract/src/codemode";
 import { PAGE_BYTES } from "./bodies";
+import { UPLOAD_LARGER } from "./files";
 
 import { type CodemodeRemote, RemoteCodemodeSandbox } from "@earendil-works/pi-codemode/portable";
 import type { Account, Call, Door, DoorUnits, Leaving, ObjectReads } from "./door";
 import type { Binding } from "../../contract/src/binding";
-import type { Gate } from "./control-gate";
+import type { Gate } from "../../contract/src/control";
 import type { ProfileName } from "../../contract/src/doors";
 import { CODE_MODE_OFF } from "../../contract/src/policy-document";
 import { callAgain, Refusal } from "../../contract/src/refusal";
@@ -66,6 +71,8 @@ interface CodemodeParts {
 export function codemodeSandbox(parts: CodemodeParts): RemoteCodemodeSandbox {
   return new RemoteCodemodeSandbox({
     timeoutMs: TIMER_MOST_MS,
+    interruptBudget: CODEMODE_INTERRUPT_BUDGET,
+    memoryLimitBytes: CODEMODE_MEMORY_BYTES,
     tools: [...parts.tools],
     remote: (): CodemodeRemote => {
       const name = `${sha256Hex(parts.owner())}/${randomUUID()}`;
@@ -170,6 +177,37 @@ function fittedCode(answer: CodeResult): CodeResult {
   return { ...answer, output, output_cut: { items: answer.output.length, kept } };
 }
 
+/**
+ * A script that computed to the codemode Worker's interrupt budget (pi-codemode's `timeout`,
+ * the only one it answers: its own deadline is `TIMER_MOST_MS`).
+ */
+export const CODE_COMPUTE_LIMIT = "the script computed past code mode's limit of " +
+  `${CODEMODE_INTERRUPT_BUDGET.toLocaleString("en")} interrupt polls (about 5 seconds of ` +
+  "computing without a tool call), so it was stopped. Its clock stands still while it " +
+  "computes, so a loop that waits on Date.now() never ends. Compute less in one script, or " +
+  "split the work across several code calls";
+/** The VM's own words when a script passes its memory (pi-codemode's `memoryLimitBytes`). */
+const VM_OUT_OF_MEMORY = "out of memory";
+/** A script past its VM memory, saying how much that is and what to do instead. */
+export const CODE_OUT_OF_MEMORY = "out of memory: the script held more than code mode's " +
+  `${CODEMODE_MEMORY_BYTES / 2 ** 20} MiB at once. Hold less: read a file a window at a ` +
+  `time (file_read's offset and max_bytes); ${UPLOAD_LARGER}, never through a script`;
+
+/**
+ * A script's error as its caller reads it: a limit it met named, with what to do instead
+ * (`CODE_COMPUTE_LIMIT`, `CODE_OUT_OF_MEMORY`); any other as pi-codemode said it.
+ */
+export function metLimit(error: { readonly kind: string; readonly message: string }):
+    { kind: string; message: string } {
+  if (error.kind === "timeout") {
+    return { kind: error.kind, message: CODE_COMPUTE_LIMIT };
+  }
+  if (error.kind === "script" && error.message === VM_OUT_OF_MEMORY) {
+    return { kind: error.kind, message: CODE_OUT_OF_MEMORY };
+  }
+  return { kind: error.kind, message: error.message };
+}
+
 /** A script's value past what one tool answer holds (`pages.ts`), refused whole. */
 export const CODE_ANSWER_TOO_LARGE = "answer_too_large: the script's value is past the " +
   `${PAGE_BYTES} characters one answer holds; return less, or write it with a tool and read ` +
@@ -245,7 +283,7 @@ async function runScript(parts: ScriptParts): Promise<CodeResult> {
       console.warn(`code mode: ${CODE_STOPPED}`, JSON.stringify({ calls, landed }));
     }
     const error = stopped ? { kind: "stopped", message: CODE_STOPPED }
-      : result.ok ? null : { kind: result.error.kind, message: result.error.message };
+      : result.ok ? null : metLimit(result.error);
     const answer: CodeResult = error === null
       ? { ok: true, value: (result as { value: JsonValue }).value, output: result.output,
           calls, landed }

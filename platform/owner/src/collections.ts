@@ -828,12 +828,17 @@ export const BOARD = "board";
 
 export const ROOM_PREFIX = "room:";
 
+/** What a lost row compare-and-swap says beside the row as it stands. */
+export const ROW_CONFLICT = "the row is not at the etag you sent: conflict is the row as it " +
+  "now stands (null: no such row). Read it again (collection_get), then make your change " +
+  "against its etag, or \"\" to create a row that is not there";
+
 export function conflicted<T>(act: () => T): T | Conflicted {
   try {
     return act();
   } catch (error) {
     if (error instanceof Refusal && error.code === "conflict" && error.facts !== undefined) {
-      return { conflict: error.facts["current"] as Row | null };
+      return { conflict: error.facts["current"] as Row | null, message: ROW_CONFLICT };
     }
     throw error;
   }
@@ -898,6 +903,7 @@ export interface ClearRequest {
 /** A lost compare-and-swap is an answer carrying the row as it stands, not a refusal. */
 export interface Conflicted {
   readonly conflict: Row | null;
+  readonly message: string;
 }
 
 // -- THE DOORS: the `collections` rows' handlers (`owner/doors.json`) -----------------------------

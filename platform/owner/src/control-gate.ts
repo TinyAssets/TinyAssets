@@ -7,8 +7,8 @@
  * then runs its script's tool calls in the object for as long as its caller waits, so the
  * object reads the same record again at each of them, with the doors' own rules: an outside
  * client's calls need outside access on and the maintenance gate to admit its owner
- * (`outsideOpen`, fail-closed), a run's or the owner's the maintenance gate alone
- * (`ownerOpen`). The namespace holds the control record alone, so binding it reaches no
+ * (`gateClosed`'s `outside`, fail-closed), a run's or the owner's the maintenance gate alone
+ * (its `owner`). The namespace holds the control record alone, so binding it reaches no
  * owner's state; the object only reads it.
  *
  * One read serves a script's calls for `CONTROL_FRESH_MS`, far within KV's own 60 s for a
@@ -20,17 +20,14 @@
  * the switched-on sign-ins are read from it (`admission.ts`, `signins.ts`).
  */
 import {
-  type ControlKeeper, type ControlRead, type ControlStore, MAINTENANCE, OUTSIDE_OFF,
-  outsideOpen, ownerOpen, readControl, SqlKeeper,
+  type ControlKeeper, type ControlRead, type ControlStore, type Gate, gateClosed, readControl,
+  SqlKeeper,
 } from "../../contract/src/control";
 import { clockMs } from "./clock";
 import type { OwnerStorage, Write } from "./gate";
 
 /** How long one read of the control record serves a script's calls, in ms. */
 export const CONTROL_FRESH_MS = 1_000;
-
-/** Which of the doors' gates a caller passed: an outside client's, or the owner's own. */
-export type Gate = "outside" | "owner";
 
 /**
  * The object's keeper (`SqlKeeper`, its row `control_kept`), its writes quiet units of the
@@ -63,10 +60,6 @@ export class ControlGate {
 
   /** Why the gate refuses `owner`'s call now, or null when it admits it. */
   async refusal(gate: Gate, owner: string): Promise<string | null> {
-    const read = await this.read();
-    if (gate === "outside") {
-      return outsideOpen(read, owner) ? null : OUTSIDE_OFF;
-    }
-    return ownerOpen(read, owner) ? null : MAINTENANCE;
+    return gateClosed(await this.read(), owner, gate);
   }
 }

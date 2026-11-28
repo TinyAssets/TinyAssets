@@ -40,6 +40,14 @@ const MAX_CANARY = 100;
 export const OUTSIDE_OFF = "outside access is switched off";
 /** The maintenance gate's refusal, a 503 at the doors. */
 export const MAINTENANCE = "TinyAssets is in maintenance";
+/**
+ * The maintenance gate's refusal of an owner it does not admit while it admits the canary
+ * owners: on the live stage, every account but the stage accounts (d3 §H). It names no
+ * account.
+ */
+export const CANARY_ONLY = "this account can't use TinyAssets here for now: only the " +
+  "accounts this deployment is being tested with can (on the stage, sign in with a stage " +
+  "account)";
 
 export const TIER_NAMES = Object.freeze(["free", "paid"] as const);
 export type TierName = (typeof TIER_NAMES)[number];
@@ -361,32 +369,43 @@ export function gating(read: ControlRead): Control | null {
   return read.kind === "read" || read.kind === "kept" ? read.control : null;
 }
 
-/** Whether the maintenance gate admits `owner`: every owner, or a canary one. */
-export function ordinaryAdmits(control: Control, owner: string): boolean {
-  return control.ordinary === "all"
-    || (control.ordinary === "canary" && control.canary.includes(owner));
+/**
+ * Why the maintenance gate refuses `owner`, or null when it admits it: it admits every owner
+ * (`all`), or the canary owners alone, so an owner not among them is told that only the
+ * accounts the deployment is tested with get in (`CANARY_ONLY`); one that admits none is in
+ * maintenance.
+ */
+export function ordinaryClosed(control: Control, owner: string): string | null {
+  if (control.ordinary === "all"
+      || (control.ordinary === "canary" && control.canary.includes(owner))) {
+    return null;
+  }
+  return closedToAll(control) ? MAINTENANCE : CANARY_ONLY;
 }
 
-/**
- * Whether the record admits an outside call for `owner` (an MCP tool call, an `/api` call, an
- * MCP authorization): only a record read well formed or kept, with `outside` on and the
- * maintenance gate admitting its owner. Missing, malformed or unreadable refuses it: the kill
- * switch is off unless it is provably on.
- */
-export function outsideOpen(read: ControlRead, owner: string): boolean {
-  const control = gating(read);
-  return control !== null && control.outside === "on" && ordinaryAdmits(control, owner);
-}
+/** Which of the doors' gates a call passes: an outside client's, or the owner's own. */
+export type Gate = "outside" | "owner";
 
 /**
- * Whether the record admits the owner's own call (`/app/api/*`, the owner's sign-in, a run's
- * or the owner's code-mode call): held by the maintenance gate alone. With no record at all it
- * is open, so a fresh deployment's owner can reach their account; a record that is malformed
- * or unreadable with no copy closes it, since a gate that cannot be read is never taken as open.
+ * Why the record refuses `owner`'s call at `gate` (its refusal's message, the contract's
+ * `unavailable`), or null when it admits it.
+ * - **outside** (an MCP tool call, an `/api` call, an MCP authorization): only a record read
+ *   well formed or kept, with `outside` on, then the maintenance gate. Missing, malformed or
+ *   unreadable refuses it: the kill switch is off unless it is provably on.
+ * - **owner** (`/app/api/*`, the owner's sign-in, a run's or the owner's code-mode call): the
+ *   maintenance gate alone. With no record at all it is open, so a fresh deployment's owner
+ *   can reach their account; a record that is malformed or unreadable with no copy closes it,
+ *   since a gate that cannot be read is never taken as open.
  */
-export function ownerOpen(read: ControlRead, owner: string): boolean {
+export function gateClosed(read: ControlRead, owner: string, gate: Gate): string | null {
   const control = gating(read);
-  return read.kind === "missing" || (control !== null && ordinaryAdmits(control, owner));
+  if (gate === "outside" && control?.outside !== "on") {
+    return OUTSIDE_OFF;
+  }
+  if (control === null) {
+    return read.kind === "missing" ? null : MAINTENANCE;
+  }
+  return ordinaryClosed(control, owner);
 }
 
 /**
