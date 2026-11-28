@@ -767,6 +767,52 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 - [ ] The two app stores' dashboards checked for anything we must follow up (a review in
   flight, an auto-release, a testing-track deadline, a policy form); the founder's sign-in
   (d3 §F2).
+- [ ] **Placement: where the agent runs when** (founder, 2026-11-28: "the most impaortant
+  entire point of the cut over"; ADR-040; `untangle-2026-11/placement.md`). Its first PR
+  changes stored shapes, so the block lands before the window's backup. The places, in order:
+  the vendor's own agent on the user's subscription, the user's device, and our sandbox last.
+  Each lane runs the untangle skill and carries its own decision file.
+  - [x] ADR-040, Fact 15 as sandboxes, this re-cut, and the records' terms read again by place
+    (`untangle/placement-adr`).
+  - [ ] PL1, the stored shapes before real data, one owner migration: `CredentialKind`
+    `vendor_login` (no place in the name), `runs.place`, `engine_signins` keyed `(engine,
+    place)`, each record's verdicts keyed by place (ADR-040 decision 9), `TierNumbers.sandboxes`
+    and admission by sandboxes, a run past them waiting (it absorbs
+    `untangle/runs-wait-message`), `control.json`'s E2B ceiling set to the founder's plan, and
+    `Runs.#place` named `sourceLabel`; `limits-audit.md`'s tier row and the site's plans copy
+    in the same words (`untangle/place-shapes`).
+  - [ ] PL2, the rule: `contract/placement.json` and the owner's override; `agent.json`
+    `places` and `needs`; each wake record's `can`; `choose` over `(source, place)` for the
+    main agents and the sandbox, every subscription before any metered source and
+    `metered_fallback` off; `due`; a limit reached waits or moves to another subscription;
+    `preview` and the notices name the place; the starter's instructions per place, with the
+    steer of ADR-040 decision 5. It merges `untangle/strongest-ranking` (call 4: the same
+    function and ranking file), after `untangle/main-agent-definition` (`untangle/place-rule`).
+  - [ ] PL3, the runner split into its core (invocation, projection, sync, frames, the session
+    store) and the sandbox shell (root, users, `lockDown`, envd), recorders equal, after #5857
+    (`untangle/runner-core`).
+  - [ ] PL4, the device door: pairing by a device code approved in the owner app, a `device`
+    key kind on ADR-028's keys, the doors' `/device` socket to the owner object's hibernating
+    socket, presence, commands down it, the egress-host doors admitting a device key plus the
+    run's secret, and revoke settling the device's runs `unknown` (`untangle/device-door`).
+  - [ ] PL5, the device runner: the device shell over the core, as the user, in a workspace
+    folder; its bytes fetched by digest; sign-in status only; `session_paths` sync and each
+    engine's cross-place resume probed; `away` and the outbox flush; the owner's rules on the
+    device, editable there, as the app says (`untangle/device-runner`).
+  - [ ] PL6, the desktop app before the cutover (founder, 2026-11-28): the Electron
+    `desktop-app` hosts the runner, Morphy-like; its sign-in through the platform's auth
+    session (Step 19's desktop shell twin, list3 P33, moves here); pairing, keep-awake by the
+    owner's setting, and folder grants one at a time (`untangle/desktop-app`).
+  - [ ] PL7, unattended work placed by the rule: schedules and mail to the owner's own
+    agents offered to main agents by the unattended orders, `due`, an unread delivery offered
+    on at its `due`, a device-only source waiting with one catch-up for the newest missed time
+    (`untangle/place-unattended`).
+  - [ ] PL8, the Copilot cloud agent as a push main place: the agent tasks API on the
+    owner's OAuth token, sealed, and the repository's MCP settings carrying an owner key,
+    its record researched first (ADR-040 decision 4; `untangle/wake-copilot-agent`).
+  - [ ] PL9, the app: each run's place and state, the devices screen, the overrides and "Move
+    to…", the steer before a sandbox opens, the vendors' own connects first and an API key
+    second, and the `metered_fallback` switch; `test:app` (`untangle/place-app`).
 - [ ] The data shapes already known to be wrong, fixed before real data, as decided in d3 §P
   (list3 P48), each in its own lane PR:
   - rooms and room members with opaque ids, in lane O after T1c and before S4: built in
@@ -814,8 +860,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [ ] The record's instruction fields read: a shadow instruction file, or an `AGENTS.md` past an
     engine's cut, refuses the run and tells the owner (shortfall 3;
     `untangle/record-instructions`).
-  - [ ] 4. The ranking shipped as data that an owner file overrides; a plan whose model is in the
-    top tier wins over a metered key; its `about` corrected (`untangle/strongest-ranking`).
+  - [ ] 4. The ranking shipped as data that an owner file overrides; every subscription before
+    any metered source, the strongest within each (ADR-040 decision 2); its `about` corrected.
+    Merged into PL2 (`untangle/place-rule`).
   - [ ] 5. An endpoint the owner declares: an owner-written `custom` record under the same check,
     and its door (`untangle/custom-source`).
   - [ ] 6. `/mcp` takes an owner-minted key through the `/api` door's key check, and `apps.json`
@@ -833,7 +880,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     taken from pi's defaults and the 300 s idle cut (each engine's own) put in one of Fact 15's
     kinds (`untangle/fact15-caps-2`, done: `fact15-caps-2.md`); a guard holding every
     cap in Worker and runner source to `limits-audit.md` (`untangle/limits-guard`).
-  - [ ] 12. A run past E2B's ceiling waits with a clear message (`untangle/runs-wait-message`).
+  - [ ] 12. A run past the tier's sandboxes or E2B's ceiling waits with a clear message. Merged
+    into PL1 (`untangle/place-shapes`).
   - [ ] 13. An unreadable control record served from the last good copy, only the writes that
     need a fresh one refused (`untangle/control-last-good`).
   - [x] 14. A Cloudflare-side kill switch beside the GitHub one (`untangle/kill-switch-cloudflare`,
@@ -850,20 +898,23 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     (`untangle/import-export-download`); the shells' old desktop sign-in return and copy, in the
     cutover (`untangle/shells-cutover`).
   - [ ] ADR-034.7: a vendor's rate-limit or billing event, matched by each record as data, holds
-    the agent's schedules and leaves one notice (`untangle/vendor-limit-stop`).
+    the agent's schedules and leaves one notice with the vendor's own message; a run waits or
+    moves to another subscription, never to a metered source by default (ADR-040 decision 2;
+    `untangle/vendor-limit-stop`).
   - [ ] The canary's full run asks for a bash call and a TinyAssets tool call and reads the run's
     receipts (`untangle/canary-full-run`).
   - [ ] The pair check's capture server answers the run's MCP door, so every pin proves its
     record's MCP leg (`untangle/probe-mcp-leg`).
   - [ ] The commitments-to-proof table, one row per commitment with its test or live check,
-    every row proven before the window opens (`untangle/commitments-table`).
+    every row proven before the window opens, ADR-040's placement commitments among them
+    (`untangle/commitments-table`).
   - [ ] The verifiers' smaller shape fixes: a malformed header from our own gateway fails the
     egress call loudly (`untangle/egress-reseal-loud`); `Mcp.unsupported` deleted
     (`untangle/no-unsupported-mcp`); the sync's `fullGrant` default deleted, so every caller
     passes one (`untangle/owner-test-seams`); a guard against a vendor or engine id in Worker or
     runner source outside the records' data (`untangle/vendor-names-guard`); a workerd test with
-    the sandbox binding failing, every door but the run doors answering
-    (`untangle/sandbox-down-test`); a purged schedule lane coming back with no door or wake,
+    the sandbox binding failing, every door but the run doors answering, and runs still placed
+    on a main agent or a device (`untangle/sandbox-down-test`); a purged schedule lane coming back with no door or wake,
     researched first (`untangle/lane-purge`).
 
 ### Step 6. The engines' locks, the one paid template build, the pin PR
@@ -964,6 +1015,11 @@ account, the founder's own test (§8) too.
   Grok's webhook host, pinned as data once seen. E2B's lifecycle webhook: whether a kill of a
   paused sandbox carries the pause's execution and `sandbox_execution_id`, and E2B's retry
   timing against `BILLED_WINDOW_S`.
+- [ ] 7b. Placement (ADR-040): the founder's own computer paired through the desktop app; a
+  schedule taken by a Claude scheduled task on his own subscription; a run placed on the
+  computer, the lid closed mid-run, then `away` and resumed; a schedule fired with the computer
+  off, taken by a main agent or waiting; a free owner at its sandbox limit placed elsewhere or
+  waiting.
 - [ ] 8. A redeploy of the build as it then stands, then the founder's own test (§8; the
   founder, 2026-11-21).
 
@@ -1043,7 +1099,8 @@ Moved before the window, into lane R (d3 §F3, §G).
   session (RFC 8252), as the app slice designed them on 2026-11-03 (the pre-cut text); the doors
   serving
   `/.well-known/apple-app-site-association` and `/.well-known/assetlinks.json` (list3 P34); the
-  desktop shell's twin (list3 P33). The stores also require: Sign in with Apple wherever Google
+  desktop shell's twin (list3 P33) moved to Step 5 with the desktop app (PL6). The stores also
+  require: Sign in with Apple wherever Google
   or GitHub sign-in is offered (4.8); account deletion inside the app, with `erasureAnswer`
   wired at the erase door first (5.1.1(v), d3 §C6); the shell's native features (4.2). The
   mobile shell's `@capacitor/cli` still reaches a vulnerable `uuid` through `xcode` (build time
@@ -1104,13 +1161,16 @@ real data, in step 5 (d3 §P).
 - [ ] S6, the app manifest and agent players, with the app's view of mail-started runs and
   agents' chains; the owner app is among the interfaces it lets the owner customize, and its app
   serving comes before the cutover (Step 5; `founder-answers.md` call 7).
-- [ ] S7, the device runner; S8, real-time tiers.
+- [ ] S8, real-time tiers. (S7, the device runner, moved to Step 5's placement block.)
+- [ ] ADR-040 decision 5's engineering targets that no placement lane holds: a client's run
+  on the client's own main agent (`untangle/place-client-main`); local engines such as
+  Ollama on the device; an owner setting that keeps device sessions on the device.
 - [ ] The Shape registry's founder-approved rows, carried here before `docs/architecture.md`'s
   registry goes (`founder-answers.md` call 18). Homes already: B1, the bubble agent tracks the
   frontier, is Step 19's comparison, its loop changing only `platform/starter/` unless a primitive
   is approved; B2, agents on unmodified engines, is ADR-034; S6, one extension unit, is the
   package (Step 5); N1, one inbound door, is `/hooks/inbound`; N5, the owner's egress gate, is
-  G4; N8, the optional link to the user's computer, is S7; N10, the owner-only policy layer, is
+  G4; N8, the optional link to the user's computer, is Step 5's PL4 to PL6; N10, the owner-only policy layer, is
   R5; N11, one user-built app, is S6; N12, cost-driver receipts measured and never enforced, is
   the sandbox time and the usage receipts. Still to build, each researched first: N2 phone push,
   N3 realtime voice and video, N4 a live takeover view of the sandbox's browser, N6 undo by
@@ -1132,9 +1192,11 @@ owners start fresh (2026-11-04); the window is not announced (2026-11-07); the c
 page's calls, as recommended (2026-11-21, `untangle-2026-11/founder-answers.md`).
 
 Open questions, from the as-built record:
-1. Codex and Gemini sign-ins are off, because each vendor's terms for hosted use are unclear
-   (`cli.login.hosted_use`). Turn either on? (Kimi's record is dropped until it has a usable
-   path: `founder-answers.md` call 17.)
+1. Answered (2026-11-28, ADR-040 decision 9): vendor terms are read per place. Codex on a
+   ChatGPT plan runs on the user's computer and as ChatGPT, and waits on OpenAI's partner route
+   for our sandbox. Gemini CLI no longer serves Google's consumer plans, and Antigravity
+   supports no third-party app on them, so a Google user's Gemini runs on their own API key.
+   (Kimi's record is dropped until it has a usable path: `founder-answers.md` call 17.)
 2. Capture always on gives a recovery point of minutes instead of a night. It costs about $62 a
    month for a heavy owner and $0.20 for a light one, against about $0.70 for the heavy one
    today. Turn it on?
@@ -1146,6 +1208,10 @@ Open questions, from the as-built record:
    and retired `/mcp-directory`.
 5. The published plugins say `license: "Proprietary"` (`platform/plugins/build.mjs`
    `PUBLISHER`), but the repository is MIT. Which should the plugins carry (list 6, item 6d)?
+6. Which E2B plan is the team on, and so its ceiling of simultaneous sandboxes? The control
+   record says 20; E2B's page says Hobby runs 10 and Pro 100, with add-ons to 600 or 1,100.
+   Each free owner may now hold 5 at once (ADR-040 decision 6), so Hobby serves two busy free
+   owners. `untangle/place-shapes` sets the record to the plan.
 
 The coordinator's to decide (no spending, irreversible or outward-facing act), from the
 as-built record, and decided (the coordinator, 2026-11-12):

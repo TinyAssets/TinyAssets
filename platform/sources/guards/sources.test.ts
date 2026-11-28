@@ -323,12 +323,11 @@ describe("the engine records", () => {
       gemini: { vendor_login_in_sandbox: false, api_key: true },
       pi: { api_key: true },
     });
-    expect(sourceRecord(claude).cli!.unattended.vendor_login_in_sandbox).toEqual({
-      allowed: true, cite: "https://code.claude.com/docs/en/legal-and-compliance",
-      read: "2026-11-01" });
-    // A page read only through a search index says so.
-    expect(sourceRecord(records.get("codex")).cli!.unattended.api_key)
-      .toMatchObject({ allowed: true, read_note: expect.stringMatching(/search index/) });
+    expect(sourceRecord(claude).cli!.unattended.vendor_login_in_sandbox).toMatchObject({
+      allowed: true, cite: "https://code.claude.com/docs/en/legal-and-compliance" });
+    // Codex's refusal cites the page whose route it follows (ADR-040 decision 9).
+    expect(sourceRecord(records.get("codex")).cli!.unattended.vendor_login_in_sandbox)
+      .toMatchObject({ allowed: false, cite: expect.stringMatching(/^https:\/\//) });
     // Gemini's refusal says what Google's terms leave open, not that they forbid it.
     const gemini = sourceRecord(records.get("gemini")).cli!.unattended.vendor_login_in_sandbox!;
     expect(gemini.allowed).toBe(false);
@@ -955,7 +954,10 @@ describe("an engine record that does not fit", () => {
     records.get("codex") as Json)],
     // Citations.
     ["a read note on a refusal that cites nothing", cli((s) => {
-      at(s, "unattended.vendor_login_in_sandbox")["read_note"] = "from memory"; },
+      const refusal = at(s, "unattended.vendor_login_in_sandbox");
+      delete refusal["cite"];
+      delete refusal["read"];
+      refusal["read_note"] = "from memory"; },
     records.get("codex") as Json)],
     ["a read note that is not text", cli((s) => { at(s, "unattended.api_key")["read_note"] = 1; })],
     ["a gateway source with no engines", Object.fromEntries(Object.entries(anthropic)

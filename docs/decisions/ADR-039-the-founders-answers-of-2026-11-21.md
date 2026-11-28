@@ -7,6 +7,10 @@ Accepted (founder, 2026-11-21: "as you recommend for all those questions",
 ADR-032 (call 18). Amends ADR-032 decisions 2 and 5, ADR-034 decisions 1.2, 2, 4.1, 8, 11
 and 12, and ADR-035 decision 5. Per decision 1, those ADRs' bodies are not edited: only
 their Status lines point here.
+Amended by ADR-040 (founder, 2026-11-28): decision 2.14, a sleeping device pauses its run;
+decision 2.20, its written-approval line is replaced by research of each vendor's published
+terms; decision 6, the promise is the tier's simultaneous sandboxes, and a run past them is
+placed elsewhere or waits.
 
 ## Date
 

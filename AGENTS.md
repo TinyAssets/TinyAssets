@@ -49,10 +49,10 @@ Map, why: `docs/architecture.md`, `docs/decisions/`.
     is chosen from the research, checked against the intent, then built.
     Research again when a build grows past its plan, or when it needs patches
     that suggest a bad shape (founder, 2026-11-03).
-15. The only limits: the tier's simultaneous runs and storage (the platform
-    control record), the owner's own settings (off by default), vendors' limits,
-    and recorded technical ceilings, each with its reason. Every path honours the
-    owner's limits.
+15. The only limits: the tier's simultaneous sandboxes and storage (the
+    platform control record), the owner's own settings (off by default),
+    vendors' limits, and recorded technical ceilings, each with its reason.
+    Every path honours the owner's limits.
 16. Every builder and reviewer runs the untangle skill
     (`.agents/skills/untangle/SKILL.md`) as its "How this project uses it" says.
 17. A known fix lands on discovery, in the PR at hand or its own, never as a
