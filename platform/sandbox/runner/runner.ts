@@ -47,11 +47,13 @@
  *   waited for until the deadline; `renewed`: each posts `ta.renewed` and goes on.
  * - `recover`: after a resume that rebooted the sandbox, each run that was live is started
  *   again from its session (`resume_argv`).
- * - `carry-out <authority> <until>`, `carry-in <sha256> <until>` and `carry-drop`: a template
- *   move's carry, sent to this runner alone by the Worker that ships it (`control.ts`
- *   `#moveIdle`), each step stopped at the Worker's deadline: what no sync carries (the stores,
- *   and the sync's session rows) packed while nothing lives and the workspace holds nothing
- *   unsent, then put in place in a new one, or dropped where the move went no further.
+ * - `carry-out <authority> <ms>`, `carry-in <sha256> <ms>` and `carry-drop`: a template move's
+ *   carry, sent to this runner alone by the Worker that ships it (`control.ts` `#moveIdle`),
+ *   each step stopped within its budget on the runner's own clock: what no sync holds (the
+ *   sign-ins, the session copies the owner's files lack, the sync's session rows, the
+ *   workspace's links, empty folders and unnamed entries) packed while nothing lives and the
+ *   workspace holds nothing unsent, then put in place in a new one, or stopped and dropped where
+ *   the move went no further.
  * - `sync` (internal, as `ta-sync`, its job on stdin): the sync agent and the projection.
  * - `decide` and `hooks` (internal, as a run's user, by its CLI's hook file): the hook helper
  *   (`decide.ts`) and the agent's own hooks' dispatcher (`hooks.ts`), taken by the hook
@@ -94,8 +96,8 @@ import { binPath, dispatcherArgv, HOMES, type Invocation, invocation, isKept,
          keptPaths, resumePaths } from "./engine";
 import { DECIDE_ENV, DECIDE_MS, helperArgv, helperCommand, hookTools } from "./decide";
 import { FLUSH_MS, HEARTBEAT_MS, lineEvent, Outbox, Poster } from "./frames";
-import { remove, safeDirs, safePieces, safeRead, safeWrite } from "./fsafe";
-import { alive, withLock } from "./pid-lock";
+import { remove, safeDirs, safePieces, safeRead, safeWrite, walkFiles } from "./fsafe";
+import { alive, bootId, liveHolder, withLock } from "./pid-lock";
 import { ancestorEnvFile, definitionRefusal, envScanReach, homeEnvFile, projectEnvFile,
          projectEnvRefusal, secretAtoms } from "./guards";
 import { project, skillsOf } from "./project";
@@ -106,8 +108,8 @@ import { credentialShaped, loginArgv, onTerminal, plain, type Prompt, prompted,
          statesHold } from "./login";
 import { AUTOMATON_STATES, LIST_BYTES } from "../../contract/src/sync-ignore";
 import {
-  carryIn, carryOut, type Fetch, fetchSessions, type Held, keepSeen, openMirror, SESSIONS,
-  SESSIONS_SEEN,
+  carryIn, carryOut, type Fetch, fetchSessions, type Held, heldOf, keepSeen, openMirror, SESSIONS,
+  SESSIONS_SEEN, synced,
   stageSessions, stillHashed, storeSessions, type StoreSession, SyncClient, SyncFenced, syncIn,
   syncOut, type SyncReport, tookSessions,
 } from "./sync";
@@ -533,7 +535,7 @@ async function signedIn(rec: Served): Promise<boolean> {
 
 // -- prepare --------------------------------------------------------------------------
 
-function prepare(servers: readonly string[]): number {
+async function prepare(servers: readonly string[]): Promise<number> {
   if (servers.length === 0 || !servers.every((server) => /^[0-9]{1,3}(?:\.[0-9]{1,3}){3}$/
     .test(server))) {
     throw new Error("prepare takes the network's resolvers, IPv4");
@@ -552,9 +554,10 @@ function prepare(servers: readonly string[]): number {
   checkFormat(STATE, CACHES);
   dropOtherRunners();
   keepReserve(RESERVE);
-  // A move's archive is never left at rest past its move: one a move that went no further
-  // left goes at the sandbox's next boot or resume.
-  remove(CARRY_FILE);
+  // A move's carry never runs or rests past its move: one under way that its Worker gave up on
+  // (frozen by the pause) is stopped, and an archive a move that went no further left goes, at
+  // the sandbox's next boot or resume, before anything launches.
+  await stopCarry();
   // A pasted code is never left at rest: one a pause or a failed hand-over left
   // in the inbox goes at every boot and resume, before anything else reads it.
   const inbox = INBOX;
@@ -698,35 +701,46 @@ function adopt(): number {
 // -- a template move's carry ------------------------------------------------------------
 
 /**
- * What a template move carries of the state directory, each whole: the engines' stores (their
- * sign-ins, which only this sandbox holds, and their session copies) and their generations.
- * The sync's part is its session rows (`sync.ts` `carryOut`); the workspace is the owner's
- * files', synced in. Nothing else of the disk lives in this sandbox alone: the jobs' states are
- * read only while a job lives, the caches and the agents' scratch are caches, and every other
- * file is the owner's or the image's.
+ * What a template move carries of the state directory: the engines' stores (their sign-ins,
+ * which only this sandbox holds) and their generations, less every session copy the owner's
+ * files hold as it is (`synced`), which a resume fetches from them where the store lacks it
+ * (`fetchSessions`). The sync's part is its session rows and what of the workspace no sync can
+ * hold (`sync.ts` `carryOut`); the workspace's files are the owner's files', synced in.
+ * Nothing else of the disk lives in this sandbox alone: the jobs' states are read only while a
+ * job lives, the caches and the agents' scratch are caches, and every other file is the
+ * owner's or the image's.
  */
 const CARRIED = Object.freeze([STORE, GENERATIONS]);
 
 /**
- * A carry command's deadline (`until`, ms since the epoch, the Worker's own for its move), read
- * from its argument: one past, or not a time, is refused.
+ * A carry-out under way, as its pid and this boot's id (the lock's form, `pid-lock.ts`), so
+ * `carry-drop` and `prepare` stop one its Worker gave up on, even past a pause.
  */
-function untilOf(arg: string): number {
-  const until = /^[0-9]{1,15}$/.test(arg) ? Number(arg) : Number.NaN;
-  if (!(until > Date.now())) {
-    throw new Error("a carry command takes its deadline, a time still to come");
+const CARRY_PID = `${STATE}/carry.pid`;
+
+/**
+ * A carry command's budget (ms, its argument), counted on this process's own clock from its
+ * start, never on the sandbox's wall clock, which lags after a resume: its deadline on
+ * `performance.now()`. One not a count of ms is refused.
+ */
+function withinOf(arg: string): number {
+  const ms = /^[0-9]{1,9}$/.test(arg) ? Number(arg) : 0;
+  if (ms <= 0) {
+    throw new Error("a carry command takes its budget, a count of ms");
   }
-  return until;
+  return performance.now() + ms;
 }
+
+/** What is left of a carry's budget, ending at `until` (`withinOf`). */
+const left = (until: number) => Math.max(1, Math.floor(until - performance.now()));
 
 /** What comes at `until`, which a carry's sync agent stops on. */
 const atUntil = (until: number) => new Promise((resolve) =>
-  setTimeout(resolve, Math.max(0, until - Date.now())).unref());
+  setTimeout(resolve, left(until)).unref());
 
 /** `tar` with `args`, stopped at `until`: its exit, or a refusal naming what it did. */
 function tarUntil(args: readonly string[], until: number, what: string): void {
-  const done = spawnSync("tar", args, { encoding: "utf8",
-                                        timeout: Math.max(1, until - Date.now()) });
+  const done = spawnSync("tar", args, { encoding: "utf8", timeout: left(until) });
   if (done.status !== 0) {
     throw new Error(`the carry could not be ${what} (${String(done.status ?? done.signal)}): ${
       done.stderr}`);
@@ -763,66 +777,104 @@ function ownTree(dir: string, owner: { uid: number; gid: number }): void {
 }
 
 /**
- * `carry-out <authority> <until>` (a template move, `control.ts` `#moveIdle`, in the sandbox it
- * leaves): what lives in this sandbox alone and no sync carries packed into `CARRY_FILE`, root's
- * alone: `CARRIED`, and the sync's session rows (`carryOut`, by the sync agent as itself, for
+ * `carry-out <authority> <ms>` (a template move, `control.ts` `#moveIdle`, in the sandbox it
+ * leaves): what lives in this sandbox alone and no sync holds packed into `CARRY_FILE`, root's
+ * alone: `CARRIED` (each session copy the owner's files hold as it is left out, by the sync
+ * mirror's rows of them), and the sync's carry (`carryOut`, by the sync agent as itself, for
  * that authority's sandbox); answered by the archive's size and SHA-256. Refused (3), packing
  * nothing, while a job lives or the workspace holds what sync-out would send. Every step stops
- * at `until`, the Worker's deadline, and a carry that does not end by it leaves no archive.
- * Nothing else changes, so a move that goes no further leaves the sandbox as it was
- * (`carry-drop`, or its next `prepare`, drops an archive).
+ * within `ms`, on this process's own clock, and a carry that does not end by then leaves no
+ * archive. Nothing else changes, so a move that goes no further leaves the sandbox as it was
+ * (`carry-drop`, or its next `prepare`, stops it and drops an archive).
  */
-async function carryOutCommand(authority: string, untilArg: string): Promise<number> {
+async function carryOutCommand(authority: string, withinArg: string): Promise<number> {
   if (!AUTHORITY.test(authority)) {
     throw new Error("carry-out takes the sandbox's authority");
   }
-  const until = untilOf(untilArg);
+  const until = withinOf(withinArg);
   if (livingJobs() > 0) {
     process.stderr.write("ta-runner: a run or a sign-in lives; nothing is carried\n");
     return NO;
   }
-  remove(SYNC_CARRY);
-  remove(CARRY_FILE);
+  await stopCarry();
   for (const dir of CARRIED) {
     safeDirs("/", dir, 0o700);
   }
+  safeWrite(STATE, CARRY_PID, new TextEncoder().encode(`${process.pid} ${bootId()}`), 0o600);
+  const list = `${STATE}/carry.list`;
   try {
-    const { report } = await syncAgent({ direction: "carry-out", authority }, atUntil(until));
+    const { sessions } = storeSessions(authority);
+    const { report } = await syncAgent({ direction: "carry-out", authority,
+                                         paths: sessions.map((each) => each.path),
+                                         within: left(until) }, atUntil(until));
     if (report?.["carried"] !== true) {
       process.stderr.write("ta-runner: the workspace holds what no sync has sent; nothing is " +
                            "carried\n");
       return NO;
     }
-    tarUntil(["-c", "-f", CARRY_FILE, "-C", STATE, ...CARRIED.map((dir) => relative(STATE, dir)),
-              "-C", SYNC_HOME, relative(SYNC_HOME, SYNC_CARRY)], until, "packed");
+    const known = (report["known"] ?? {}) as Record<string, Held>;
+    const owners = new Set(sessions.filter((each) => synced(each, known[each.path]))
+      .map((each) => `${STORE}/${each.rec.id}/${each.rel}`));
+    // Each entry by its path in the state directory, NUL-ended, as `tar` reads a list: the two
+    // directories, then each file of theirs the carry holds.
+    const entries = [...CARRIED.map((dir) => relative(STATE, dir)),
+                     ...CARRIED.flatMap((dir) => [...walkFiles(dir)].map((rel) => join(dir, rel))
+                       .filter((path) => !owners.has(path)).map((path) => relative(STATE, path)))];
+    safeWrite(STATE, list, new TextEncoder().encode(entries.map((each) => `${each}\0`).join("")),
+              0o600);
+    tarUntil(["-c", "-f", CARRY_FILE, "-C", STATE, "--no-recursion", "--null", "-T", list],
+             until, "packed");
+    tarUntil(["-r", "-f", CARRY_FILE, "-C", SYNC_HOME, relative(SYNC_HOME, SYNC_CARRY)], until,
+             "packed");
     chmodSync(CARRY_FILE, 0o600);
     const packed = { bytes: lstatSync(CARRY_FILE).size, sha256: await fileSha(CARRY_FILE) };
-    if (Date.now() >= until) {
-      throw new Error("the carry was packed past its deadline");
+    if (performance.now() >= until) {
+      throw new Error("the carry was packed past its budget");
     }
     return answer(packed);
   } catch (error) {
     remove(CARRY_FILE);
     throw error;
   } finally {
+    remove(list);
     remove(SYNC_CARRY);
+    remove(CARRY_PID);
   }
 }
 
 /**
- * `carry-in <sha256> <until>` (a template move, in the sandbox it makes, its runner installed;
- * every step stopped at `until`): the archive the Worker put at `CARRY_FILE` checked to be those
+ * A carry-out under way stopped (`CARRY_PID`, while its process lives in this boot), its sync
+ * agent and `tar` with it: nothing lives in a sandbox a carry runs in, so every process of the
+ * sync agent's user is the carry's. Then what a carry leaves: its pid, its sync agent's carry
+ * and the archive, a copy of the sign-ins.
+ */
+async function stopCarry(): Promise<void> {
+  const pid = liveHolder(CARRY_PID);
+  if (pid !== null && pid !== process.pid) {
+    process.kill(pid, "SIGKILL");
+    if (livingJobs() === 0) {
+      await killAll(user(SYNC_USER));
+    }
+  }
+  remove(CARRY_PID);
+  remove(SYNC_CARRY);
+  remove(CARRY_FILE);
+}
+
+/**
+ * `carry-in <sha256> <ms>` (a template move, in the sandbox it makes, its runner installed;
+ * every step stopped within `ms`): the archive the Worker put at `CARRY_FILE` checked to be those
  * bytes, unpacked root's into a directory of root's own, held to what a carry holds
  * (`ownTree`), then `CARRIED` put in place and the sync's carry handed to the sync agent
- * (`carryIn`). Refused, changing nothing, in a
- * sandbox that already holds a store or a generation (or a mirror, `carryIn`): a carry goes
- * into a new sandbox only. The archive and what was unpacked go whatever follows.
+ * (`carryIn`). Refused, changing nothing, in a sandbox that already holds a store or a
+ * generation (or a mirror, `carryIn`): a carry goes into a new sandbox only. The archive and
+ * what was unpacked go whatever follows.
  */
-async function carryInCommand(sha: string, untilArg: string): Promise<number> {
+async function carryInCommand(sha: string, withinArg: string): Promise<number> {
   if (!HEX64.test(sha)) {
     throw new Error("carry-in takes the carry's sha256");
   }
-  const until = untilOf(untilArg);
+  const until = withinOf(withinArg);
   if (CARRIED.some((dir) => existsSync(dir))) {
     throw new Error("this sandbox holds a store already: a carry goes into a new sandbox only");
   }
@@ -845,7 +897,7 @@ async function carryInCommand(sha: string, untilArg: string): Promise<number> {
     }
     remove(SYNC_CARRY);
     renameSync(workspace, SYNC_CARRY);
-    await syncAgent({ direction: "carry-in" }, atUntil(until));
+    await syncAgent({ direction: "carry-in", within: left(until) }, atUntil(until));
   } finally {
     remove(stage);
     remove(CARRY_FILE);
@@ -855,11 +907,12 @@ async function carryInCommand(sha: string, untilArg: string): Promise<number> {
 }
 
 /**
- * `carry-drop` (in the sandbox a move left, when it went no further): its archive, a copy of
- * the sign-ins, never left at rest for the run that goes on there.
+ * `carry-drop` (in the sandbox a move left, when it went no further): a carry-out under way
+ * stopped, and the archive, a copy of the sign-ins, never left at rest for the run that goes on
+ * there (`stopCarry`).
  */
-function carryDropCommand(): number {
-  remove(CARRY_FILE);
+async function carryDropCommand(): Promise<number> {
+  await stopCarry();
   return OK;
 }
 
@@ -966,8 +1019,9 @@ interface SyncJob {
  * (nothing lives): `carry-out` writes it into its own `carry` directory (`sync.ts`
  * `carryOut`), `carry-in` puts the one found there in place (`carryIn`).
  */
-type CarryJob = { readonly direction: "carry-out"; readonly authority: string }
-  | { readonly direction: "carry-in" };
+type CarryJob = { readonly direction: "carry-out"; readonly authority: string;
+                  readonly paths: readonly string[]; readonly within: number }
+  | { readonly direction: "carry-in"; readonly within: number };
 
 /** The sync agent's mirror, and a move's carry in its own directory. */
 const SYNC_MIRROR = `${SYNC_HOME}/mirror.db`;
@@ -1039,7 +1093,7 @@ async function syncCommand(): Promise<number> {
 
 async function syncLocked(job: SyncJob | CarryJob): Promise<number> {
   if (job.direction === "carry-in") {
-    carryIn(SYNC_CARRY, SYNC_MIRROR);
+    carryIn(WORKSPACE, SYNC_CARRY, SYNC_MIRROR, job.within);
     process.stdout.write(JSON.stringify({ ok: true }));
     return OK;
   }
@@ -1047,8 +1101,8 @@ async function syncLocked(job: SyncJob | CarryJob): Promise<number> {
     const mirror = openMirror(SYNC_MIRROR);
     try {
       const carried = await carryOut({ local: WORKSPACE, authority: job.authority }, mirror,
-                                     SYNC_CARRY);
-      process.stdout.write(JSON.stringify({ carried }));
+                                     SYNC_CARRY, job.within);
+      process.stdout.write(JSON.stringify({ carried, known: heldOf(mirror, job.paths) }));
     } finally {
       mirror.close();
     }
@@ -1066,11 +1120,7 @@ async function syncLocked(job: SyncJob | CarryJob): Promise<number> {
     try {
       if (job.direction === "known") {
         // What the owner's files hold of each path, as this sandbox last synced it.
-        process.stdout.write(JSON.stringify({ known: Object.fromEntries((job.paths ?? [])
-          .map((path): [string, Held] => {
-            const row = mirror.get(path);
-            return [path, row === undefined ? null : { sha256: row.sha256, unread: row.unread }];
-          })) }));
+        process.stdout.write(JSON.stringify({ known: heldOf(mirror, job.paths ?? []) }));
         return OK;
       }
       if (job.direction === "in") {

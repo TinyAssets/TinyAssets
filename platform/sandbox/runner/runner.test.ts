@@ -31,6 +31,7 @@ import { LEASE_TTL_S } from "../../contract/src/limits";
 import { readEvent } from "../../contract/src/run-events";
 import { AUTOMATON_STATES, LIST_BYTES } from "../../contract/src/sync-ignore";
 import { sha256Hex } from "../../contract/src/digest";
+import { AGENTS_DIR } from "../../contract/src/paths";
 
 import { DECIDE_ENV } from "./decide";
 import { dispatcherCommand, fill, invocation, SYSTEM } from "./engine";
@@ -2931,8 +2932,8 @@ describe("the sign-in", () => {
 });
 
 describe("a template move's carry", () => {
-  /** A carry command's deadline, a minute on. */
-  const soon = () => String(Date.now() + 60_000);
+  /** A carry command's budget, a minute. */
+  const soon = () => "60000";
   const STORE_FILE = "/var/lib/ta/store/claude-code/.claude/.credentials.json";
   const SESSION = "/workspace/.sessions/owner/claude-code/projects/p/s1.jsonl";
   const MIRROR = `${SYNC_HOME}/mirror.db`;
@@ -2940,6 +2941,9 @@ describe("a template move's carry", () => {
   const row = (version: number, text: string) => ({ version, size: Buffer.byteLength(text),
                                                      mtime_ms: 1, sha256: hash(text),
                                                      unread: false });
+  /** A name that is not UTF-8 (`café.txt` in Latin-1), by its bytes in `sandbox`. */
+  const unnamed = (sandbox: Sandbox) => Buffer.concat([
+    Buffer.from(`${sandbox.path("/workspace")}/caf`), Buffer.from([0xe9]), Buffer.from(".txt")]);
   let next: Sandbox | undefined;
   afterEach(() => {
     next?.remove();
@@ -2949,20 +2953,24 @@ describe("a template move's carry", () => {
   /**
    * The sandbox's disk as runs and syncs leave it: a sign-in in the store and a generation, a
    * session row, the workspace as synced (each file's row its size and change time), an owner's
-   * file this sandbox has not taken (its row unread, no file), a path the sync-ignore keeps out,
-   * and an agent's scratch.
+   * file this sandbox has not taken (its row unread, no file), what no sync holds (a link, an
+   * empty folder, a name that is not UTF-8), a path the sync-ignore keeps out, and an agent's
+   * scratch.
    */
   function lived(): void {
     box.write(STORE_FILE, "{\"token\":\"vendor-secret\"}");
     chmodSync(box.path(STORE_FILE), 0o600);
     box.write("/var/lib/ta/generations/claude-code", "2");
     box.write("/workspace/synced.md", "as synced");
-    box.write("/workspace/notes/also.md", "also synced");
+    box.write("/workspace/proj/AGENTS.md", "the agent's notes");
+    symlinkSync("AGENTS.md", box.path("/workspace/proj/CLAUDE.md"));
+    mkdirSync(box.path("/workspace/proj/empty"));
+    writeFileSync(unnamed(box), "a name no path holds");
     box.write("/workspace/node_modules/x/index.js", "a cache");
     box.write("/scratch/main/build.o", "scratch");
     const mirror = openMirror(box.path(MIRROR));
     for (const [path, text] of [["/workspace/synced.md", "as synced"],
-                                ["/workspace/notes/also.md", "also synced"]] as const) {
+                                ["/workspace/proj/AGENTS.md", "the agent's notes"]] as const) {
       mirror.put(path, { ...row(1, text), mtime_ms: statSync(box.path(path)).mtimeMs });
     }
     mirror.put("/workspace/theirs.md", { ...row(2, "the owner's"), unread: true });
@@ -2975,19 +2983,22 @@ describe("a template move's carry", () => {
   }
 
   /** `carry-out` in `from`, its archive copied to `to` as the Worker's copy does, `carry-in`. */
-  function moved(from: Sandbox, to: Sandbox): void {
-    const out = from.runner(COMMAND.carryOut, "owner", soon());
+  function moved(from: Sandbox, to: Sandbox, authority = "owner"): { bytes: number } {
+    const out = from.runner(COMMAND.carryOut, authority, soon());
     expect(out.code, out.why).toBe(0);
     const answer = JSON.parse(out.out) as { bytes: number; sha256: string };
     const archive = readFileSync(from.path(CARRY_FILE));
     expect(answer).toEqual({ bytes: archive.byteLength, sha256: sha256Hex(archive) });
+    // As the Worker takes it: read, then the old one's archive dropped.
+    expect(from.runner(COMMAND.carryDrop).code).toBe(0);
     writeFileSync(to.path(CARRY_FILE), archive);
     const placed = to.runner(COMMAND.carryIn, answer.sha256, soon());
     expect(placed.code, placed.why).toBe(0);
+    return answer;
   }
 
-  it("carries the sign-ins and the session rows into a new sandbox, and no workspace file",
-     () => {
+  it("carries the sign-ins, the session rows and what no sync holds into a new sandbox, and " +
+     "no file the owner's files hold", () => {
     lived();
     next = new Sandbox();
     moved(box, next);
@@ -2998,9 +3009,16 @@ describe("a template move's carry", () => {
     // alone, though the old one left them open.
     expect(statSync(next.path("/var/lib/ta/store/claude-code")).mode & 0o7777).toBe(0o700);
     expect(readFileSync(next.path("/var/lib/ta/generations/claude-code"), "utf8")).toBe("2");
-    // No workspace file, kept-out path or scratch: the first sync-in reads the owner's files.
-    for (const gone of ["/workspace/synced.md", "/workspace/notes", "/workspace/node_modules",
-                        "/scratch/main"]) {
+    // What no sync holds: the link as a link, the empty folder, the name by its bytes.
+    expect(lstatSync(next.path("/workspace/proj/CLAUDE.md")).isSymbolicLink()).toBe(true);
+    expect(execFileSync("readlink", [next.path("/workspace/proj/CLAUDE.md")], { encoding: "utf8" })
+      .trim()).toBe("AGENTS.md");
+    expect(statSync(next.path("/workspace/proj/empty")).isDirectory()).toBe(true);
+    expect(readdirSync(next.path("/workspace/proj/empty"))).toEqual([]);
+    expect(readFileSync(unnamed(next), "utf8")).toBe("a name no path holds");
+    // No file the owner's files hold, kept-out path or scratch: the first sync-in reads them.
+    for (const gone of ["/workspace/synced.md", "/workspace/proj/AGENTS.md",
+                        "/workspace/node_modules", "/scratch/main"]) {
       expect(existsSync(next.path(gone)), gone).toBe(false);
     }
     // The mirror: the session's row alone, its cursor 0.
@@ -3013,15 +3031,60 @@ describe("a template move's carry", () => {
       mirror.close();
     }
     expect(statSync(next.path(MIRROR)).uid).toBe(SYNC_UID);
-    // The archive is taken in the new one; the old one is as it was (its next `prepare` drops
-    // the archive a move that went no further left: the prepare test's).
-    expect(existsSync(next.path(CARRY_FILE))).toBe(false);
+    // The archive is taken in the new one and dropped in the old; the old one is as it was.
+    for (const left of [next.path(CARRY_FILE), box.path(CARRY_FILE),
+                        box.path(`${SYNC_HOME}/carry`), box.path("/var/lib/ta/carry.pid")]) {
+      expect(existsSync(left), left).toBe(false);
+    }
     expect(readFileSync(box.path(STORE_FILE), "utf8")).toBe("{\"token\":\"vendor-secret\"}");
     expect(readFileSync(box.path("/workspace/synced.md"), "utf8")).toBe("as synced");
-    expect(existsSync(box.path(`${SYNC_HOME}/carry`))).toBe(false);
   });
 
-  it("is refused while the workspace holds what sync-out would send, by sync-out's own rule",
+  it("leaves out each session copy the owner's files hold, however large, for its resume to " +
+     "fetch, and carries the one they lack", async () => {
+    const synced = "~/.claude/projects/main/cs-1.jsonl";
+    const unsent = "~/.claude/projects/main/cs-2.jsonl";
+    const owners = (rel: string) => `/workspace/.sessions/owner/claude-code/${rel.slice(2)}`;
+    const store = (rel: string) => `/var/lib/ta/store/claude-code/${rel.slice(2)}`;
+    // Past the carry's cap, 16 MiB, as a long conversation's is.
+    const long = `${"a long turn ".repeat(1_500_000)}\n`;
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, writes: { [synced]: long } });
+    await run("claude-code");
+    const mirror = new DatabaseSync(box.path(MIRROR));
+    doors.files.set(owners(synced), { text: long, version: Number((mirror.prepare(
+      "SELECT version FROM files WHERE path = ?").get(owners(synced)) as { version: number })
+      .version) });
+    mirror.close();
+    // The next run's session is refused at a full storage: only the store holds it.
+    const full = "storage_full: your storage is full: 25.0 GB of 25.0 GB used. {}";
+    doors.refuse = (path) => path === owners(unsent) ? full : null;
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines,
+                             writes: { [unsent]: "a turn not yet sent\n" } });
+    await run("claude-code");
+    doors.refuse = () => null;
+    // Moved within this sandbox, as a new one: its carry out, everything it held gone, the carry
+    // in.
+    const out = box.runner(COMMAND.carryOut, "owner", soon());
+    expect(out.code, out.why).toBe(0);
+    const answer = JSON.parse(out.out) as { bytes: number; sha256: string };
+    expect(answer.bytes).toBeLessThan(1024 * 1024);
+    for (const gone of ["/var/lib/ta/store", "/var/lib/ta/generations", MIRROR]) {
+      rmSync(box.path(gone), { recursive: true, force: true });
+    }
+    for (const name of readdirSync(box.path("/workspace"))) {
+      rmSync(box.path(`/workspace/${name}`), { recursive: true, force: true });
+    }
+    const placed = box.runner(COMMAND.carryIn, answer.sha256, soon());
+    expect(placed.code, placed.why).toBe(0);
+    expect(readFileSync(box.path(store(unsent)), "utf8")).toBe("a turn not yet sent\n");
+    expect(existsSync(box.path(store(synced)))).toBe(false);
+    // Its resume fetches it from the owner's files, by the row carried.
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, dumps: [synced] });
+    await run("claude-code", { session_id: "cs-1" });
+    expect(box.ran("claude-code").at(-1)!.dumps[synced] === long).toBe(true);
+  });
+
+  it("is refused while the workspace holds what sync-out would send or remove, by its own rules",
      () => {
     lived();
     const refused = (what: string) => {
@@ -3030,11 +3093,11 @@ describe("a template move's carry", () => {
       expect(existsSync(box.path(CARRY_FILE)), what).toBe(false);
       expect(existsSync(box.path(`${SYNC_HOME}/carry`)), what).toBe(false);
     };
+    const mirror = () => openMirror(box.path(MIRROR));
     // A file changed since its sync (another size).
     box.write("/workspace/synced.md", "changed since");
     refused("a changed file");
     box.write("/workspace/synced.md", "as synced");
-    const mirror = () => openMirror(box.path(MIRROR));
     const keep = mirror();
     keep.put("/workspace/synced.md", { ...row(1, "as synced"),
                                        mtime_ms: statSync(box.path("/workspace/synced.md"))
@@ -3043,22 +3106,37 @@ describe("a template move's carry", () => {
     // A file never sent (no row).
     box.write("/workspace/notes/new.md", "never sent");
     refused("a file never sent");
-    rmSync(box.path("/workspace/notes/new.md"));
+    rmSync(box.path("/workspace/notes"), { recursive: true });
     // A removal not sent (a row whose file is gone, not the owner's own to take).
-    rmSync(box.path("/workspace/notes/also.md"));
+    rmSync(box.path("/workspace/proj/AGENTS.md"));
     refused("a removal not sent");
     // Each sent (its row gone with it): carried again, kept-out paths and unread rows aside.
     const gone = mirror();
-    gone.drop("/workspace/notes/also.md");
+    gone.drop("/workspace/proj/AGENTS.md");
     gone.close();
     box.write("/workspace/node_modules/x/index.js", "a cache, changed");
     expect(box.runner(COMMAND.carryOut, "owner", soon()).code).toBe(0);
   });
 
-  it("stops at its deadline mid-carry, and leaves no archive and no carry behind", async () => {
+  it("carries a client's sandbox whose read-only tree's file is gone, which no sync-out " +
+     "removes, as sync-out leaves it", () => {
+    const client = "c".repeat(64);
+    lived();
+    const agent = `${AGENTS_DIR}/main/AGENTS.md`;
+    const mirror = openMirror(box.path(MIRROR));
+    mirror.put(agent, row(6, "the owner's agent"));
+    mirror.close();
+    // Its agent renamed the read-only tree away: the row's file is gone.
+    expect(box.runner(COMMAND.carryOut, client, soon()).code).toBe(0);
+    // The owner's own sandbox removes such a row's file, so its removal is unsent.
+    expect(box.runner(COMMAND.carryOut, "owner", soon()).code).toBe(3);
+  });
+
+  it("stops within its budget mid-carry, and leaves no archive and no carry behind",
+     async () => {
     box.write(STORE_FILE, "{\"token\":\"vendor-secret\"}");
     // The sync agent's lock held by a live process of its own user: the carry's sync agent waits
-    // on it, so the deadline lands inside the carry's sync phase, every time.
+    // on it, so the budget ends inside the carry's sync phase, every time.
     const holding = box.execAsync(["setpriv", `--reuid=${SYNC_UID}`, `--regid=${SYNC_UID}`,
                                    "--clear-groups", "sleep", "120"]);
     await waitFor(() => box.processesOf(SYNC_UID).length > 0);
@@ -3068,7 +3146,7 @@ describe("a template move's carry", () => {
               `${inBox} ${readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()}`);
     chownSync(box.path(`${SYNC_HOME}/sync.lock`), SYNC_UID, SYNC_UID);
     try {
-      const out = box.runner(COMMAND.carryOut, "owner", String(Date.now() + 3_000));
+      const out = box.runner(COMMAND.carryOut, "owner", "3000");
       expect(out.code, out.why).toBe(1);
       expect(out.err).toMatch(/carry-out is stopped/);
     } finally {
@@ -3078,6 +3156,30 @@ describe("a template move's carry", () => {
     expect(existsSync(box.path(CARRY_FILE))).toBe(false);
     expect(existsSync(box.path(`${SYNC_HOME}/carry`))).toBe(false);
     expect(readFileSync(box.path(STORE_FILE), "utf8")).toBe("{\"token\":\"vendor-secret\"}");
+  });
+
+  it("stops a carry-out under way at carry-drop, its sync agent with it, and leaves nothing",
+     async () => {
+    box.write(STORE_FILE, "{\"token\":\"vendor-secret\"}");
+    // The sync agent's lock held, so the carry-out waits inside its sync phase until stopped.
+    const holding = box.execAsync(["setpriv", `--reuid=${SYNC_UID}`, `--regid=${SYNC_UID}`,
+                                   "--clear-groups", "sleep", "120"]);
+    await waitFor(() => box.processesOf(SYNC_UID).length > 0);
+    const holder = box.processesOf(SYNC_UID)[0]!;
+    const inBox = /^NSpid:.*\s([0-9]+)\s*$/m.exec(readFileSync(`/proc/${holder}/status`,
+                                                                  "utf8"))![1];
+    box.write(`${SYNC_HOME}/sync.lock`,
+              `${inBox} ${readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()}`);
+    chownSync(box.path(`${SYNC_HOME}/sync.lock`), SYNC_UID, SYNC_UID);
+    const carrying = box.runnerAsync(COMMAND.carryOut, "owner", "100000");
+    await waitFor(() => box.processesOf(SYNC_UID).length > 1);  // its sync agent, waiting
+    expect(box.runner(COMMAND.carryDrop).code).toBe(0);
+    expect(await carrying).not.toBe(0);
+    await holding;
+    expect(box.processesOf(SYNC_UID)).toEqual([]);
+    for (const left of [CARRY_FILE, `${SYNC_HOME}/carry`, "/var/lib/ta/carry.pid"]) {
+      expect(existsSync(box.path(left)), left).toBe(false);
+    }
   });
 
   it("is refused while a job lives, and into a sandbox that holds a store, or of other bytes",
@@ -3112,9 +3214,9 @@ describe("a template move's carry", () => {
     expect(next.runner(COMMAND.carryIn, other.sha256, soon()).code).toBe(1);
     expect(readdirSync(next.path("/var/lib/ta/store"))).toEqual(["codex"]);
     expect(readFileSync(next.path("/var/lib/ta/store/codex/auth.json"), "utf8")).toBe("its own");
-    // A carry past its deadline is refused and leaves no archive.
+    // A carry with no budget is refused and leaves no archive.
     box.runner(COMMAND.carryDrop);
-    expect(box.runner(COMMAND.carryOut, "owner", String(Date.now() - 1)).code).toBe(1);
+    expect(box.runner(COMMAND.carryOut, "owner", "0").code).toBe(1);
     expect(existsSync(box.path(CARRY_FILE))).toBe(false);
     expect(box.runner(COMMAND.carryOut, "owner", soon()).code).toBe(0);
     // Where a move went no further, the old one's archive is dropped.

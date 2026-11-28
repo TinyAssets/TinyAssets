@@ -54,17 +54,26 @@ export function bootId(): string {
  * of another boot, or of one its lock does not name, is gone.
  */
 function held(path: string, boot: string): boolean {
+  return holderOf(path, boot) !== null;
+}
+
+/** The pid a file of the lock's form (`<pid> <boot>`) names while it lives in this boot. */
+export function liveHolder(path: string): number | null {
+  return holderOf(path, bootId());
+}
+
+function holderOf(path: string, boot: string): number | null {
   let text: string;
   try {
     text = readFileSync(path, "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return false;
+      return null;
     }
     throw error;
   }
   const [pid, of] = text.split(" ");
-  return of === boot && alive(Number(pid));
+  return of === boot && alive(Number(pid)) ? Number(pid) : null;
 }
 
 /** The identity of the file at `path` (its inode), or null when there is none. */

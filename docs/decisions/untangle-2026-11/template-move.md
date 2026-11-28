@@ -151,10 +151,10 @@ Two facts changed under it (the coordinator, 2026-11-28):
 
 Weighed against patching the cut and the carry:
 
-- **(a) Carry only what no sync carries**: the engines' stores and generations (the sign-ins,
-  which only the VM holds, and the store's session copies) and the mirror's session rows, which
-  say what the owner's files hold of each store copy. Kilobytes, not the workspace. The new
-  sandbox gets the workspace by its first sync-in. What the workspace holds unsent (a refused or
+- **(a) Carry only what no sync carries**: the engines' sign-ins (which only the VM holds) and
+  generations, and the mirror's session rows, which say what the owner's files hold of each
+  store copy; not the workspace (what the stores' session copies are is the next section's).
+  The new sandbox gets the workspace by its first sync-in. What the workspace holds unsent (a refused or
   failed sync-out) is not carried: the carry is refused while there is any, found by sync-out's
   own rule (`differs`: a stat against each row, a file read only where size or time do not
   settle it), so nothing the old sandbox holds is lost, and the next run's end sends it.
@@ -174,12 +174,53 @@ Weighed against patching the cut and the carry:
   row it is named stuck (`sandbox_move_stuck`), the line the canary's owed alerts name. Taken.
 
 With (a), the steps are fixed and measured (`MOVE_STEPS_MS`), and the one step that grows with
-the workspace (`carry-out`'s walk) has its own share, cut there in the sandbox and in the
-Worker alike (`CARRY_OUT_MS`, 3 s, about three times the measured walk), a walk past it a
-counted try. The new sandbox takes no `prepare` in the move: nothing runs in it but root's
-`carry-in`, as a start's create installs before it prepares, and its next resume prepares it,
-as every resume does; that saves 7 s and a step. The old one is resumed as any sandbox is
-(`#resume`, its `prepare` with it), one rule for every resume.
+the workspace (`carry-out`'s walk) has its own share (`CARRY_OUT_MS`), a walk past it a counted
+try. The new sandbox takes no `prepare` in the move: nothing runs in it but root's `carry-in`, as
+a start's create installs before it prepares, and its next resume prepares it, as every resume
+does.
+
+## What the carry holds, and what waits on a move (research again, Fact 14: the review at 8006f717a)
+
+Read on the head (`runner/session.ts` `makeHome`, `keepHome`; `sync.ts` `stageSessions`,
+`fetchSessions`, `syncOut`; `fsafe.ts` `walkTree`; the four engine records):
+
+- **The stores are not kilobytes.** Each engine's store holds its `secret_paths` (the sign-ins)
+  and its `session_paths`, the full transcripts (`{home}/.claude/projects/`, `.codex/sessions/`,
+  `.gemini/tmp/*/chats/`, `.pi/agent/sessions/`), kept after they are synced (`keepHome`; a store
+  copy goes only when the owner's files changed it, `stageSessions`, or under a low disk,
+  `sessionsRoom`). An owner with real history passes 16 MiB.
+- **A resume already fetches a session the store lacks** (`fetchSessions`: a resume's files the
+  mirror holds a row of, where the store holds no copy or a stale one), which is how the store
+  recovers after a low disk lets copies go. So a copy the owner's files hold as it is
+  (`synced`: the mirror's row its hash, the rule `stageSessions` uses to send none) need not be
+  carried: its row is, and its resume fetches it. Only the copies the owner's files lack
+  (refused, cut short, holding a secret's bytes) are carried.
+- **What sync cannot hold, the walk meets and the old shape left behind**: links (`walkTree`
+  passes them, sync-out sends regular files alone), names that are not UTF-8 (`unnamed`) and
+  empty directories. Before a move the old sandbox kept them; a move must too, or say it. All
+  three are tiny and `tar` holds each as it is (a link as a link, a name as its bytes), so they
+  are carried as one archive the sync agent makes of them (`workspace.tar`), and put back by it.
+  A socket or a device is passed over (`tar`), as no run's state.
+- **The unsent check was a copy of sync-out's rule** for a row's removal, and lacked its client
+  read-only clause. One function now says what sync-out does with a row (`rowOut`), for both.
+- **The old sandbox's `prepare` is not needed in a move**: nothing of the owner's runs in it,
+  only root's carry and the sync agent's walk; its row is marked unprepared before its resume
+  is sent, and whatever next resumes it prepares it. Leaving it out (`#wake`, the resume's part
+  before `prepare`) takes 7 s and a call off the bound.
+- **What waits on a move**: every call on the owner's chain, any authority's. A start's lease
+  holds the bound and its own steps (twelve calls, not nine: the settle's list, the slot given
+  back and the line left among them). With the old side's `prepare` gone, the bound (25.6 s) is
+  less than two resuming starts' own steps (27.3 s), and two resuming starts queued behind a
+  move start within 52.9 s, inside a lease. A queue of three or more resuming starts overruns a
+  lease whether or not a move is in it: that is the chain's, before this change. A cancel, a
+  release or a re-apply of another authority's run waits at most the bound: a re-apply's first
+  send then misses the lane's call budget (15 s, `LANE_CALL_MS`), and its retry lands.
+- **The carry's deadline was on the guest clock**, which lags after a resume (`look-resume-loop.md`),
+  and nothing stopped a carry-out the Worker gave up on. A carry command now takes a budget in
+  ms, counted on the runner's own monotonic clock (`performance.now()`, timers), a request's
+  transit less than the Worker's own cut; and a carry-out under way writes its pid with this
+  boot's id (the lock's form), so `carry-drop` and `prepare` stop it, its sync agent with it,
+  even one a pause froze.
 
 ## Design, from the research (decided before building)
 
@@ -203,17 +244,21 @@ whole, backs off and counts.**
    on an older template arms nothing new. The move takes its turn and room in the platform's
    line (`slots.turn`, `roomForOne`, a renewal's held slot counted) for its one running sandbox.
 3. **What is carried is the runner's to say** (it owns the disk's format): the engines' stores
-   and generations whole, and the mirror's session rows, its cursor 0 (`sync.ts` `carryOut`),
-   refused while a job lives or the workspace holds what sync-out would send (a file with no row
-   or another identity, a removal not sent). The first sync-in in the new sandbox reads the
-   workspace from the owner's files. Not carried: the workspace, the sync-ignore's kept-out
-   paths and the agents' scratch (the owner's files', the working copy's own, a cache), the
-   caches, the finished jobs' state.
+   and generations, less each session copy the owner's files hold as it is (`synced`, by the
+   mirror's rows, the rule `stageSessions` sends by); the mirror's session rows, its cursor 0;
+   and what of the workspace no sync can hold, its links, empty directories and entries whose
+   names are not UTF-8, as one archive (`sync.ts` `carryOut`). Refused while a job lives or the
+   workspace holds what sync-out would send or remove (`differs`, `rowOut`: sync-out's own). The
+   first sync-in in the new sandbox reads the workspace's files from the owner's files, and each
+   session's resume fetches it. Not carried: the workspace's files, the sync-ignore's kept-out
+   paths and the agents' scratch (the owner's files', the working copy's own, a cache), sockets
+   and devices, the caches, the finished jobs' state.
 4. **The protocol**: three Worker commands, sent to this Worker's own runner alone (`#own`):
-   `carry-out <authority> <until>`, `carry-in <sha256> <until>` and `carry-drop`, protocol 6's
+   `carry-out <authority> <ms>`, `carry-in <sha256> <ms>` and `carry-drop`, protocol 6's
    (#5860, which the stage serves), its record naming the commands, the carry's path and
-   `carry-out`'s answer, all as before; this change moves the runner to 6. Each carry command
-   stops at `until` and leaves no archive past it. **No rollback of the sandbox Worker past this
+   `carry-out`'s answer, all as before (it records no argument); this change moves the runner to
+   6. Each carry command stops within its budget, on the runner's own clock, and leaves no
+   archive past it; `carry-drop` and `prepare` stop a carry-out under way (`CARRY_PID`). **No rollback of the sandbox Worker past this
    deploy**: migration 8 moves `SandboxControl`'s lock to 8, and the kit refuses a rollback to a
    lower `-m` (`deploy/deploy.ts` `forwardOnly`).
 5. **The Worker's steps** (`#moveIdle`, on the chain, one move a look, every E2B and envd call
@@ -221,10 +266,11 @@ whole, backs off and counts.**
    finish's after, so the whole move ends by `MOVE_MS`):
    - the try charged (`move_tries`, `moveBackoff`: a lease's TTL, doubling, at most a day)
      before anything is sent, and never given back;
-   - the old one resumed (`#resume`: unprepared before `connect` is sent; its runner made this
-     Worker's where nothing lives; prepared);
-   - `carry-out`, cut at its own share (`CARRY_OUT_MS`), read whole, the archive dropped there,
-     the old one paused again;
+   - the old one woken (`#wake`: unprepared before `connect` is sent; its runner made this
+     Worker's where nothing lives; not prepared, nothing of the owner's running in it);
+   - `carry-out`, cut at its own share (`CARRY_OUT_MS`) here and a request's transit sooner in
+     the sandbox, read whole, the archive dropped there (`carry-drop`), the old one paused
+     again;
    - the new sandbox named before its create is sent by a token of the move's (`move_tag`, on
      its metadata `ta_move`) and, once the create answers, by its id (`move_to`); the token kept
      until a list past its create's window (`move_tag_until`) finds nothing by it;
@@ -237,16 +283,18 @@ whole, backs off and counts.**
    the old one and, where it runs (resumed, whether or not the resume's answer came), drops its
    archive and pauses it (`#moveBack`); what the move made is killed by its id or token. The
    meter logs what ran: the old one's resume and pause, the new one's start and pause.
-6. **The bound** (`MOVE_MS`, 36,172.5 ms): the steps at their measured worst (`MOVE_STEPS_MS`:
-   the old one's resume 895 ms, its `prepare` 7 s, two pauses at 705 ms, the create 1,078 ms,
-   `carry-out`'s 3 s share, and 22 other calls at the slowest full request, 480 ms: info, the
-   line's turn and E2B's count; the resume's network, `state`, an adoption's upload, install and
-   `adopt`, `recover`, info and the slot given back; the carry's read and `carry-drop`, the line
-   rung; the new one's upload and install, the carry's write, `carry-in`, info, the line rung;
-   the kill, the line rung: 23,943 ms), and the finish (`MOVE_FINISH_MS`: three pauses and six
-   calls, 4,995 ms), with a fifth of the bound to spare. A start that waits for all of it, then
-   takes its own steps (a resume, a `prepare`, nine calls: 12,215 ms), starts 48.4 s after it
-   came, inside its lease's 60 s.
+6. **The bound** (`MOVE_MS`, 25,622.5 ms): the steps at their measured worst (`MOVE_STEPS_MS`:
+   the old one's resume 895 ms, two pauses at 705 ms, the create 1,078 ms, `carry-out`'s 3 s
+   share, and 19 other calls at the slowest full request, 480 ms: info, the line's turn and
+   E2B's count; the resume's network, `state`, and an adoption's upload, install and `adopt`;
+   the carry's read and `carry-drop`, the line rung; the new one's upload and install, the
+   carry's write, `carry-in`, info, the line rung; the kill, the line rung: 15,503 ms), and the
+   finish (`MOVE_FINISH_MS`: three pauses and six calls, 4,995 ms), with a fifth of the bound to
+   spare. `carry-out`'s budget in the sandbox (2,520 ms) holds twice the measured walk of
+   100,000 files (1,050 ms) and the pack of a carry at its cap (16 MiB packed and hashed in 50 ms,
+   this session's Linux host). A resuming start's own steps are a resume, a `prepare` and twelve
+   calls (13,655 ms): one behind a move starts within 39.3 s, two within 52.9 s, inside a lease's
+   60 s.
 7. **No credential lost or exposed**: the sign-ins move VM to VM as bytes through envd and this
    isolate's memory, by the key that already reaches every sandbox's envd as root (the Worker's
    one secret), so no new holder; nothing is stored or logged on the way. The archive is dropped
@@ -259,6 +307,33 @@ stage owner, the run after its next `auto` pi run, half an hour on, runs on the 
 run is lost, and a start that comes during a move waits for it inside its lease; nothing is
 billed twice; nothing is orphaned; every try that does not move counts, and a move that cannot
 is named. Zero hosts: the Worker alone moves it.
+
+## Review findings (#5857, at 8006f717a), with the fix above each
+
+- **The carry leaves out each session copy the owner's files hold** (design 3): "leaves out each
+  session copy the owner's files hold, however large, for its resume to fetch, and carries the
+  one they lack" moves a store past 16 MiB, its carry under 1 MiB, and resumes the session from
+  the owner's files. Carrying every copy fails it.
+  - `CARRIED` was the stores whole, every transcript with them: an owner with history passed the
+    cap or the share at every try, forever.
+- **One rule for a row sync-out would remove** (`rowOut`, used by `syncOut` and `carryOut`):
+  "carries a client's sandbox whose read-only tree's file is gone, which no sync-out removes".
+  Dropping the client clause fails it.
+  - `carryOut` copied the rule and lacked `clientReadOnly`, so a client agent that moved its
+    read-only tree away left its sandbox refused forever.
+- **What no sync holds is carried** (design 3): the first carry test moves a link (as a link,
+  its target kept), an empty directory and a name that is not UTF-8. Dropping the empty
+  directories fails it.
+  - Links, unnamed entries and empty directories were dropped without a word.
+- Nits:
+  - a start's own steps recounted at twelve calls, and two resuming starts behind a move bounded
+    (52.9 s), the old side's `prepare` left out to fit (`#wake`); the bound test holds two;
+  - a carry-out under way is stopped by `carry-drop` and `prepare` (its pid with this boot's id),
+    and every carry budget runs on the runner's own clock ("stops a carry-out under way at
+    carry-drop");
+  - another authority's cancel, release and re-apply wait at most the bound, said (header,
+    research);
+  - the share and its test agree: the budget holds twice the measured walk and the pack.
 
 ## Review findings (#5857, at 4bf8fe835), with the fix above each
 
@@ -282,7 +357,7 @@ is named. Zero hosts: the Worker alone moves it.
   - `carry-out` hashed every synced file as one 480 ms call, and carried up to 16 MiB each way.
 - Nits: the stale lines are rewritten; a cut inside the resume is gone with the cut, and the
   finish pauses whatever E2B says runs; a start waits for the move, the case the bound sizes;
-  `carry.pid` is gone with the cut (`carry-drop` drops the archive alone).
+  `carry.pid` was gone with the cut (back, with the boot's id, at 8006f717a).
 
 ## Review findings before (#5857, 313a71b6e to 2b86b2768), where they stand
 
@@ -323,9 +398,16 @@ is named. Zero hosts: the Worker alone moves it.
   time (`secret_bytes`, past the owner's storage) holds the move, each try counted, named stuck
   from the third. The owner is told of the refusal at each run's end already
   (`ta.sync_refused`); once it is sent or removed, the next try moves.
-- **A workspace whose walk outlasts `carry-out`'s share** (some 250,000 files at the measured
+- **A workspace whose walk outlasts `carry-out`'s budget** (some 235,000 files at the measured
   rate) never moves, each try counted, named stuck from the third. Its time on E2B is owed to
   the `live:` wait below.
+- **Session copies the owner's files lack past the cap** (16 MiB of turns refused, or cut short,
+  at every run's end) hold the move, each try counted, named stuck from the third, until a run's
+  end sends them.
+- **A workspace entry the sync agent cannot read** (a run user's own 0600 file under a name that
+  is not UTF-8) fails the try, counted, as it fails that sync agent's reads at every sync-out.
+- **Sockets and devices in the workspace** are not carried: `tar` passes over a socket, and
+  neither is a run's state.
 - **A mode alone changed is not sent or carried**: the mirror keeps no mode, so neither a sync
   nor the unsent check can tell one, and the new sandbox's first sync-in takes the owner's.
   Holding it needs a mode in the mirror, a format change of its own in two deploys.
@@ -347,38 +429,47 @@ is named. Zero hosts: the Worker alone moves it.
 - **A move's time on the stage is not measured here** (no live act from this change): its bound
   is the measured steps' (design 6). Measured at the first live move.
 - **No test holds a whole move at the measured latencies**: the fake E2B answers at once, and a
-  move at them runs about 24 s, past the workerd tests' budget, with no large leg of the
+  move at them runs about 16 s, past the workerd tests' budget, with no large leg of the
   sandbox's workerd tests. The bound test holds the bound against the steps as the measurements
   state them, and `carry-out`'s share is held past by a test (3 s).
+- **Three or more resuming starts queued on one owner's chain** overrun a lease, with a move in
+  the queue or without: a move holds the chain less than two resuming starts do. The chain is
+  one per owner, before this change.
 - **The calls to the line** (`SandboxSlots`: `turn`, `freed`) are Durable Object calls, not cut
   by the deadline fetch; each is counted in the bound at a full request's time.
 - **The 16 MiB cap and the isolate's 128 MB.** Durable Objects of one class may share an
   isolate, so two owners' objects can move at once in the same 128 MB. Each owner's moves run
-  one at a time on its own chain, and a carry (the stores, kilobytes) is held only between its
-  read and its write, at most an eighth of the isolate.
+  one at a time on its own chain, and a carry (the sign-ins, the unsent session copies, the
+  workspace's links, empty folders and unnamed entries) is held only between its read and its
+  write, at most an eighth of the isolate.
 
 ## What an owner sees
 
 - A run on a sandbox of an older template runs there. The move happens afterwards, at the look,
   once the sandbox has been paused with nothing in it for half an hour, so a later run runs on
   the new image, from a paused sandbox resumed as any other. A start that comes during a move
-  waits for it (at most about 36 s) and runs in the new sandbox.
-- Signed-in engines stay signed in; the conversations resume.
+  waits for it (at most about 26 s) and runs in the new sandbox.
+- Signed-in engines stay signed in; the conversations resume, each fetched from the owner's
+  files at its first resume.
+- The workspace's links, empty folders and files whose names are not UTF-8 come across as they
+  were.
 - The run's first sync-in reads every file again (a new sandbox's own), so a large workspace's
   first run takes longer.
 - The working files the sync-ignore keeps out (`node_modules`, build outputs, a custom line's
   paths) and the agents' scratch (clones, installs, caches) are gone; the agent rebuilds them. A
   file's mode changed alone is the owner's again.
-- A move refuses nothing and loses nothing: one that cannot finish leaves the old sandbox paused
-  with everything it had, and is tried again later; one whose workspace holds what no sync has
-  sent waits for a run's end to send it.
+- A move refuses nothing and loses nothing but what the sync-ignore keeps out, the agents'
+  scratch, a mode alone and sockets (above): one that cannot finish leaves the old sandbox
+  paused with everything it had, and is tried again later; one whose workspace holds what no
+  sync has sent waits for a run's end to send it.
 
 ## As built
 
 - `sandbox/src/control.ts`: `#create` (the one create) and `#made` (its row, `template` among
   it); `#moveDue`, `#movesDue` and `#moveIdle`, after a look that failed at nothing in `alarm`,
   which `#arm` arms for a row due; `#needAt`, shared by `#arm` and the move; `#pausedAt`, the
-  quiet window from each pause; `#resume` clearing `prepared` before `connect`; `#pauseIdle`;
+  quiet window from each pause; `#wake` (a resume's part before `prepare`, clearing `prepared`
+  before `connect`) and `#resume` (`#wake`, then `prepare`); `#pauseIdle`; `budget`;
   `#moveFailed`; `#moveBack`; `#settle`, run on the chain by `#ensure`, the look and the move;
   `#until`, the deadline every E2B and envd call is cut at during a move; `#own`, which sends
   `OWN_COMMANDS` to this Worker's runner alone; `roomForOne`; `moveBackoff`, `CREATE_MS`,
@@ -391,14 +482,18 @@ is named. Zero hosts: the Worker alone moves it.
 - `sandbox/runner/protocol.ts` (`OWN_COMMANDS`, `CarryAnswer`), on #5860's record;
   `runner-speaks.json` 6.
 - `sandbox/runner/runner.ts`: `carry-out` (refused while a job lives or the workspace holds what
-  no sync has sent), `carry-in` and `carry-drop` (`CARRIED`, `ownTree`, `fileSha`, `untilOf`,
-  `tarUntil`), each carry stopped at its deadline and leaving no archive past it; `syncAgent`
-  taking the lapse it stops on; `session.ts` `GENERATIONS`; `sync.ts` `carryOut` (sync-out's
-  own rule for what is unsent; the session rows), `carryIn`.
+  no sync has sent; each synced session copy left out), `carry-in` and `carry-drop` (`CARRIED`,
+  `CARRY_PID`, `stopCarry`, also at `prepare`; `ownTree`, `fileSha`, `withinOf`, `tarUntil`),
+  each carry stopped within its budget on the runner's own clock and leaving no archive past
+  it; `syncAgent` taking the lapse it stops on; `session.ts` `GENERATIONS`; `pid-lock.ts`
+  `liveHolder`; `sync.ts` `carryOut` (sync-out's own rules for what is unsent, `differs` and
+  `rowOut`; the session rows; the workspace's links, empty folders and unnamed entries), `carryIn`,
+  `synced` (`stageSessions`' rule) and `heldOf`.
 - Tests: `test/sandbox.test.ts` "a template move" (a start runs at once in a sandbox of another
   template, and the look moves it once it has been paused with nothing in it for its quiet
-  window, the new one given the carry unprepared and prepared before its first launch; the bound
-  against the measured steps and a start's lease; one that named no template moved once; a start
+  window, the old one never prepared in it, the new one given the carry unprepared and prepared
+  before its first launch; the bound against the measured steps and two resuming starts in a
+  lease; one that named no template moved once; a start
   that comes mid-move held on the chain and run in the new one, prepared first; a resume whose
   answer is lost marked unprepared and prepared by the next start, and paused again mid-move;
   five faults, each leaving the old sandbox paused and whole, the new one killed and the move
@@ -407,13 +502,17 @@ is named. Zero hosts: the Worker alone moves it.
   lost; one a move made that no row names, killed; no move without the line's turn and room, the
   try counted; a leased row arming no look; no move while another sandbox needs the look within
   the bound; none after a failed look); `runner.test.ts` "a template move's carry" (the real
-  runner, as root: the sign-in, generation and session row carried, no workspace file, every
-  mode the new runner's; refused while the workspace holds a changed file, a file never sent or
-  a removal not sent, kept-out paths and unread rows aside; cut at its deadline mid-carry;
-  refused while a job lives, past its deadline, of another carry's bytes, and into a sandbox
-  with a store; the archive dropped).
+  runner, as root: the sign-in, generation and session row carried, a link, an empty folder and
+  a name that is not UTF-8 carried, no workspace file, every mode the new runner's; a store past
+  16 MiB of synced sessions carried under 1 MiB, the one unsent copy carried, and the resume
+  fetching the other from the owner's files; refused while the workspace holds a changed file, a
+  file never sent or a removal not sent, kept-out paths and unread rows aside; a client's
+  read-only tree gone carried, the owner's refused; cut within its budget mid-carry; a carry-out
+  under way stopped at `carry-drop`, its sync agent with it; refused while a job lives, with no
+  budget, of another carry's bytes, and into a sandbox with a store; the archive dropped).
 
 - [ ] live: the stage owner's sandbox moves to the pin at the look half an hour after its next
   use once this deploys (envd takes the file read and write; the move's time and `carry-out`'s,
-  against the workspace's file count, recorded here), and one `auto` pi run on an OpenRouter
+  against the workspace's file count, the store's size and the carry's bytes, recorded here),
+  and one `auto` pi run on an OpenRouter
   connection sealed with the Messages API then answers on pi 1.6.0.

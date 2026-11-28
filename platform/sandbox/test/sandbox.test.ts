@@ -1713,10 +1713,12 @@ describe("a template move", () => {
     expect(made.id).not.toBe(old);
     expect(made).toMatchObject({ state: "paused", template: env.E2B_TEMPLATE, secure: true });
     expect(state.files[`${made.id}:carried`]).toBe(`carry of ${old}`);
-    // The old one resumed (and prepared, as every resume is), carried out and its archive
-    // dropped; the new one given the carry, never prepared here: its next resume prepares it.
-    // Never two of them running (the old one paused before the create).
-    expect(ranIn(state, old, before)).toEqual(["prepare", "carry-out", "carry-drop"]);
+    // The old one woken, carried out and its archive dropped, never prepared: nothing of the
+    // owner's runs in it, and whatever next resumes it prepares it. The new one given the
+    // carry, never prepared here either: its next resume prepares it. Never two of them
+    // running (the old one paused before the create).
+    expect(ranIn(state, old, before)).toEqual(["carry-out", "carry-drop"]);
+    expect(await rowOf(who)).toMatchObject({ prepared: 0 });
     expect(ranIn(state, made.id, before)).toEqual(["install", "carry-in"]);
     const order = state.calls.filter((call) => call.method === "POST"
       && (call.path === "/v2/sandboxes" || call.path.endsWith("/pause")))
@@ -1746,17 +1748,18 @@ describe("a template move", () => {
     expect(ran).not.toContain("carry-out");
   });
 
-  it("hands its steps a bound that holds their measured worst, and that bound and a start's " +
-     "own steps after it inside the start's lease", async () => {
+  it("hands its steps a bound that holds their measured worst, and that bound and two " +
+     "resuming starts' own steps after it inside a start's lease", async () => {
     // The measurements as they state them, written here rather than read from the code: the old
-    // sandbox's resume (895 ms, `e2b-resume-measurement.md`), its `prepare` (7 s,
-    // `sandbox-probe.md`), two pauses (705 ms each), the new one's create (1,078 ms,
-    // `sandbox-probe.md`), the walk of 100,000 workspace files (1,050 ms, the decision file), and
-    // 22 other calls at the slowest full request (480 ms); a failed move's finish (three pauses,
-    // six calls: 4,995 ms); a start's own steps after it (a resume, a `prepare`, nine calls).
-    const STEPS_MS = 895 + 7_000 + 2 * 705 + 1_078 + 1_050 + 22 * 480;
+    // sandbox's resume (895 ms, `e2b-resume-measurement.md`), two pauses (705 ms each), the new
+    // one's create (1,078 ms, `sandbox-probe.md`), the walk of 100,000 workspace files (1,050
+    // ms) and a carry's pack at its cap (50 ms, the decision file), and 19 other calls at the
+    // slowest full request (480 ms); a failed move's finish (three pauses, six calls: 4,995 ms);
+    // a resuming start's own steps (a resume, a `prepare` of 7 s, twelve calls: 13,655 ms).
+    const STEPS_MS = 895 + 2 * 705 + 1_078 + 1_050 + 50 + 19 * 480;
     const FINISH_MS = 3 * 705 + 6 * 480;
-    const START_MS = 895 + 7_000 + 9 * 480;
+    const START_MS = 895 + 7_000 + 12 * 480;
+    const TRANSIT_MS = 480;
     const who = owner();
     await madeFrom(who, OLD);
     const before = Date.now();
@@ -1764,13 +1767,15 @@ describe("a template move", () => {
     const commands = (await seen()).commands;
     const carryOut = commands.find((command) => command.argv[1] === "carry-out")!;
     const carryIn = commands.find((command) => command.argv[1] === "carry-in")!;
-    const steps = Number(carryIn.argv[3]) - before;
+    // Each carry command's budget is its step's deadline less a request's transit.
+    const steps = Number(carryIn.argv[3]) + TRANSIT_MS;
     // Every step fits before the steps' deadline, with a fifth to spare.
     expect(steps).toBeGreaterThanOrEqual(STEPS_MS * 1.25);
-    // `carry-out` has its own share, twice the measured walk.
-    expect(Number(carryOut.argv[3]) - before).toBeGreaterThanOrEqual(2 * 1_050);
-    // And a start that waits for the whole move, finish and all, still starts in its lease.
-    expect(steps + FINISH_MS + START_MS).toBeLessThanOrEqual(LEASE_TTL_S * 1000);
+    // `carry-out`'s own budget holds twice the measured walk, and the pack.
+    expect(Number(carryOut.argv[3])).toBeGreaterThanOrEqual(2 * 1_050 + 50);
+    // And two resuming starts that wait for the whole move, finish and all, still start in a
+    // lease.
+    expect(steps + FINISH_MS + 2 * START_MS).toBeLessThanOrEqual(LEASE_TTL_S * 1000);
   });
 
   it("moves a sandbox made before rows named a template, once", async () => {

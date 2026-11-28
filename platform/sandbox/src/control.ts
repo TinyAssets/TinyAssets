@@ -54,12 +54,14 @@
  * **A template move** (`#moveIdle`, after a look that failed at nothing): a sandbox paused with
  * nothing in it for `MOVE_QUIET_MS`, made from another template than the pin (its row's
  * `template`; none, for one made before rows named it), is moved to the pin on the chain, bound
- * whole by `MOVE_MS`: it is resumed, what no sync carries (the engines' stores) packed while its
+ * whole by `MOVE_MS`: it is resumed, what no sync holds (the sign-ins, the session copies the
+ * owner's files lack, the workspace's links, empty folders and unnamed entries) packed while its
  * workspace holds nothing the sync has not sent, and it is paused again; a new one is made from
  * the pin, the carry put in, it is paused, and the old one killed. Its workspace comes by the
- * next run's sync-in, as a new sandbox's does. One sandbox of the owner's runs at a time, and a
- * start that comes meanwhile waits for the move, its bound and the start's own steps inside the
- * start's lease.
+ * next run's sync-in, as a new sandbox's does, and its sessions by their resumes. One sandbox of
+ * the owner's runs at a time, and any call that comes for the chain meanwhile waits for the
+ * move: a start's lease holds it and the start's own steps, and another authority's cancel,
+ * release or re-apply waits at most its bound (`MOVE_MS`).
  *
  * **The look** (the alarm; the founder's rule of 2026-11-03): a sandbox may run
  * `runtime_ceiling_s` at a stretch, and a pause resets that window (probed). The window's
@@ -200,28 +202,30 @@ const MOVE_RETRY_MAX_MS = 24 * 60 * 60_000;
 const CREATE_MS = 1_078;
 
 /**
- * A move's `carry-out` (`runner.ts`), its own share of the bound and cut there: the workspace
- * walked by the sync's own rule (a stat of each file against its mirror row, a file hashed only
- * where its size or time says it changed), the session rows copied and the stores packed.
- * Measured: the walk of 100,000 files, a stat and a row each, 1.05 s (warm, a Linux host,
- * 2026-11-28, `untangle-2026-11/template-move.md`); the stores are kilobytes. A workspace whose walk takes longer fails the
- * try, counted, and is named once it is stuck (`MOVE_STUCK_TRIES`).
+ * A move's `carry-out` (`runner.ts`), its own share of the bound, cut there in this Worker, and
+ * in the sandbox a request's transit (`RETRY_BASE_MS`) sooner, on the runner's own clock: 2,520
+ * ms there, twice the measured walk of the workspace by the sync's own rules (a stat of each file
+ * against its mirror row, a file hashed only where its size or time says it changed: 100,000
+ * files in 1.05 s, warm, a Linux host, 2026-11-28, `untangle-2026-11/template-move.md`) and the
+ * pack of a carry at its cap (16 MiB packed and hashed in 50 ms there). A workspace whose walk
+ * takes longer fails the try, counted, and is named once it is stuck (`MOVE_STUCK_TRIES`).
  */
 const CARRY_OUT_MS = 3_000;
 
 /**
  * A template move's steps, each at its measured worst: the old sandbox's resume (`connect`,
- * `RESUME_MAX_MS`), its `prepare` (every resume runs one), its pause; the new one's create
- * (`CREATE_MS`) and pause (no `prepare`: nothing runs in it but root's `carry-in`, as a create's
- * install comes before its `prepare`, and its next resume prepares it); `carry-out`
- * (`CARRY_OUT_MS`); and, at `RETRY_BASE_MS` each (the slowest full request measured), its 22
- * other calls: info, the line's turn and E2B's count; the resume's network, `state`, an
- * adoption's upload, install and `adopt`, `recover`, info and the slot given back; the carry's
- * read and `carry-drop`, the line rung; the new one's upload and install, the carry's write,
- * `carry-in`, info, the line rung; the old one's kill, the line rung: 23,943 ms.
+ * `RESUME_MAX_MS`; no `prepare`: nothing runs in it but root's carry, its row says it is
+ * unprepared, and whatever next resumes it prepares it) and its pause; the new one's create
+ * (`CREATE_MS`) and pause (no `prepare` either: nothing runs in it but root's `carry-in`, as a
+ * create's install comes before its `prepare`); `carry-out` (`CARRY_OUT_MS`); and, at
+ * `RETRY_BASE_MS` each (the slowest full request measured), its 19 other calls: info, the line's
+ * turn and E2B's count; the resume's network, `state`, and an adoption's upload, install and
+ * `adopt`; the carry's read and `carry-drop`, the line rung; the new one's upload and install,
+ * the carry's write, `carry-in`, info, the line rung; the old one's kill, the line rung: 15,503
+ * ms.
  */
-const MOVE_STEPS_MS = RESUME_MAX_MS + PREPARE_MS + 2 * PAUSE_MAX_MS + CREATE_MS + CARRY_OUT_MS
-  + 22 * RETRY_BASE_MS;
+const MOVE_STEPS_MS = RESUME_MAX_MS + 2 * PAUSE_MAX_MS + CREATE_MS + CARRY_OUT_MS
+  + 19 * RETRY_BASE_MS;
 
 /**
  * A move's finish where it went no further: the old sandbox asked of E2B, its archive dropped
@@ -232,12 +236,18 @@ const MOVE_FINISH_MS = 3 * PAUSE_MAX_MS + 6 * RETRY_BASE_MS;
 
 /**
  * A template move's whole bound, every call of it cut there: its steps and its finish, with a
- * fifth of the bound to spare (36,172.5 ms). A start that comes meanwhile waits for it on the
- * chain, then takes its own steps (the resume and its `prepare`, and nine calls more: info, the
- * line's turn and E2B's count, the network, info, the slot given back, `signin-check`, the start
- * document's write, `launch`; 12,215 ms at the same measures), both inside the start's lease
- * (`LEASE_TTL_S`): 48,387.5 ms of 60,000. Under a lease's TTL too, so a running sandbox's next
- * idle look (a TTL on) never waits on one (`#movesDue`).
+ * fifth of the bound to spare (25,622.5 ms). Under a lease's TTL, so a running sandbox's next
+ * idle look (a TTL on) never waits on one (`#movesDue`). Every call that comes for the owner's
+ * chain meanwhile waits for it, any authority's:
+ * - a start, then its own steps (the resume and its `prepare`, and twelve calls: the settle's
+ *   list, info, the line's turn and E2B's count, the network, info, the slot given back, the
+ *   line left, the lease's write, `signin-check`, the start document's write, `launch`: 13,655
+ *   ms at the same measures), inside the start's lease (`LEASE_TTL_S`): 39.3 s of 60, and two
+ *   resuming starts queued behind one move 52.9 s. A move holds the chain no longer than two
+ *   resuming starts do (27.3 s), so a queue it joins is the chain's own, as before it: past two,
+ *   any queue of resuming starts overruns a lease, a move or none;
+ * - a cancel, a release or a network re-apply of another authority's live run: each waits at
+ *   most the bound, a re-apply's first send past the lane's call budget, its retry landing.
  */
 const MOVE_MS = (MOVE_STEPS_MS + MOVE_FINISH_MS) * 5 / 4;
 
@@ -260,10 +270,19 @@ const MOVE_STUCK_TRIES = 3;
  * The most a move carries, read whole into this isolate between the two sandboxes, so never two
  * of the owner's run at once: 16 MiB, an eighth of the isolate's 128 MiB, since other owners'
  * objects may share the isolate and move at once (each owner's moves run one at a time on its
- * own chain). A carry is the engines' stores (their sign-ins, and the session copies) and the
- * mirror's session rows, kilobytes; a larger one fails the try, counted.
+ * own chain). A carry is the engines' sign-ins and the session copies the owner's files lack
+ * (the rest a resume fetches), the mirror's session rows and the workspace's links, empty
+ * folders and unnamed entries; a larger one fails the try, counted.
  */
 const CARRY_MAX_BYTES = 16 * 1024 * 1024;
+
+/**
+ * A carry command's budget (ms) for a step this Worker cuts at `until`: what is left less a
+ * request's transit, so the runner, counting on its own clock from its start, stops first.
+ */
+function budget(until: number): string {
+  return String(Math.max(1, Math.floor(until - Date.now() - RETRY_BASE_MS)));
+}
 
 /** A failed move's wait before it is tried again: a lease's TTL, doubling, at most a day. */
 function moveBackoff(tries: number): number {
@@ -889,6 +908,35 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    */
   async #resume(row: Row, found: SandboxInfo, network: NetworkDocument | null,
                 ceilings: SandboxCeilings): Promise<Box | null> {
+    const woken = await this.#wake(row, found, network, ceilings);
+    if (woken === null) {
+      return null;
+    }
+    const { handle, applied } = woken;
+    await this.#prepare(handle, applied ?? liveNetwork(found));
+    if (found.pauseMode === "filesystem") {
+      await this.#run(handle, [COMMAND.recover]);  // rebooted: its runs restart from disk
+    } else if (row.renewing === 1) {
+      await this.#run(handle, [COMMAND.renewed]);
+    }
+    const after = await this.#e2b().info(handle.sandboxID);
+    this.#sql.exec("UPDATE sandboxes SET renewing = 0, retry_at = NULL, tries = 0, end_at = ? " +
+                     "WHERE authority = ?",
+                   after === null ? Date.now() : Date.parse(after.endAt), row.authority);
+    await this.#giveBack();
+    return handle;
+  }
+
+  /**
+   * A paused sandbox running again, unprepared (`#resume` prepares it; a move's old one runs
+   * nothing but root's carry, and the next resume prepares it): its row marked unprepared
+   * before the resume is sent, then running, its runner unheard, a renewal's slot owed back;
+   * a re-apply kept for it applied; its runner made one this Worker speaks to (`#speaking`).
+   * Null when E2B has it no more.
+   */
+  async #wake(row: Row, found: SandboxInfo, network: NetworkDocument | null,
+              ceilings: SandboxCeilings):
+      Promise<{ handle: Box; applied: NetworkDocument | null } | null> {
     const e2b = this.#e2b();
     this.#ended(found);  // a pause E2B made on its own is logged before the resume
     // Unprepared before the resume is sent: one E2B makes whose answer never comes here (a
@@ -920,18 +968,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     }
     handle = await this.#speaking(row.authority, handle,
                                   found.pauseMode !== "filesystem" && row.renewing === 0, found);
-    await this.#prepare(handle, applied ?? liveNetwork(found));
-    if (found.pauseMode === "filesystem") {
-      await this.#run(handle, [COMMAND.recover]);  // rebooted: its runs restart from disk
-    } else if (row.renewing === 1) {
-      await this.#run(handle, [COMMAND.renewed]);
-    }
-    const after = await e2b.info(resumed.sandboxID);
-    this.#sql.exec("UPDATE sandboxes SET renewing = 0, retry_at = NULL, tries = 0, end_at = ? " +
-                     "WHERE authority = ?",
-                   after === null ? Date.now() : Date.parse(after.endAt), row.authority);
-    await this.#giveBack();
-    return handle;
+    return { handle, applied };
   }
 
   /**
@@ -1101,11 +1138,13 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    * 1. its try charged (`moveBackoff`) before anything is sent, so every try that ends short of
    *    the move backs off and counts (`#moveFailed`); its turn and room in the platform's line
    *    (`roomForOne`) for one running sandbox;
-   * 2. the old one resumed (memory kept, its runner made this Worker's where nothing lives, as
-   *    at any resume, which marks it unprepared before it is sent); its runner packs what no
-   *    sync carries (`carry-out`: the stores, and the mirror's session rows), refused while a job
-   *    lives or its workspace holds what the sync has not sent, at most `CARRY_MAX_BYTES`, read
-   *    whole into this isolate; the archive dropped there and the old one paused again;
+   * 2. the old one woken (`#wake`: marked unprepared before it is sent, memory kept, its runner
+   *    made this Worker's where nothing lives; not prepared, nothing of the owner's running in
+   *    it); its runner packs what no sync holds (`carry-out`: the sign-ins, the session copies
+   *    the owner's files lack, the mirror's session rows, the workspace's links, empty folders
+   *    and unnamed entries), refused while a job lives or its workspace holds what the sync has
+   *    not sent, at most `CARRY_MAX_BYTES`, read whole into this isolate; the archive dropped
+   *    there and the old one paused again;
    * 3. the new sandbox made from the pin with the old one's network and sealed route, named by
    *    the move's token before its create is sent (`move_tag`) and by its id once it answers
    *    (`move_to`); its runner installed; the carry written and put in place (`carry-in`);
@@ -1144,19 +1183,20 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         this.#moveFailed(authority, tries, "the platform's line has no room for it");
         return;
       }
-      const old = await this.#resume(row, found, null, ceilings);
-      if (old === null) {
+      const woken = await this.#wake(row, found, null, ceilings);
+      if (woken === null) {
         this.#moveFailed(authority, tries, "E2B has it no more");
         return;
       }
+      const old = woken.handle;
       if (old.runner !== this.#digest) {
         this.#moveFailed(authority, tries, "its runner is one this Worker keeps");
         return;
       }
-      // Cut at its own share, here and in the sandbox alike.
+      // Cut at its own share here, and in the sandbox a request's transit sooner.
       const carryUntil = Math.min(until, Date.now() + CARRY_OUT_MS);
       this.#until = carryUntil;
-      const out = await this.#own(old, [COMMAND.carryOut, authority, String(carryUntil)],
+      const out = await this.#own(old, [COMMAND.carryOut, authority, budget(carryUntil)],
                                   carryUntil - Date.now()).finally(() => { this.#until = until; });
       if (out.code === EXIT.no) {
         this.#moveFailed(authority, tries,
@@ -1185,7 +1225,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       const made: Box = { ...created, runner: this.#digest };
       await this.#install(made);
       await e2b.upload(made, CARRY_FILE, bytes);
-      if ((await this.#own(made, [COMMAND.carryIn, carry.sha256, String(until)],
+      if ((await this.#own(made, [COMMAND.carryIn, carry.sha256, budget(until)],
                            until - Date.now())).code !== EXIT.ok) {
         throw new Error("the new sandbox's runner did not take the carry");
       }
