@@ -53,7 +53,8 @@
 import { sha256Hex } from "../../contract/src/digest";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, renameSync, type Stats } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, readdirSync,
+         readFileSync, renameSync, type Stats } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -1412,9 +1413,12 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
  * - `dir/workspace.tar`, what no sync can hold and the walk meets (`walkTree`, the sync-ignore's
  *   own `skip`): each link (its target as it is), each empty directory, and each entry whose
  *   name is not UTF-8 (whatever it is, its tree with it), by `tar`, which keeps a link as one
- *   and a name as its bytes.
+ *   and a name as its bytes; `dir/odd.list` names them, so the next sandbox gives each
+ *   sync-in's own modes (`carryIn`).
  * What the sync-ignore keeps out is the working copy's own, never carried; nor is a mode
- * alone, which no row keeps; nor a socket or a device, which `tar` passes over.
+ * alone, which no row keeps; nor a socket or a device, which `tar` passes over; nor what this
+ * user may not read (a folder it may not list, a file or an unnamed entry it may not read: a
+ * run user's own, `0700` or `0600`), which no sync-out sends either.
  */
 export async function carryOut(place: Pick<Place, "local" | "authority">, mirror: Mirror,
                                dir: string, withinMs: number): Promise<boolean> {
@@ -1423,14 +1427,21 @@ export async function carryOut(place: Pick<Place, "local" | "authority">, mirror
   const odd: Buffer[] = [];
   const top = Buffer.from(`${place.local}/`);
   let last: Buffer | null = null;
-  for (const met of walkTree(place.local, { skip })) {
+  // A folder this user may not list is no empty one: the walk tells it, and it is passed over.
+  const unlisted = new Set<string>();
+  for (const met of walkTree(place.local, { skip, unlisted: (rel) => unlisted.add(rel) })) {
     const at = typeof met.at === "string" ? Buffer.from(met.at) : met.at;
     if (met.kind === "unnamed") {
-      odd.push(at);
+      if (readable(met.at)) {
+        odd.push(at);
+      }
     } else if (met.kind === "file") {
+      // One sync-out would send: another identity than its row's, and readable (one it may not
+      // read it skips, `offer`).
       const path = `${WORKSPACE}/${met.rel}`;
       const stat = fileStat(localOf(place, path));
-      if (stat !== null && await differs(place, path, stat, mirror.get(path))) {
+      if (stat !== null && await differs(place, path, stat, mirror.get(path))
+          && readable(met.at)) {
         return false;
       }
     } else if (met.kind === "passed") {
@@ -1438,7 +1449,7 @@ export async function carryOut(place: Pick<Place, "local" | "authority">, mirror
           && !skip(met.rel, false)) {
         odd.push(at);
       }
-    } else if (last === null || !under(last, at)) {
+    } else if (!unlisted.has(met.rel) && (last === null || !under(last, at))) {
       odd.push(at);  // a directory left with nothing met in it: empty
     }
     last = at;
@@ -1465,16 +1476,27 @@ export async function carryOut(place: Pick<Place, "local" | "authority">, mirror
   const list = join(dir, "odd.list");
   safeWrite(dir, list, Buffer.concat(odd.flatMap((at) => [at.subarray(top.length),
                                                            Buffer.from([0])])), 0o600);
+  // What under an unnamed tree this user may not read is passed over, as the walk passes it.
   const done = spawnSync("tar", ["-c", "-f", join(dir, "workspace.tar"), "-C", place.local,
-                                 "--null", "-T", list],
+                                 "--ignore-failed-read", "--null", "-T", list],
                          { encoding: "utf8",
                            timeout: Math.max(1, Math.floor(until - performance.now())) });
-  remove(list);
   if (done.status !== 0) {
     throw new Error(`the workspace's links, empty folders and unnamed entries could not be ${
       ""}packed (${String(done.status ?? done.signal)}): ${done.stderr}`);
   }
   return true;
+}
+
+/** Whether this user may read the entry at `at`, and list it where it is a folder. */
+function readable(at: string | Buffer): boolean {
+  try {
+    accessSync(at, lstatSync(at).isDirectory() ? constants.R_OK | constants.X_OK
+      : constants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Whether `inner`'s path is under `outer`'s (each a path's bytes). */
@@ -1488,8 +1510,9 @@ function under(inner: Buffer, outer: Buffer): boolean {
  * sandbox's (`mirrorPath`), and the workspace's links, empty folders and unnamed entries into
  * `local` under GNU tar's stated defaults (a member's leading `/` stripped and one whose name
  * holds `..` refused, so nothing lands outside it; a link it makes that could lead out is made
- * last, so no member is written through one). A sandbox that already holds a mirror is no new
- * one, and is refused, changing nothing.
+ * last, so no member is written through one), each then given sync-in's own modes
+ * (`syncModes`). A sandbox that already holds a mirror is no new one, and is refused, changing
+ * nothing.
  */
 export function carryIn(local: string, dir: string, mirrorPath: string, withinMs: number): void {
   if (existsSync(mirrorPath)) {
@@ -1502,7 +1525,40 @@ export function carryIn(local: string, dir: string, mirrorPath: string, withinMs
     throw new Error(`the workspace's carry could not be put in place (${
       String(done.status ?? done.signal)}): ${done.stderr}`);
   }
+  syncModes(local, readFileSync(join(dir, "odd.list")));
   renameSync(join(dir, "mirror.db"), mirrorPath);
+}
+
+/**
+ * The entries a carry put back (`list`, each by its path's bytes from `local`, NUL-ended) given
+ * sync-in's own modes (`theirs`), which `tar` made under this process's umask: each folder on
+ * the way and in its tree `02775`, a file `0664`, or `0775` where it ran, so the run users
+ * (group `ta`) write into them as before the move; a link as it is. Only what this user made is
+ * touched, its own and nothing else running in the sandbox. The walk never carries a client's
+ * read-only trees, so none is here.
+ */
+function syncModes(local: string, list: Buffer): void {
+  const top = Buffer.from(`${local}/`);
+  for (let from = 0, end = list.indexOf(0); end >= 0; from = end + 1, end = list.indexOf(0, from)) {
+    const rel = list.subarray(from, end);
+    for (let slash = rel.indexOf(0x2f); slash > 0; slash = rel.indexOf(0x2f, slash + 1)) {
+      syncMode(Buffer.concat([top, rel.subarray(0, slash)]), false);
+    }
+    syncMode(Buffer.concat([top, rel]), true);
+  }
+}
+
+function syncMode(at: Buffer, tree: boolean): void {
+  const stat = lstatSync(at, { throwIfNoEntry: false });
+  if (stat === undefined || stat.isSymbolicLink() || stat.uid !== process.getuid!()) {
+    return;
+  }
+  chmodSync(at, stat.isDirectory() ? 0o2775 : (stat.mode & 0o111) !== 0 ? 0o775 : 0o664);
+  if (tree && stat.isDirectory()) {
+    for (const name of readdirSync(at, { encoding: "buffer" })) {
+      syncMode(Buffer.concat([at, Buffer.from("/"), name]), true);
+    }
+  }
 }
 
 /**

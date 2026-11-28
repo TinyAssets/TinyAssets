@@ -266,6 +266,11 @@ export interface Walk {
   /** A name that is not UTF-8, which no path names: told, its bytes escaped. */
   readonly unnamed?: (rel: string) => void;
   /**
+   * A directory this user may not list, by its path from the walk's top: told before its
+   * `left`, which then follows with nothing met under it, though it may hold anything.
+   */
+  readonly unlisted?: (rel: string) => void;
+  /**
    * Each directory's entries in their names' byte order, that directory read whole and
    * closed before any is offered, so the tree may change as it is walked; otherwise as the
    * directory lists them, one entry at a time.
@@ -294,7 +299,8 @@ export function* walkTree(dir: string, walk: Walk = {}, base = dir): Generator<M
   if (kind(dir) !== "dir") {
     return;
   }
-  for (const raw of entries(dir, walk.sorted === true)) {
+  for (const raw of entries(dir, walk.sorted === true,
+                             () => walk.unlisted?.(relative(base, dir)))) {
     // Read by its bytes: a name that is not UTF-8 has no path a string can name, so it is
     // told (`unnamed`, its bytes escaped), never silently missed.
     const name = raw.toString("utf8");
@@ -329,8 +335,11 @@ export function* walkFiles(dir: string, walk: Walk = {}): Generator<string> {
   }
 }
 
-/** A directory's entries' names, as bytes: read whole and sorted, or one at a time. */
-function* entries(dir: string, sorted: boolean): Generator<Buffer> {
+/**
+ * A directory's entries' names, as bytes: read whole and sorted, or one at a time; none, told
+ * (`unlisted`), where this user may not list it.
+ */
+function* entries(dir: string, sorted: boolean, unlisted: () => void): Generator<Buffer> {
   let handle: Dir;
   try {
     // Buffer names (Node takes `buffer` here, though its types say only text encodings), read
@@ -339,6 +348,7 @@ function* entries(dir: string, sorted: boolean): Generator<Buffer> {
     // to 31 names more (15.5 KB a folder at 250-byte names, Node 22.22.0, 2026-11-22).
     handle = opendirSync(dir, { encoding: "buffer" as BufferEncoding, bufferSize: 1 });
   } catch {
+    unlisted();
     return;  // one this user may not list: its contents are not ours to walk
   }
   const all: Buffer[] = [];

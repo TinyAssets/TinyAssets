@@ -309,6 +309,30 @@ run is lost, and a start that comes during a move waits for it inside its lease;
 billed twice; nothing is orphaned; every try that does not move counts, and a move that cannot
 is named. Zero hosts: the Worker alone moves it.
 
+## Review findings (#5857, at 20c662fbc), with the fix above each
+
+- **What the carry puts back takes sync-in's own modes** (`syncModes`, after the extract: a
+  folder `02775`, a file `0664` or `0775`, a link as it is), so a run user writes into a carried
+  link's folder and a carried empty folder as before: the first carry test does, as a run user
+  of group `ta`. Dropping `syncModes` fails it.
+  - `carryIn`'s `tar` ran as `ta-sync` under root's umask (022): folders `02755`, files `0644`,
+    which no run user writes, and sync-in's `safeDirs` keeps a folder's mode.
+- **What the sync agent may not read is passed over, as sync-out passes it**: the walk tells a
+  folder it may not list (`Walk.unlisted`), so it is never taken as empty; a named file or an
+  unnamed entry it may not read is not counted unsent nor packed; and `tar` passes over what it
+  may not read under an unnamed tree (`--ignore-failed-read`). "passes over what the sync agent
+  may not read" moves a run user's 0700 folder, its 0600 file, an unnamed 0600 file and an
+  unnamed folder holding one, carrying the rest. Dropping the readable check, or `tar`'s pass,
+  fails it.
+  - A run user's `0700` folder (`mkdir -m 700`, `mkdtemp`, a gpg home) was taken as empty, and
+    the carry's `tar` failed on it at every try.
+- **The slot a move's wake owes is given back in the move** (Important 3, the red CI): below.
+- Nits: `stopCarry` kills the carry-out's own `tar` before it, and only a carry-out whose start
+  is the one its file names ("never stops another process that took a stale carry-out's pid");
+  `carry-out` keeps what it hashed (`keepSeen`), so a try cut short hashes no copy twice, and a
+  cold cache (a deploy that changes the state format) costs one try's budget a store's hashing;
+  the low-disk let-go uses `synced` too (`sessionsRoom`); "Left" names the unreadable files.
+
 ## CI at 20c662fbc, with the fix above it
 
 - **The move gives back the slot its wake owed** (`#giveBack` after `#wake`, as `#resume` does),
@@ -410,14 +434,18 @@ is named. Zero hosts: the Worker alone moves it.
   time (`secret_bytes`, past the owner's storage) holds the move, each try counted, named stuck
   from the third. The owner is told of the refusal at each run's end already
   (`ta.sync_refused`); once it is sent or removed, the next try moves.
+- **What the sync agent may not read is not carried**: a run user's own `0700` folder (a gpg
+  home, a `mkdtemp`) and its `0600` files, named or not, which no sync-out sends either (it skips
+  them, `gone`). They are that run user's alone, and go with the old sandbox, as at its loss.
 - **A workspace whose walk outlasts `carry-out`'s budget** (some 235,000 files at the measured
   rate) never moves, each try counted, named stuck from the third. Its time on E2B is owed to
   the `live:` wait below.
 - **Session copies the owner's files lack past the cap** (16 MiB of turns refused, or cut short,
   at every run's end) hold the move, each try counted, named stuck from the third, until a run's
   end sends them.
-- **A workspace entry the sync agent cannot read** (a run user's own 0600 file under a name that
-  is not UTF-8) fails the try, counted, as it fails that sync agent's reads at every sync-out.
+- **A cold sessions cache** (a deploy that changes the state format drops `sessions-seen.json`)
+  makes `carry-out` hash every store copy once; a try cut short there keeps what it hashed
+  (`keepSeen`), so the next hashes on from it.
 - **Sockets and devices in the workspace** are not carried: `tar` passes over a socket, and
   neither is a run's state.
 - **A mode alone changed is not sent or carried**: the mirror keeps no mode, so neither a sync
@@ -463,15 +491,17 @@ is named. Zero hosts: the Worker alone moves it.
   waits for it (at most about 26 s) and runs in the new sandbox.
 - Signed-in engines stay signed in; the conversations resume, each fetched from the owner's
   files at its first resume.
-- The workspace's links, empty folders and files whose names are not UTF-8 come across as they
-  were.
+- The workspace's links, empty folders and files whose names are not UTF-8 come across, with
+  the modes sync-in gives (a run user writes into them as before).
+- A folder or file of a run user's own that the sync agent may not read (`0700`, `0600`: a gpg
+  home, a temporary folder) does not come across, as no sync sends it.
 - The run's first sync-in reads every file again (a new sandbox's own), so a large workspace's
   first run takes longer.
 - The working files the sync-ignore keeps out (`node_modules`, build outputs, a custom line's
   paths) and the agents' scratch (clones, installs, caches) are gone; the agent rebuilds them. A
   file's mode changed alone is the owner's again.
 - A move refuses nothing and loses nothing but what the sync-ignore keeps out, the agents'
-  scratch, a mode alone and sockets (above): one that cannot finish leaves the old sandbox
+  scratch, a mode alone, sockets and what the sync agent may not read (above): one that cannot finish leaves the old sandbox
   paused with everything it had, and is tried again later; one whose workspace holds what no
   sync has sent waits for a run's end to send it.
 
@@ -495,11 +525,13 @@ is named. Zero hosts: the Worker alone moves it.
   `runner-speaks.json` 6.
 - `sandbox/runner/runner.ts`: `carry-out` (refused while a job lives or the workspace holds what
   no sync has sent; each synced session copy left out), `carry-in` and `carry-drop` (`CARRIED`,
-  `CARRY_PID`, `stopCarry`, also at `prepare`; `ownTree`, `fileSha`, `withinOf`, `tarUntil`),
+  `CARRY_PID`, `stopCarry` (`startOf`, `childrenOf`), also at `prepare`; `ownTree`, `fileSha`,
+  `withinOf`, `tarUntil`),
   each carry stopped within its budget on the runner's own clock and leaving no archive past
   it; `syncAgent` taking the lapse it stops on; `session.ts` `GENERATIONS`; `pid-lock.ts`
   `liveHolder`; `sync.ts` `carryOut` (sync-out's own rules for what is unsent, `differs` and
-  `rowOut`; the session rows; the workspace's links, empty folders and unnamed entries), `carryIn`,
+  `rowOut`, and what it may read; the session rows; the workspace's links, empty folders and
+  unnamed entries), `carryIn` (`syncModes`); `fsafe.ts` `Walk.unlisted`;
   `synced` (`stageSessions`' rule) and `heldOf`.
 - Tests: `test/sandbox.test.ts` "a template move" (a start runs at once in a sandbox of another
   template, and the look moves it once it has been paused with nothing in it for its quiet

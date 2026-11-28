@@ -713,8 +713,9 @@ function adopt(): number {
 const CARRIED = Object.freeze([STORE, GENERATIONS]);
 
 /**
- * A carry-out under way, as its pid and this boot's id (the lock's form, `pid-lock.ts`), so
- * `carry-drop` and `prepare` stop one its Worker gave up on, even past a pause.
+ * A carry-out under way, as its pid, this boot's id (the lock's form, `pid-lock.ts`) and its
+ * process's start, so `carry-drop` and `prepare` stop one its Worker gave up on, even past a
+ * pause, and never another that took its pid since.
  */
 const CARRY_PID = `${STATE}/carry.pid`;
 
@@ -800,10 +801,12 @@ async function carryOutCommand(authority: string, withinArg: string): Promise<nu
   for (const dir of CARRIED) {
     safeDirs("/", dir, 0o700);
   }
-  safeWrite(STATE, CARRY_PID, new TextEncoder().encode(`${process.pid} ${bootId()}`), 0o600);
+  safeWrite(STATE, CARRY_PID, new TextEncoder().encode(
+    `${process.pid} ${bootId()} ${String(startOf(process.pid))}`), 0o600);
   const list = `${STATE}/carry.list`;
   try {
-    const { sessions } = storeSessions(authority);
+    const { sessions, seen } = storeSessions(authority);
+    keepSeen(seen);  // what it hashed kept, so a try cut short hashes no copy twice
     const { report } = await syncAgent({ direction: "carry-out", authority,
                                          paths: sessions.map((each) => each.path),
                                          within: left(until) }, atUntil(until));
@@ -843,14 +846,19 @@ async function carryOutCommand(authority: string, withinArg: string): Promise<nu
 }
 
 /**
- * A carry-out under way stopped (`CARRY_PID`, while its process lives in this boot), its sync
- * agent and `tar` with it: nothing lives in a sandbox a carry runs in, so every process of the
- * sync agent's user is the carry's. Then what a carry leaves: its pid, its sync agent's carry
- * and the archive, a copy of the sign-ins.
+ * A carry-out under way stopped (`CARRY_PID`: its process, while it lives in this boot and
+ * began when the file says, so a pid used again names no other), its own `tar` first, then
+ * itself, then its sync agent: nothing lives in a sandbox a carry runs in, so every process of
+ * the sync agent's user is the carry's. Then what a carry leaves: its pid, its sync agent's
+ * carry and the archive, a copy of the sign-ins.
  */
 async function stopCarry(): Promise<void> {
   const pid = liveHolder(CARRY_PID);
-  if (pid !== null && pid !== process.pid) {
+  const began = existsSync(CARRY_PID) ? readFileSync(CARRY_PID, "utf8").split(" ")[2] : null;
+  if (pid !== null && pid !== process.pid && began !== undefined && startOf(pid) === began) {
+    for (const child of childrenOf(pid)) {
+      process.kill(child, "SIGKILL");
+    }
     process.kill(pid, "SIGKILL");
     if (livingJobs() === 0) {
       await killAll(user(SYNC_USER));
@@ -859,6 +867,30 @@ async function stopCarry(): Promise<void> {
   remove(CARRY_PID);
   remove(SYNC_CARRY);
   remove(CARRY_FILE);
+}
+
+/** A process's start, in clock ticks since boot (`/proc/<pid>/stat`, its 22nd field), or null. */
+function startOf(pid: number): string | null {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    // The fields after the command's name, which may hold spaces, closed by its last `)`.
+    return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** The processes whose parent is `pid` (`/proc/<pid>/stat`, its 4th field). */
+function childrenOf(pid: number): number[] {
+  return readdirSync("/proc").filter((name) => /^[0-9]+$/.test(name)).flatMap((name) => {
+    try {
+      const stat = readFileSync(`/proc/${name}/stat`, "utf8");
+      return Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]) === pid
+        ? [Number(name)] : [];
+    } catch {
+      return [];
+    }
+  });
 }
 
 /**
@@ -1346,7 +1378,7 @@ async function sessionsRoom(start: StartDoc, run: string,
     const resumed = (session: StoreSession) => live.some((each) =>
       each.engine === session.rec.id
       && isKept(resumePaths(session.rec, each.session_id), session.rel));
-    return letGoSessions(STATE, sessions.filter((each) => held[each.path]?.sha256 === each.digest
+    return letGoSessions(STATE, sessions.filter((each) => synced(each, held[each.path])
       && stillHashed(local(each), each) && !resumed(each)).map((each) => ({
       local: local(each), size: each.size, mtime_ms: each.mtime_ms })));
   });

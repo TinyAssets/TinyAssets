@@ -3016,6 +3016,20 @@ describe("a template move's carry", () => {
     expect(statSync(next.path("/workspace/proj/empty")).isDirectory()).toBe(true);
     expect(readdirSync(next.path("/workspace/proj/empty"))).toEqual([]);
     expect(readFileSync(unnamed(next), "utf8")).toBe("a name no path holds");
+    // Each with sync-in's own modes, so a run user (group `ta`) writes into them as before.
+    for (const [path, mode] of [["/workspace/proj", 0o2775], ["/workspace/proj/empty", 0o2775]] as
+      const) {
+      expect(statSync(next.path(path)).mode & 0o7777, path).toBe(mode);
+    }
+    expect(statSync(unnamed(next)).mode & 0o7777).toBe(0o664);
+    const asRunUser = (argv: string[]) => next!.exec([
+      "setpriv", `--reuid=${POOL_UIDS[0]}`, `--regid=${POOL_GIDS[0]}`, `--groups=${TA_GID}`,
+      ...argv]);
+    for (const argv of [["touch", "/workspace/proj/x"], ["touch", "/workspace/proj/empty/y"],
+                        ["rm", "/workspace/proj/CLAUDE.md"]]) {
+      const done = asRunUser(argv);
+      expect([done.status, done.stderr], argv.join(" ")).toEqual([0, ""]);
+    }
     // No file the owner's files hold, kept-out path or scratch: the first sync-in reads them.
     for (const gone of ["/workspace/synced.md", "/workspace/proj/AGENTS.md",
                         "/workspace/node_modules", "/scratch/main"]) {
@@ -3038,6 +3052,46 @@ describe("a template move's carry", () => {
     }
     expect(readFileSync(box.path(STORE_FILE), "utf8")).toBe("{\"token\":\"vendor-secret\"}");
     expect(readFileSync(box.path("/workspace/synced.md"), "utf8")).toBe("as synced");
+  });
+
+  it("passes over what the sync agent may not read, as sync-out does: a run user's own 0700 " +
+     "folder, its own 0600 file and an unnamed one, and carries the rest", () => {
+    lived();
+    const runUser = { uid: POOL_UIDS[0]!, gid: POOL_GIDS[0]! };
+    box.write("/workspace/keys/private.key", "a run user's own");
+    chownSync(box.path("/workspace/keys/private.key"), runUser.uid, runUser.gid);
+    chmodSync(box.path("/workspace/keys/private.key"), 0o600);
+    chownSync(box.path("/workspace/keys"), runUser.uid, runUser.gid);
+    chmodSync(box.path("/workspace/keys"), 0o700);
+    mkdirSync(box.path("/workspace/tmpab12"), { mode: 0o700 });
+    chownSync(box.path("/workspace/tmpab12"), runUser.uid, runUser.gid);
+    box.write("/workspace/token.txt", "never sent: the sync agent may not read it");
+    chownSync(box.path("/workspace/token.txt"), runUser.uid, runUser.gid);
+    chmodSync(box.path("/workspace/token.txt"), 0o600);
+    const hidden = Buffer.concat([Buffer.from(`${box.path("/workspace")}/k`), Buffer.from([0xff])]);
+    writeFileSync(hidden, "an unnamed one of its own");
+    chownSync(hidden, runUser.uid, runUser.gid);
+    chmodSync(hidden, 0o600);
+    // An unnamed folder the sync agent may read, holding one file it may not.
+    const tree = (sandbox: Sandbox) => Buffer.concat([Buffer.from(`${sandbox.path("/workspace")}/d`),
+                                                      Buffer.from([0xfe])]);
+    mkdirSync(tree(box));
+    writeFileSync(Buffer.concat([tree(box), Buffer.from("/mine")]), "its own");
+    chownSync(Buffer.concat([tree(box), Buffer.from("/mine")]), runUser.uid, runUser.gid);
+    chmodSync(Buffer.concat([tree(box), Buffer.from("/mine")]), 0o600);
+    writeFileSync(Buffer.concat([tree(box), Buffer.from("/shared")]), "the group's");
+    next = new Sandbox();
+    moved(box, next);
+    // None of them comes across, and the carry neither throws nor refuses for them.
+    for (const gone of ["/workspace/keys", "/workspace/tmpab12", "/workspace/token.txt"]) {
+      expect(existsSync(next.path(gone)), gone).toBe(false);
+    }
+    expect(existsSync(Buffer.concat([Buffer.from(`${next.path("/workspace")}/k`),
+                                     Buffer.from([0xff])]))).toBe(false);
+    expect(readdirSync(tree(next))).toEqual(["shared"]);
+    // The rest does.
+    expect(readFileSync(unnamed(next), "utf8")).toBe("a name no path holds");
+    expect(readFileSync(next.path(STORE_FILE), "utf8")).toBe("{\"token\":\"vendor-secret\"}");
   });
 
   it("leaves out each session copy the owner's files hold, however large, for its resume to " +
@@ -3179,6 +3233,27 @@ describe("a template move's carry", () => {
     expect(box.processesOf(SYNC_UID)).toEqual([]);
     for (const left of [CARRY_FILE, `${SYNC_HOME}/carry`, "/var/lib/ta/carry.pid"]) {
       expect(existsSync(box.path(left)), left).toBe(false);
+    }
+  });
+
+  it("never stops another process that took a stale carry-out's pid", async () => {
+    const other = box.execAsync(["sleep", "120"]);
+    await waitFor(() => box.processesOf(0).some((pid) =>
+      readFileSync(`/proc/${pid}/cmdline`, "utf8").startsWith("sleep")));
+    const host = box.processesOf(0).find((pid) =>
+      readFileSync(`/proc/${pid}/cmdline`, "utf8").startsWith("sleep"))!;
+    const inBox = /^NSpid:.*\s([0-9]+)\s*$/m.exec(readFileSync(`/proc/${host}/status`, "utf8"))![1];
+    // A carry-out's file its end never removed, its pid since taken by another process: the
+    // boot is this one, the start another.
+    box.write("/var/lib/ta/carry.pid",
+              `${inBox} ${readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()} 1`);
+    try {
+      expect(box.runner(COMMAND.carryDrop).code).toBe(0);
+      expect(existsSync(`/proc/${host}`)).toBe(true);
+      expect(existsSync(box.path("/var/lib/ta/carry.pid"))).toBe(false);
+    } finally {
+      process.kill(host, "SIGKILL");
+      await other;
     }
   });
 
