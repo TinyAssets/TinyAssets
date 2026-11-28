@@ -52,7 +52,8 @@
  */
 import { sha256Hex } from "../../contract/src/digest";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, type Stats } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, renameSync,
+         type Stats } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -175,6 +176,23 @@ export function keepSeen(seen: Record<string, SeenSession>): void {
 export type Held = Pick<Known, "sha256" | "unread"> | null;
 
 /**
+ * Whether the owner's files hold a store's session copy as it is (the mirror's row its hash):
+ * one a staging never sends (`stageSessions`), and a move never carries (`runner.ts`
+ * `carry-out`), since a resume fetches it from the owner's files where the store lacks it.
+ */
+export function synced(session: Pick<StoreSession, "digest">, row: Held | undefined): boolean {
+  return row?.sha256 === session.digest;
+}
+
+/** What the mirror holds of each of `paths` (`Held`), as the root runner asks it. */
+export function heldOf(mirror: Mirror, paths: readonly string[]): Record<string, Held> {
+  return Object.fromEntries(paths.map((path): [string, Held] => {
+    const row = mirror.get(path);
+    return [path, row === undefined ? null : { sha256: row.sha256, unread: row.unread }];
+  }));
+}
+
+/**
  * The root runner's step before a run's sync-out: every engine's session whose bytes are not
  * the ones the owner's files were last synced with (`known`: the sync mirror's row of each
  * path, read under the sync agent's lock) staged into the sync agent's `out/<run>`: this
@@ -199,8 +217,8 @@ export async function stageSessions(
   for (const session of sessions) {
     const store = `${STORE}/${session.rec.id}`;
     const row = held[session.path];
-    if (row?.sha256 === session.digest) {
-      if (row.unread) {
+    if (synced(session, row)) {
+      if (row?.unread === true) {
         await withStore(session.rec, () => {
           if (stillHashed(join(store, session.rel), session)) {
             remove(join(store, session.rel));
@@ -971,7 +989,7 @@ interface Selection {
   readonly matchMs: () => number;
 }
 
-function selection(place: Place, mirror: Mirror): Selection {
+function selection(place: Pick<Place, "local" | "authority">, mirror: Mirror): Selection {
   const list = syncIgnore(place.local);
   const matcher = ignoredBy(list.lines);
   let matchMs = 0;
@@ -1103,6 +1121,30 @@ async function upload(client: SyncClient, op: Op,
     throw error;
   }
   return intentId;
+}
+
+/**
+ * What sync-out does with a mirror row's path in its removal scan (`syncOut`), and so what a
+ * move counts as unsent (`carryOut`): nothing (`pass`: a session, outside the workspace, a
+ * client's read-only tree, a file still there, or a row a take on this page let go); keep it,
+ * never removed (`kept`: a path a custom line keeps out, the owner's as it was); take the
+ * owner's (`take`: marked, the owner's file this sandbox could not take, where it now can be);
+ * or send its removal (`remove`).
+ */
+function rowOut(place: Pick<Place, "local" | "authority">, ignored: Selection["ignored"],
+                mirror: Mirror, path: string): "pass" | "kept" | "take" | "remove" {
+  if (path.startsWith(`${SESSIONS}/`) || !path.startsWith(`${WORKSPACE}/`)
+      || (place.authority !== "owner" && clientReadOnly(path))) {
+    return "pass";
+  }
+  if (ignored(path.slice(`${WORKSPACE}/`.length)) === "custom") {
+    return "kept";
+  }
+  if (fileStat(localOf(place, path)) !== null) {
+    return "pass";
+  }
+  const row = mirror.get(path);
+  return row === undefined ? "pass" : row.unread ? "take" : "remove";
 }
 
 /** A path's local identity now: a regular file's stat, or null when it is gone or not one. */
@@ -1326,17 +1368,12 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
   // The walk's files land (their conflicts taken) before the scan, so a path marked behind
   // them is taken by this sync.
   await send();
-  // What the mirror knows and the workspace no longer holds goes, page by page; a path a
-  // custom line keeps out is never removed (the owner keeps it as it was); a path marked
-  // (`mark`: the owner's file this sandbox could not take) is taken, where it now can be.
+  // What the mirror knows and the workspace no longer holds goes, page by page (`rowOut`).
   for (let after = "", known = mirror.page(after, PAGE); known.length > 0;
        known = mirror.page(after, PAGE)) {
     for (const path of known) {
-      if (path.startsWith(`${SESSIONS}/`) || !path.startsWith(`${WORKSPACE}/`)
-          || (place.authority !== "owner" && clientReadOnly(path))) {
-        continue;
-      }
-      if (ignored(path.slice(`${WORKSPACE}/`.length)) === "custom") {
+      const out = rowOut(place, ignored, mirror, path);
+      if (out === "kept") {
         // Never removed (the owner keeps it as it was); its changes, never sent, are said.
         kept += 1;
         const stat = fileStat(localOf(place, path));
@@ -1346,20 +1383,11 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
             skipped.push({ path, code: "held_back" });
           }
         }
-        continue;
-      }
-      if (fileStat(localOf(place, path)) !== null) {
-        continue;
-      }
-      const row = mirror.get(path);
-      if (row === undefined) {
-        continue;  // gone with a folder a take on this page let go
-      }
-      if (row.unread) {
+      } else if (out === "take") {
         mirror.drop(path);
         await theirs(client, place, mirror, select, path, "file", undefined);
-      } else {
-        await add({ op: "remove", path, base: row.version });
+      } else if (out === "remove") {
+        await add({ op: "remove", path, base: mirror.get(path)!.version });
       }
     }
     after = known.at(-1)!;
@@ -1370,6 +1398,104 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
            match_ms: Math.round(matchMs()), unapplied: unapplied.slice(0, LISTED),
            unapplied_count: unapplied.length, list_bytes_past: past, unnamed,
            unnamed_count: unnamedCount };
+}
+
+/**
+ * A template move's part of the sync's state (`runner.ts` `carry-out`), written into `dir` (the
+ * sync agent's own), and refused (false, its caller dropping `dir`) while the workspace holds
+ * anything sync-out would send or remove, by sync-out's own rules: a file it would offer
+ * (`differs`, against its row: a file with no row or another identity) or a row it would remove
+ * (`rowOut`). The workspace's files the sync holds are not carried: the next sandbox's first
+ * sync-in reads them from the owner's files, as a new sandbox's does. What is carried:
+ * - `dir/mirror.db`, a mirror of every session row (what the owner's files hold of each store
+ *   copy, carried with the store), its cursor 0;
+ * - `dir/dirs.json`, every folder the walk met (`walkTree`, the sync-ignore's own `skip`), so
+ *   each comes back, an empty one or one whose entries no sync holds among them;
+ * - `dir/entries.list`, what of the workspace no sync can hold, by each path's bytes from its
+ *   top, NUL-ended, for the root runner to pack with its owner and mode: each link (but the
+ *   projection's own, `made`, which the next sync-in makes again), each entry whose name is not
+ *   UTF-8, and each this user may not read (a folder it may not list, a file it may not read: a
+ *   run user's own, `0700` or `0600`), whole.
+ * What the sync-ignore keeps out is the working copy's own, never carried; nor is a mode alone
+ * of a file the sync holds, which no row keeps; nor a socket, which no run's state is.
+ */
+export async function carryOut(place: Pick<Place, "local" | "authority">, mirror: Mirror,
+                               dir: string, made: ReadonlySet<string>): Promise<boolean> {
+  const { ignored, skip } = selection(place, mirror);
+  const top = Buffer.from(`${place.local}/`);
+  const dirs: string[] = [];
+  const whole: Buffer[] = [];
+  // A folder this user may not list is no empty one: the walk tells it, and it goes whole.
+  const unlisted = new Set<string>();
+  for (const met of walkTree(place.local, { skip, unlisted: (rel) => unlisted.add(rel) })) {
+    if (met.kind === "unnamed") {
+      whole.push(met.at.subarray(top.length));
+    } else if (met.kind === "file") {
+      // One this user may not read is no sync's (it skips it, `offer`): it goes whole. One it
+      // may read and sync-out would send holds the carry.
+      const path = `${WORKSPACE}/${met.rel}`;
+      const stat = fileStat(localOf(place, path));
+      if (!readable(met.at)) {
+        whole.push(Buffer.from(met.rel));
+      } else if (stat !== null && await differs(place, path, stat, mirror.get(path))) {
+        return false;
+      }
+    } else if (met.kind === "passed") {
+      if (lstatSync(met.at, { throwIfNoEntry: false })?.isSymbolicLink() === true
+          && !skip(met.rel, false) && !made.has(met.at)) {
+        whole.push(Buffer.from(met.rel));
+      }
+    } else if (unlisted.has(met.rel)) {
+      whole.push(Buffer.from(met.rel));
+    } else {
+      dirs.push(met.rel);
+    }
+  }
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  // The rows a page at a time, each session row written as it comes.
+  const out = openMirror(join(dir, "mirror.db"));
+  try {
+    for (let after = "", known = mirror.page(after, PAGE); known.length > 0;
+         known = mirror.page(after, PAGE)) {
+      for (const path of known) {
+        if (inSessions(path)) {
+          out.put(path, mirror.get(path)!);
+        } else if (rowOut(place, ignored, mirror, path) === "remove") {
+          return false;
+        }
+      }
+      after = known.at(-1)!;
+    }
+  } finally {
+    out.close();
+  }
+  safeWrite(dir, join(dir, "dirs.json"), new TextEncoder().encode(JSON.stringify(dirs)), 0o600);
+  safeWrite(dir, join(dir, "entries.list"),
+            Buffer.concat(whole.flatMap((rel) => [rel, Buffer.from([0])])), 0o600);
+  return true;
+}
+
+/** Whether this user may read the entry at `at`, and list it where it is a folder. */
+function readable(at: string | Buffer): boolean {
+  try {
+    accessSync(at, lstatSync(at).isDirectory() ? constants.R_OK | constants.X_OK
+      : constants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A move's carry (`carryOut`'s `dir`, in a new sandbox) put in place: the carried mirror as this
+ * sandbox's (`mirrorPath`); the root runner puts back the workspace's folders and entries. A
+ * sandbox that already holds a mirror is no new one, and is refused, changing nothing.
+ */
+export function carryIn(dir: string, mirrorPath: string): void {
+  if (existsSync(mirrorPath)) {
+    throw new Error("this sandbox holds a mirror already: a carry goes into a new sandbox only");
+  }
+  renameSync(join(dir, "mirror.db"), mirrorPath);
 }
 
 /**
@@ -1389,7 +1515,7 @@ function opBytes(op: Op, fields: Record<string, unknown>): number {
  * the identity the owner's files hold of it (none: any bytes are others): read again only
  * when its size and change time do not settle it.
  */
-async function differs(place: Place, path: string, stat: Stats,
+async function differs(place: Pick<Place, "local">, path: string, stat: Stats,
                        sent: Identity | undefined): Promise<boolean> {
   if (sent === undefined || Number(stat.size) !== sent.size) {
     return true;

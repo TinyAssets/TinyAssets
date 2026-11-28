@@ -23,8 +23,8 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { canonical } from "../../contract/src/canonical";
 import { ANSWERS, CARRY_FILE, COMMAND, EXIT, inboxCode, inboxDoc, incoming, INSTALL,
-         INTERNAL_COMMANDS, JOBS, LEASE_FILE, LOADER, PROTOCOL, RUNNERS, SPEAKS, STATE_DIR,
-         WORKER_COMMANDS } from "./protocol";
+         INTERNAL_COMMANDS, JOBS, LEASE_FILE, LOADER, OWN_COMMANDS, PROTOCOL, RUNNERS, SPEAKS,
+         STATE_DIR, WORKER_COMMANDS } from "./protocol";
 import { checkFormat, dropRunners, type FormatRule, formatStep, READS,
          STATE_FORMAT } from "./state-format";
 import { openMirror } from "./sync";
@@ -215,7 +215,8 @@ describe("the Worker's protocol with the runner", () => {
     const named = Object.values(COMMAND);
     expect(new Set(named).size).toBe(named.length);
     // Each the runner takes is the Worker's or the runner's own: one of them alone.
-    expect([...WORKER_COMMANDS, ...INTERNAL_COMMANDS].sort()).toEqual([...named].sort());
+    expect([...WORKER_COMMANDS, ...OWN_COMMANDS, ...INTERNAL_COMMANDS].sort())
+      .toEqual([...named].sort());
     expect([...named].sort()).toEqual([...PROTOCOLS[String(PROTOCOL)]!.commands].sort());
   });
 
@@ -234,11 +235,15 @@ describe("the Worker's protocol with the runner", () => {
     }
   });
 
-  it("has the Worker send only commands every protocol it speaks records", () => {
+  it("has the Worker send only commands every protocol it speaks records, but to its own runner",
+     () => {
     for (const protocol of SPEAKS) {
       expect(WORKER_COMMANDS.filter((command) =>
         !PROTOCOLS[String(protocol)]!.commands.includes(command))).toEqual([]);
     }
+    // What it sends its own runner alone, that runner's protocol records.
+    expect(OWN_COMMANDS.filter((command) =>
+      !PROTOCOLS[String(PROTOCOL)]!.commands.includes(command))).toEqual([]);
   });
 
   it("names the exit codes, the paths and the answers its protocol's record names", () => {
@@ -246,7 +251,8 @@ describe("the Worker's protocol with the runner", () => {
     expect(EXIT).toEqual(record.exit);
     expect({ loader: LOADER, install: INSTALL, runners: RUNNERS, state: STATE_DIR,
              incoming: incoming("<digest>"), inbox_doc: inboxDoc("<id>"),
-             inbox_code: inboxCode("<id>"), lease: LEASE_FILE }).toEqual(record.paths);
+             inbox_code: inboxCode("<id>"), lease: LEASE_FILE, carry: CARRY_FILE })
+      .toEqual(record.paths);
     expect(ANSWERS).toEqual(record.answers);
   });
 

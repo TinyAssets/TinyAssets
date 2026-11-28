@@ -743,7 +743,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 - [x] The platform's canary and one alert path, as d3 §J2 and §J3 design them (R6; X5,
   `x5.md`). Live from `routes` (§9 step 13).
 - [ ] The canary's alerts for what is only log lines today (list3 P18): `sandbox_waiting`,
-  `sandbox_renewal_refused`, `sandbox_runner_mismatch`, `exceededMemory`, and E2B's team metrics
+  `sandbox_renewal_refused`, `sandbox_runner_mismatch`, `sandbox_move_stuck` (a template move
+  that failed three tries in a row, `untangle-2026-11/template-move.md`), `exceededMemory`,
+  and E2B's team metrics
   (`/teams/{id}/metrics/max`) against the concurrency ceiling. Reading the logs needs a
   read-only Cloudflare token (Workers Observability Read), not the deploy token. E2B's credit
   and spend have no API. (The off-account copy's alarm past two nights is built: `x7.md`.)

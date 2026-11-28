@@ -10,7 +10,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { bootId, tryLock, unlock, withLock } from "./pid-lock";
+import { bootId, holderLine, tryLock, unlock, withLock } from "./pid-lock";
 
 const dirs: string[] = [];
 function lockPath(): string {
@@ -34,7 +34,8 @@ describe("the runner's lock", () => {
   it("is held by its live holder alone, named whole, until it lets go", () => {
     const lock = lockPath();
     expect(tryLock(lock)).toBe(true);
-    expect(readFileSync(lock, "utf8")).toBe(`${process.pid} ${bootId()}`);
+    expect(readFileSync(lock, "utf8")).toBe(holderLine());
+    expect(holderLine()).toMatch(new RegExp(`^${process.pid} ${bootId()} [0-9]+$`));
     expect(tryLock(lock)).toBe(false);
     // Nothing but the lock beside it: what named it was linked into place, then let go.
     expect(readdirSync(join(lock, ".."))).toEqual(["lock"]);
@@ -50,6 +51,17 @@ describe("the runner's lock", () => {
     expect(tryLock(lock)).toBe(true);
     writeFileSync(lock, `1 ${bootId()}`);  // pid 1 of this boot: held
     expect(tryLock(lock)).toBe(false);
+  });
+
+  it("is taken over from a holder whose pid another process took since, begun at another time",
+     () => {
+    const lock = lockPath();
+    const pid1 = readFileSync("/proc/1/stat", "utf8");
+    const began = pid1.slice(pid1.lastIndexOf(")") + 2).split(" ")[19]!;
+    writeFileSync(lock, `1 ${bootId()} ${began}`);  // pid 1 itself: held
+    expect(tryLock(lock)).toBe(false);
+    writeFileSync(lock, `1 ${bootId()} ${String(Number(began) + 1)}`);  // another process's
+    expect(tryLock(lock)).toBe(true);
   });
 
   it("is taken over from a holder whose lock names no boot", () => {
@@ -169,7 +181,7 @@ describe("the runner's lock", () => {
       expect(Date.now() - began).toBeLessThan(15_000);
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    expect(readFileSync(lock, "utf8")).toBe(`${process.pid} ${bootId()}`);
+    expect(readFileSync(lock, "utf8")).toBe(holderLine());
     expect(readdirSync(join(lock, "..")).filter((name) => name.endsWith(".gone"))).toEqual([]);
   });
 });

@@ -25,6 +25,8 @@ import { give, group, type Identity, killAll, SHARED_GROUP, take } from "./users
 const STATE = STATE_DIR;
 /** Each engine's store: what a run's home is made from and kept back into. */
 export const STORE = `${STATE}/store`;
+/** Each engine's store generation, one file an engine (`generation`). */
+export const GENERATIONS = `${STATE}/generations`;
 
 /**
  * The engine's CLI record, checked whole when read (`servedRecord`), never at import: so what
@@ -101,13 +103,13 @@ export async function withStore<T>(rec: Served, act: () => T): Promise<T> {
  * undoes it, nor clobbers a new sign-in).
  */
 export function generation(rec: Served): number {
-  const path = `${STATE}/generations/${rec.id}`;
+  const path = `${GENERATIONS}/${rec.id}`;
   return existsSync(path) ? Number(readFileSync(path, "utf8")) : 0;
 }
 
 export function nextGeneration(rec: Served): void {
-  safeDirs("/", `${STATE}/generations`, 0o700);
-  writeFileSync(`${STATE}/generations/${rec.id}`, String(generation(rec) + 1), { mode: 0o600 });
+  safeDirs("/", GENERATIONS, 0o700);
+  writeFileSync(`${GENERATIONS}/${rec.id}`, String(generation(rec) + 1), { mode: 0o600 });
 }
 
 /**

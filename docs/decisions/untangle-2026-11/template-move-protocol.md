@@ -91,9 +91,9 @@ the stage owner has a sandbox, so it can.
 
 ## Owed
 
-- [ ] untangle/template-move (#5857): protocol 6's second deploy, the runner speaking 6 and taking
+- [x] untangle/template-move (#5857): protocol 6's second deploy, the runner speaking 6 and taking
   the carry, merged only once the stage serves this (live: this change's deploy). The kit's
   `ordered` refuses a deploy of it before then; the base-branch guard only its merge until this is
-  on main.
+  on main. Done (#5857).
 - [ ] untangle/runner-protocol-6-contract: protocol 6's contract, the Worker speaking 6 alone,
   once no deployed runner speaks 5.

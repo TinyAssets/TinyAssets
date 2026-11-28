@@ -13,9 +13,10 @@
  * - a sandbox's own daemon, envd, on the shared sandbox host `sandbox.e2b.app`, routed by
  *   `E2b-Sandbox-Id` and `E2b-Sandbox-Port`, by the sandbox's envd token
  *   (`X-Access-Token`), as root (HTTP Basic): a file upload (`POST /files`, the bytes as
- *   `application/octet-stream`) and a process (`/process.Process/Start`, a Connect server
- *   stream of `application/connect+json` envelopes: the start event with the pid, stdout and
- *   stderr in base64, then the end event with the exit code). A process the stream is dropped
+ *   `application/octet-stream`), its read (`GET /files`, the bytes as stored) and a process
+ *   (`/process.Process/Start`, a Connect server stream of `application/connect+json`
+ *   envelopes: the start event with the pid, stdout and stderr in base64, then the end event
+ *   with the exit code). A process the stream is dropped
  *   from keeps running (probed); the runner's own launch daemonizes anyway, so nothing relies
  *   on that.
  *
@@ -52,6 +53,13 @@ type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;
  * object's method. The fetch is named here alone (`guards/config.test.ts`).
  */
 export const runtimeFetch: Fetcher = (url, init) => fetch(url, init);
+
+/** The runtime's fetch, each call cut at `until` (ms since the epoch). */
+export function fetchUntil(until: number): Fetcher {
+  return (url, init) => runtimeFetch(url, { ...init,
+                                            signal: AbortSignal.timeout(Math.max(0,
+                                              until - Date.now())) });
+}
 
 /** A running sandbox, as envd is reached. */
 export interface Handle {
@@ -246,6 +254,21 @@ export class E2bTransport {
     if (response.status !== 200) {
       throw new E2bError(response.status, null, `envd's upload answered ${response.status}`);
     }
+  }
+
+  /** The file at `path`, read whole as root, `bytes` long, or it fails loudly. */
+  async download(handle: Handle, path: string, bytes: number): Promise<Uint8Array> {
+    if (!path.startsWith("/") || path.includes("\0")) {
+      throw new Error("a download's path is absolute");
+    }
+    const response = await this.#fetch(`${E2B_ENVD}/files?path=${encodeURIComponent(path)
+      }&username=root`, { method: "GET", headers: this.#envd(handle) });
+    const read = new Uint8Array(await response.arrayBuffer());
+    if (response.status !== 200 || read.byteLength !== bytes) {
+      throw new E2bError(response.status, null, `envd's download answered ${response.status
+        } with ${read.byteLength} bytes, not ${bytes}`);
+    }
+    return read;
   }
 
   /**

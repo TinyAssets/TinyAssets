@@ -14,10 +14,14 @@
  * test config binds: a single-module fake imports nothing of the runner's. The commands
  * answer as scripted: a sign-in check by engine, the runner's state (for `state` and
  * `quiet-wait`; `state` with the runner's protocol), `adopt` refused ("no") while the state
- * is live, `prepare` dropping every other runner while nothing lives, and every other
- * command done, answering nothing. An upload can be refused (a full disk), a command's
- * reply lost after it ran (`lost`), and a command held before it runs until the test lets
- * it go (`hold`, `/release`).
+ * is live, `prepare` dropping every other runner while nothing lives, a move's `carry-out`
+ * refused ("no") while the state is live and otherwise packing an archive of its sandbox's at
+ * the record's carry path (answered by its size and digest), `carry-in` taking only an upload
+ * there of the digest it names, `carry-drop` dropping the archive, and every other command
+ * done, answering nothing. An upload can be refused (a full disk), a command's reply lost after
+ * it ran (`lost`), a kill's, a create's or a resume's reply lost after it was done (`killLost`,
+ * `createLost`, `connectLost`), and a command held before
+ * it runs until the test lets it go (`hold`, `/release`).
  */
 import { env } from "cloudflare:workers";
 
@@ -25,7 +29,8 @@ import { env } from "cloudflare:workers";
 interface Protocol {
   readonly exit: { readonly ok: number; readonly usage: number; readonly no: number;
                    readonly absent: number; readonly mismatch: number };
-  readonly paths: { readonly install: string; readonly incoming: string };
+  readonly paths: { readonly install: string; readonly incoming: string;
+                     readonly carry: string };
 }
 
 const protocol = (): Protocol => (env as unknown as { PROTOCOL: Protocol }).PROTOCOL;
@@ -74,6 +79,14 @@ interface Script {
   room: number | null;
   /** A runner command that runs, but whose reply envd loses (answered 502 after it ran). */
   lost: string | null;
+  /** The next kill kills, but its reply is lost (answered 502). */
+  killLost: boolean;
+  /** The next create makes its sandbox, but its reply is lost (answered 502). */
+  createLost: boolean;
+  /** The next resume resumes its sandbox, but its reply is lost (answered 502). */
+  connectLost: boolean;
+  /** The size `carry-out` reports of its archive, in place of the archive's own. */
+  carryBytes: number | null;
   /**
    * The next run of a runner command, held as it arrives until the test lets it go
    * (`/release`): what it finds is read then. The state lists it while held (`held`).
@@ -112,7 +125,8 @@ function reset(): void {
                   full: false, pauseMode: "full", noCount: false, down: 0,
                   refuseResume: false, broken: null, tampered: null,
                   protocol: (env as unknown as { RUNNER_PROTOCOL: number }).RUNNER_PROTOCOL,
-                  room: null, lost: null, hold: null };
+                  room: null, lost: null, killLost: false, createLost: false,
+                  connectLost: false, carryBytes: null, hold: null };
 }
 reset();
 
@@ -146,7 +160,7 @@ function b64(text: string): string {
   return btoa(String.fromCharCode(...new TextEncoder().encode(text)));
 }
 
-async function sha256(bytes: ArrayBuffer): Promise<string> {
+async function sha256(bytes: BufferSource): Promise<string> {
   return [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
     .map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
@@ -178,7 +192,7 @@ function loader(box: FakeSandbox, raw: string[]):
   if (fake.script.tampered === digest) {
     return { code: exit.mismatch, out: "", argv, runner: digest };
   }
-  if (rest[0] === "adopt") {
+  if (rest[0] === "adopt" || rest[0] === "carry-out") {
     return { code: fake.script.state.live > 0 ? exit.no : exit.ok, out: "", argv,
              runner: digest };
   }
@@ -229,6 +243,10 @@ async function api(request: Request, url: URL): Promise<Response> {
                                metadata: b.metadata, template: b.templateID,
                                secure: b.secure === true, runners: new Set() };
     fake.sandboxes.set(id, box);
+    if (fake.script.createLost) {
+      fake.script.createLost = false;
+      return new Response("the reply was lost", { status: 502 });
+    }
     return Response.json({ templateID: b.templateID, sandboxID: id, clientID: "x",
                            envdVersion: "0.10.0",
                            ...(box.secure ? { envdAccessToken: box.token } : {}) },
@@ -258,6 +276,10 @@ async function api(request: Request, url: URL): Promise<Response> {
   }
   if (request.method === "DELETE") {
     fake.sandboxes.delete(id);
+    if (fake.script.killLost) {
+      fake.script.killLost = false;
+      return new Response("the reply was lost", { status: 502 });
+    }
     return new Response(null, { status: 204 });
   }
   if (action === "pause") {
@@ -282,6 +304,10 @@ async function api(request: Request, url: URL): Promise<Response> {
     box.state = "running";
     box.startedAt = Date.now();
     box.timeout = (body as { timeout: number }).timeout;
+    if (fake.script.connectLost) {
+      fake.script.connectLost = false;
+      return new Response("the reply was lost", { status: 502 });
+    }
     return connected(box, 201);
   }
   if (action === "network" && request.method === "PUT") {
@@ -302,6 +328,11 @@ async function envd(request: Request, url: URL): Promise<Response> {
     return new Response("paused", { status: 502 });
   }
   const user = atob((request.headers.get("Authorization") ?? "Basic ").slice(6)).split(":")[0]!;
+  if (url.pathname === "/files" && request.method === "GET") {
+    const file = fake.files.get(`${id}:${url.searchParams.get("path") ?? ""}`);
+    return file === undefined ? new Response("no such file", { status: 404 })
+      : new Response(file);
+  }
   if (url.pathname === "/files") {
     const path = url.searchParams.get("path") ?? "";
     const bytes = await request.arrayBuffer();
@@ -345,7 +376,29 @@ async function envd(request: Request, url: URL): Promise<Response> {
         await scheduler.wait(2);
       }
     }
-    const done = loader(box, raw);
+    let done = loader(box, raw);
+    const carry = `${id}:${protocol().paths.carry}`;
+    if (done.argv[1] === "carry-out" && done.code === protocol().exit.ok) {
+      // What lives in this sandbox alone, named by it, so a test sees where it went.
+      const archive = `carry of ${id}`;
+      fake.files.set(carry, archive);
+      const bytes = new TextEncoder().encode(archive);
+      done = { ...done, out: JSON.stringify({ bytes: fake.script.carryBytes ?? bytes.byteLength,
+                                              sha256: await sha256(bytes) }) };
+    }
+    if (done.argv[1] === "carry-drop") {
+      fake.files.delete(carry);
+    }
+    if (done.argv[1] === "carry-in") {
+      const archive = fake.files.get(carry);
+      fake.files.delete(carry);
+      const took = archive !== undefined
+        && await sha256(new TextEncoder().encode(archive)) === done.argv[2];
+      done = { ...done, code: took ? protocol().exit.ok : 1 };
+      if (took) {
+        fake.files.set(`${id}:carried`, archive!);
+      }
+    }
     const argv = done.argv;
     log.push({ sandbox: id, argv, runner: done.runner, user });
     if (command !== undefined && command === fake.script.lost) {
@@ -410,6 +463,13 @@ export default {
                                  timeout: 60, pauseMode: "full", network: null, metadata,
                                  template: "t", secure: true, runners: new Set() });
         return Response.json({ id });
+      }
+      if (url.pathname === "/metadata") {
+        // A sandbox's metadata set whole: one made from an older pin, or before any was named.
+        const { id, metadata } = await request.json() as { id: string;
+                                                          metadata: Record<string, string> };
+        fake.sandboxes.get(id)!.metadata = metadata;
+        return Response.json({});
       }
       if (url.pathname === "/runners") {
         // A sandbox's installed runners set whole: one born under an older Worker's.

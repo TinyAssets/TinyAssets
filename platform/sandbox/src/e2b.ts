@@ -5,14 +5,15 @@
  * sandbox's own envd token, probed live), info (`GET /sandboxes/{id}`), pause
  * (`POST /sandboxes/{id}/pause`, `503` while a previous snapshot finishes: the sandbox keeps
  * running), connect, which resumes a paused sandbox and only extends its timeout
- * (`POST /v2/sandboxes/{id}/connect`), the team's running count, and the list of an
- * owner's sandboxes by their metadata (the transport's). The tools' calls (a template's build and tags, a throwaway sandbox,
- * the team's webhooks) are `../e2b/admin.ts`'s, which the Worker never imports.
+ * (`POST /v2/sandboxes/{id}/connect`), the team's running count, and the list of an owner's
+ * sandboxes by their metadata (the transport's). The tools' calls (a template's build and
+ * tags, a throwaway sandbox, the team's webhooks) are `../e2b/admin.ts`'s, which the Worker
+ * never imports.
  */
 import type { NetworkDocument } from "../../contract/src/sandbox";
 import { object } from "../../contract/src/checks";
 import {
-  created, E2bError, E2bTransport, type Handle, runtimeFetch, sandboxId,
+  created, E2bError, E2bTransport, fetchUntil, type Handle, runtimeFetch, sandboxId,
 } from "../e2b/transport";
 
 /**
@@ -54,9 +55,9 @@ function info(value: unknown): SandboxInfo {
   };
 }
 
-/** The Worker's `E2b`, on the runtime's own fetch. */
-export function runtimeE2b(key: string): E2b {
-  return new E2b(key, runtimeFetch);
+/** The Worker's `E2b`, on the runtime's own fetch, each call cut at `until` where it is a time. */
+export function runtimeE2b(key: string, until: number): E2b {
+  return new E2b(key, Number.isFinite(until) ? fetchUntil(until) : runtimeFetch);
 }
 
 /** The sandbox Worker's E2B: the transport's calls and a sandbox's lifecycle. */

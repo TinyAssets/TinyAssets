@@ -64,17 +64,29 @@ export const COMMAND = Object.freeze({
   sync: "sync",
   decide: "decide",
   hooks: "hooks",
+  carryOut: "carry-out",
+  carryIn: "carry-in",
+  carryDrop: "carry-drop",
 } as const);
 
 export type Command = (typeof COMMAND)[keyof typeof COMMAND];
 
-/** What the Worker sends. */
+/** What the Worker sends to a runner of any protocol it speaks. */
 export const WORKER_COMMANDS = Object.freeze([
   COMMAND.prepare, COMMAND.adopt, COMMAND.signinCheck, COMMAND.launch, COMMAND.cancel,
   COMMAND.state, COMMAND.quietWait, COMMAND.renewWait, COMMAND.renewed, COMMAND.recover,
   COMMAND.loginLaunch, COMMAND.loginInput, COMMAND.loginDrop, COMMAND.loginCancel,
 ] as const);
+/**
+ * What the Worker sends to its own runner alone, the one it ships (`control.ts` `#own`): a
+ * template move's carry (`carry-out` in the sandbox it leaves, `carry-in` in the one it makes,
+ * `carry-drop` in the one it leaves when the move goes no further), which only a sandbox nothing
+ * lives in takes, so never one whose runner it keeps.
+ */
+export const OWN_COMMANDS = Object.freeze([COMMAND.carryOut, COMMAND.carryIn,
+                                           COMMAND.carryDrop] as const);
 export type WorkerCommand = (typeof WORKER_COMMANDS)[number];
+export type OwnCommand = (typeof OWN_COMMANDS)[number];
 
 /**
  * The commands a run's CLI runs on its events and calls, the hook helper and the agent's
@@ -278,14 +290,22 @@ export interface QuietAnswer {
   readonly quiet: boolean;
 }
 
+/** `carry-out`'s answer: the archive at `CARRY_FILE`, its size and its SHA-256. */
+export interface CarryAnswer {
+  readonly bytes: number;
+  readonly sha256: string;
+}
+
 /** An answer's fields, each with its JSON type. */
-export type AnswerFields<T> = Readonly<Record<keyof T, "number" | "boolean">>;
+export type AnswerFields<T> = Readonly<Record<keyof T, "number" | "boolean" | "string">>;
 
 /** The answers the Worker reads, by command: each field's JSON type, which it holds them to. */
 export const ANSWERS: {
   readonly [COMMAND.state]: AnswerFields<StateAnswer>;
   readonly [COMMAND.quietWait]: AnswerFields<QuietAnswer>;
+  readonly [COMMAND.carryOut]: AnswerFields<CarryAnswer>;
 } = Object.freeze({
   [COMMAND.state]: Object.freeze({ live: "number", quiet: "boolean", protocol: "number" }),
   [COMMAND.quietWait]: Object.freeze({ live: "number", quiet: "boolean" }),
+  [COMMAND.carryOut]: Object.freeze({ bytes: "number", sha256: "string" }),
 });
