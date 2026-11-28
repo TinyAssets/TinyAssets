@@ -74,7 +74,8 @@ export interface SandboxStart {
   /** The CLI record the runner invokes, and the credential it runs on. */
   readonly engine: string;
   readonly credential: CredentialKind;
-  readonly model: string | null;
+  /** The model the run is given (`owner/src/runs.ts` `choose`), by its record's `model_argv`. */
+  readonly model: string;
   /** The engine's session id to resume (`resume_argv`), or null for a new conversation. */
   readonly session_id: string | null;
   /** The input, on the engine's stdin or its prompt argument (the record says which). */

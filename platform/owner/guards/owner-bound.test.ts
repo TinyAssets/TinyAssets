@@ -44,7 +44,8 @@ import {
   DOORBELL_BLOB_CHARS, EGRESS_JSON_MAX,
   EGRESS_PATH_MAX, ENGINE_SIGNINS, ERROR_BYTES, IMAGE_MAX, INBOUND_ROUTE_MAX, INBOUND_SECRET_MAX,
   INPUT_BYTES, KEY_NAME_MAX, LOG_BYTES, LOG_ROW_BYTES, MANIFEST_PARTS, MAX_PATH_BYTES,
-  MESSAGE_ID_CHARS, MODELS_JSON_MAX, NATIVE_ID_CHARS, NOTICE_DETAIL, PART_ENTRY, PLACE_BYTES,
+  MESSAGE_ID_CHARS, MODEL_RECORD_MAX, MODELS_JSON_MAX, NATIVE_ID_CHARS, NOTICE_DETAIL,
+  PART_ENTRY, PLACE_BYTES,
   QUEUE_BYTES, QUEUE_ROWS, RESULT_BYTES, RUN_CONNECTORS_CHARS, RUN_ID_CHARS, SCHEDULE_ID_CHARS,
   SCHEDULES_KEPT,
   SCOPES_JSON_MAX, SEGMENT_ENTRY, SIGNIN_CODE_MAX, SIGNIN_LIST_CHARS, SIGNIN_MODELS_CHARS,
@@ -165,7 +166,8 @@ function inline(module: string, pattern: RegExp): number {
 }
 
 const CONNECTION_LIMITS = declared("connections", "CONNECTION_LIMITS", "maxConnections",
-                                   "maxRevokedKept", "maxModels", "maxFlowRows");
+                                   "maxRevokedKept", "maxModels", "maxModelsKept",
+                                   "maxFlowRows");
 const EGRESS_LIMITS = declared("egress", "EGRESS_LIMITS", "open", "receiptsKept",
                                "refusalsKept");
 const GRANT_LIMITS = declared("grants", "GRANT_LIMITS", "maxFreeClients", "maxOwnerClients",
@@ -199,6 +201,8 @@ const ORIGIN_CHARS = inline("schema", /origin TEXT CHECK \(origin IS NULL OR \(l
  * two equal).
  */
 const MODELS_BYTES = MODELS_JSON_MAX;
+/** A kept model's id, at the schema's check (each byte ASCII: `MODEL_ID`). */
+const MODEL_ID_BYTES = 256;
 const BLOB_CHARS = CONNECTION_BLOB_MAX;
 const EGRESS_BYTES = EGRESS_JSON_MAX;
 /** A scope's every field, and an owner-set client's name, in code points (`grants.ts`). */
@@ -550,10 +554,14 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     connection_credit: { rows: CN.maxConnections, bytes: ROW + 25 + 2 * NUMBER,
                          by: "one row an active connection, its revoke deleting it",
                          indexes: { connection_credit_due: key(NUMBER, 25) } },
-    connection_models: { rows: CN.maxConnections, bytes: ROW + 25 + MODELS_BYTES + NUMBER,
-                         by: "one row an active connection, its models as read within the " +
-                           "models' ceiling, its revoke deleting it",
-                         indexes: { connection_models_due: key(NUMBER, 25) } },
+    connection_model_reads: { rows: CN.maxConnections, bytes: ROW + 25 + NUMBER,
+                              by: "one row an active connection, when its models are read " +
+                                "next, its revoke deleting it",
+                              indexes: { connection_model_reads_due: key(NUMBER, 25) } },
+    connection_records: { rows: CN.maxModelsKept, bytes: ROW + 25 + MODEL_ID_BYTES
+                            + MODEL_RECORD_MAX + NUMBER,
+                          by: "maxModelsKept models across the connections, each its id and " +
+                            "its record at the schema's ceiling, and its score" },
     connection_flows: { rows: CN.maxFlowRows, bytes: ROW + 4 * KIB,
                         by: "maxFlowRows",
                         indexes: { connection_flows_by_expiry: key(NUMBER, 64) } },

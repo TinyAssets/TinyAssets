@@ -652,10 +652,6 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
   }
   const login = signsIn ? loginSpec(check, fields["login"], argv) : undefined;
   if (login !== undefined) {
-    if (engine.model_argv === undefined) {
-      check.fail("cli.engine.model_argv is present on a record that signs in: a run on the " +
-                 "sign-in passes cli.login.model");
-    }
     for (const state of login.state_checks ?? []) {
       const segments = homePath(state.path, false);
       if (segments === null || !secretSegments.some((secret) =>
@@ -919,8 +915,8 @@ function engineSpec(check: ReturnType<typeof checker>, value: unknown, argv: Arg
     check.fail("cli.engine has no invoke: a CLI is an engine, never a backend (ADR-033 " +
                "decision 2)");
   }
-  const fields = check.keys(value, "cli.engine", ["argv", "resume_argv", "events"],
-                            ["stdin", "model_argv"]);
+  const fields = check.keys(value, "cli.engine", ["argv", "resume_argv", "model_argv", "events"],
+                            ["stdin"]);
   const run = argv(fields["argv"], "cli.engine.argv");
   const resume = argv(fields["resume_argv"], "cli.engine.resume_argv");
   if (run[0] !== "{bin}" || resume[0] !== "{bin}") {
@@ -938,8 +934,10 @@ function engineSpec(check: ReturnType<typeof checker>, value: unknown, argv: Arg
       check.fail(`cli.engine.${what} carries {prompt} exactly when the prompt is not on stdin`);
     }
   }
-  const model = fields["model_argv"] === undefined ? undefined
-    : argv(fields["model_argv"], "cli.engine.model_argv", 8);
+  const model = argv(fields["model_argv"], "cli.engine.model_argv", 8);
+  if (!model.some((item) => item.includes("{model}"))) {
+    check.fail("cli.engine.model_argv carries {model}: every run names its model");
+  }
   const kinds = ["session_id", "final_text", "error", "usage", "tool_call", "deferred",
                  "vendor_limit", "retry"] as const;
   const events = check.keys(fields["events"], "cli.engine.events", ["format", ...kinds]);
@@ -958,7 +956,7 @@ function engineSpec(check: ReturnType<typeof checker>, value: unknown, argv: Arg
   return Object.freeze({
     argv: Object.freeze(run), resume_argv: Object.freeze(resume),
     ...(prompted ? { stdin: "{prompt}" as const } : {}),
-    ...(model === undefined ? {} : { model_argv: Object.freeze(model) }),
+    model_argv: Object.freeze(model),
     events: Object.freeze(events) as unknown as EngineEvents,
   });
 }

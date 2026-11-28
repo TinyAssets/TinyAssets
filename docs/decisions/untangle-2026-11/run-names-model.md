@@ -174,7 +174,7 @@ That refusal now says so, with the remedy, on `auto` and on a named engine alike
 
 ## Owed
 
-- [ ] untangle/probe-model: the route probe names a model per sealed API. Its plan's step
+- [x] untangle/probe-model: the route probe names a model per sealed API. Its plan's step
   carries the model, for example from the gateway's catalog, so no engine runs its own default
   anywhere and a record's API order means nothing. Then, once the stage serves no owner before
   this release, the start requires a model: `SandboxStart.model` and `StartDoc.model` become

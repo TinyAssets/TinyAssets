@@ -173,11 +173,18 @@ export const RECOVERY_WINDOW_S = 30 * 86_400;
 /** An outside client's sealed credential blob (`connections.ts`), in characters. */
 export const CONNECTION_BLOB_MAX = 64 * 1024;
 /**
- * The models a connection keeps, as JSON, in bytes: `maxModels` of the largest record of
- * pi-ai's built-in catalogs, whole, fit (the owner's connections test scans them all and
- * holds it, at every pin).
+ * The models a connection committed before owner migration 35 kept on its row
+ * (`connections.models`), as JSON, in bytes. No code writes it since: a connection's models are
+ * one row a model, each within `MODEL_RECORD_MAX` (`untangle-2026-11/models-json-max.md`).
  */
 export const MODELS_JSON_MAX = 640 * 1024;
+/**
+ * One model's record as a connection keeps it (`owner/src/connections.ts`), as JSON, in bytes:
+ * twice every record of pi-ai's built-in catalogs at least (the owner's connections test scans
+ * them all and holds it, at every pin). A record past it is refused as any record the checker
+ * refuses.
+ */
+export const MODEL_RECORD_MAX = 2048;
 /**
  * Where a connection's credential may be forwarded, as JSON, in bytes. A source record's
  * endpoints are a few short paths (the largest bundled one is under 1 KiB), so a scope past

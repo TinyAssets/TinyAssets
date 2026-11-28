@@ -17,7 +17,7 @@ import { supportedApis } from "../../contract/src/api-rules";
 import type { Source } from "../../contract/src/egress-scope";
 import { PLATFORM_ONLY } from "../src/admission";
 import { CONNECTION_LIMITS } from "../src/connections";
-import { MODELS_JSON_MAX } from "../../contract/src/limits";
+import { MODEL_RECORD_MAX } from "../../contract/src/limits";
 import type { ModelRecord } from "../../contract/src/model-record";
 import type { EgressOpened, EgressRefusal } from "../../contract/src/owner";
 import type { Resealed } from "../../contract/src/gateway";
@@ -730,37 +730,65 @@ function servedRecords(): Promise<{ name: string; models: ModelRecord[] }[]> {
 
 let SERVED: ReturnType<typeof servedRecords> | undefined;
 
+/** A JSON text's bytes, as the object bounds a record by. */
+const bytesOf = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).length;
+
+/**
+ * A record of exactly `bytes` bytes as JSON, named `id`: a thinking map and price tiers, then
+ * its name (three-byte characters and one-byte ones, at most 200), padded to it.
+ */
+function sized(bytes: number, id: string): ModelRecord {
+  const record = (name: string, tiers: number): ModelRecord => ({
+    id, api: "anthropic-messages", name, reasoning: true,
+    thinkingLevelMap: { off: "none", minimal: null, low: "low", medium: "medium", high: "high",
+                        xhigh: "xhigh", max: "max" },
+    input: ["text", "image"], contextWindow: 200_000, maxTokens: 64_000,
+    cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75,
+            ...tiers === 0 ? {} : { tiers: Array.from({ length: tiers }, (_, at) => ({
+              inputTokensAbove: 1000 * (at + 1), input: 6, output: 22.5, cacheRead: 0.6,
+              cacheWrite: 7.5 })) } },
+  });
+  for (let tiers = 0; tiers <= 16; tiers++) {
+    const rest = bytes - bytesOf(record("", tiers));
+    const wide = Math.min(Math.floor(rest / 3), 100);
+    if (rest >= 1 && rest - 3 * wide <= 100) {
+      return record("\u20ac".repeat(wide) + "n".repeat(rest - 3 * wide), tiers);
+    }
+  }
+  throw new Error(`no record of ${bytes} bytes`);
+}
+
 describe("the largest built-in catalog", () => {
-  it("connects, found by a scan of pi-ai's providers", async () => {
-    let largest: { provider: string; api: string; baseUrl: string; count: number } | undefined;
+  it("connects on every API of its provider, found by a scan of pi-ai's providers, each " +
+     "record within half the record's bound", async () => {
+    // Each provider's records on every API the gateway runs, as one connection reads them.
+    const byProvider = new Map<string, { apis: Map<string, string>; count: number }>();
     for (const provider of builtinProviders()) {
-      const byApi = new Map<string, { count: number; baseUrl: string }>();
       for (const model of provider.getModels()) {
-        const seen = byApi.get(model.api) ?? { count: 0, baseUrl: model.baseUrl };
-        byApi.set(model.api, { ...seen, count: seen.count + 1 });
-      }
-      for (const [api, { count, baseUrl }] of byApi) {
-        if (supportedApis().includes(api) && count > (largest?.count ?? 0)) {
-          largest = { provider: provider.id, api, baseUrl, count };
+        if (supportedApis().includes(model.api)) {
+          const seen = byProvider.get(provider.id) ?? { apis: new Map(), count: 0 };
+          seen.apis.set(model.api, seen.apis.get(model.api) ?? model.baseUrl);
+          byProvider.set(provider.id, { apis: seen.apis, count: seen.count + 1 });
         }
       }
     }
-    expect(largest!.count).toBeGreaterThan(256);
-    expect(largest!.count * 2).toBeLessThanOrEqual(CONNECTION_LIMITS.maxModels);
-    const base = new URL(largest!.baseUrl);
+    const [provider, largest] = [...byProvider].reduce((a, b) => (b[1].count > a[1].count ? b : a));
+    expect(largest.count).toBeGreaterThan(256);
+    expect(largest.count * 2).toBeLessThanOrEqual(CONNECTION_LIMITS.maxModels);
+    const origin = new URL([...largest.apis.values()][0]!).origin;
     const record: Source = {
-      upstream: { provider: largest!.provider,
-                  apis: [{ api: largest!.api, base_url: largest!.baseUrl }],
+      upstream: { provider,
+                  apis: [...largest.apis].map(([api, base_url]) => ({ api, base_url })),
                   auth: { header: "authorization", scheme: "Bearer" } },
-      endpoints: [{ origin: base.origin, paths: [`${base.pathname.replace(/\/$/, "")}/*`],
-                    methods: ["GET", "POST"] }],
+      endpoints: [{ origin, paths: ["/*"], methods: ["GET", "POST"] }],
     };
     const listed = await catalog(record);
-    expect(listed).toHaveLength(largest!.count);
-    // `maxModels` of the largest record of any built-in catalog fit within the JSON bound.
-    const largestRecord = Math.max(...(await servedRecords()).flatMap(({ models }) =>
-      models.map((model) => JSON.stringify(model).length)));
-    expect(largestRecord * CONNECTION_LIMITS.maxModels).toBeLessThanOrEqual(MODELS_JSON_MAX);
+    expect(listed).toHaveLength(largest.count);
+    expect(new Set(listed.map((model) => model.api))).toEqual(new Set(largest.apis.keys()));
+    // Every record of every built-in catalog, as the gateway lists it, within half the bound.
+    const widest = Math.max(...(await servedRecords()).flatMap(({ models }) =>
+      models.map(bytesOf)));
+    expect(widest * 2).toBeLessThanOrEqual(MODEL_RECORD_MAX);
     expect(JSON.stringify(listed)).toContain("thinkingLevelMap");
     const r = await gated();
     const connection = await r.connect("sk-large", record, "Large", listed);
@@ -770,6 +798,15 @@ describe("the largest built-in catalog", () => {
       .toHaveLength(largest!.count);
   });
 });
+
+/**
+ * The lane's first read of each of the next `connections` connections refused, so each keeps
+ * its commit's records (the next is an hour later).
+ */
+function unread(r: Gated, connections: number): Promise<void> {
+  return r.gateway.arm("models", { refuse: { code: "internal", message: "internal" } },
+                       connections);
+}
 
 describe("a connected model's record", () => {
   /** Commit `models` on a fresh pending connection; the refusal's message, or null. */
@@ -790,26 +827,48 @@ describe("a connected model's record", () => {
       models.map((model, i) => ({ ...model, id: `${name}.${i}` })));
     expect(records.length).toBeGreaterThan(CONNECTION_LIMITS.maxModels);
     const r = await gated();
+    await unread(r, Math.ceil(records.length / CONNECTION_LIMITS.maxModels));
     for (let at = 0; at < records.length; at += CONNECTION_LIMITS.maxModels) {
       expect(await committed(r, records.slice(at, at + CONNECTION_LIMITS.maxModels))).toBeNull();
     }
-    const [kept] = await r.sql("SELECT SUM(json_array_length(models)) AS n FROM connections");
-    expect(kept!["n"]).toBe(records.length);
+    const kept = await r.sql("SELECT record FROM connection_records ORDER BY model");
+    expect(kept.map(({ record }) => JSON.parse(String(record))))
+      .toEqual(records.sort((a, b) => (a.id < b.id ? -1 : 1)));
+    expect(await r.sql("SELECT COUNT(*) AS n FROM connections WHERE models != '[]'"))
+      .toEqual([{ n: 0 }]);
   });
 
-  it("keeps maxModels of the largest built-in record", async () => {
-    const largest = (await servedRecords()).flatMap(({ models }) => models)
-      .reduce((a, b) => (JSON.stringify(b).length > JSON.stringify(a).length ? b : a));
-    // Each its own id, at the largest record's own length, so each record is as large as it.
-    const models = Array.from({ length: CONNECTION_LIMITS.maxModels }, (_, i) =>
-      ({ ...largest, id: `${largest.id.slice(0, -5)}.${String(i).padStart(4, "0")}` }));
-    expect(models.every((model) => JSON.stringify(model).length === JSON.stringify(largest).length))
-      .toBe(true);
-    expect(JSON.stringify(models).length).toBeGreaterThan(600 * 1024);
+  it("keeps a record of MODEL_RECORD_MAX bytes, and refuses one a byte past it", async () => {
     const r = await gated();
-    expect(await committed(r, models)).toBeNull();
-    expect((await r.sql("SELECT json_array_length(models) AS n FROM connections"))[0]!["n"])
-      .toBe(CONNECTION_LIMITS.maxModels);
+    await unread(r, 1);
+    expect(await committed(r, [sized(MODEL_RECORD_MAX, "m/at-bound")])).toBeNull();
+    expect(await committed(r, [sized(MODEL_RECORD_MAX + 1, "m/past-bound")]))
+      .toBe("invalid connection model");
+    expect(await r.sql("SELECT model, length(CAST(record AS BLOB)) AS bytes " +
+                       "FROM connection_records"))
+      .toEqual([{ model: "m/at-bound", bytes: MODEL_RECORD_MAX }]);
+  });
+
+  it("keeps maxModels at the record's bound on each connection, up to maxModelsKept across " +
+     "them, and refuses one more", { tags: ["large"] }, async () => {
+    const { maxModels, maxModelsKept } = CONNECTION_LIMITS;
+    const full = (at: number) => Array.from({ length: maxModels }, (_, i) =>
+      sized(MODEL_RECORD_MAX, `m/${at}.${String(i).padStart(4, "0")}`));
+    const r = await gated();
+    await unread(r, maxModelsKept / maxModels);
+    expect(await committed(r, [...full(0), sized(MODEL_RECORD_MAX, "m/one-more")]))
+      .toBe("invalid connection models");
+    for (let at = 0; at < maxModelsKept / maxModels; at++) {
+      expect(await committed(r, full(at))).toBeNull();
+    }
+    expect(await committed(r, [sized(MODEL_RECORD_MAX, "m/one-more")])).toBe(
+      "the owner's connections keep their limit of models; revoke one to connect another");
+    expect(await r.sql("SELECT COUNT(*) AS n, SUM(length(CAST(record AS BLOB))) AS bytes " +
+                       "FROM connection_records"))
+      .toEqual([{ n: maxModelsKept, bytes: maxModelsKept * MODEL_RECORD_MAX }]);
+    expect((await r.stub.connectionList(r.session())).connections
+      .filter((one) => one.status === "active").map((one) => one.models.length))
+      .toEqual(Array(maxModelsKept / maxModels).fill(maxModels));
   });
 
   it.each([
@@ -1160,12 +1219,19 @@ describe("what a key can pay for", () => {
 
 describe("the models it reaches now", () => {
   const OPENROUTER = "openrouter_user_models_v1";
-  /** Each kept read: its models' ids and scores, and whether a read is due again. */
-  const kept = async (r: Gated) =>
-    (await r.sql("SELECT models, due IS NOT NULL AS due FROM connection_models")).map((row) => ({
-      models: row["models"] === null ? null : (JSON.parse(String(row["models"])) as
-        [ModelRecord, number | null][]).map(([model, score]) => [model.id, score]),
-      due: row["due"] }));
+  /** Each connection's kept models, their ids and scores by id, and whether a read is due. */
+  const kept = async (r: Gated) => Promise.all((await r.sql(
+    "SELECT connection, due IS NOT NULL AS due FROM connection_model_reads")).map(async (row) => ({
+      models: (await r.sql("SELECT model, score FROM connection_records WHERE connection = ? " +
+                           "ORDER BY model", row["connection"]!))
+        .map((one) => [one["model"], one["score"]]),
+      due: row["due"] })));
+  /** Ids, or id and score pairs, in the order they are kept and listed: by id. */
+  const byId = <T extends string | readonly [string | undefined, unknown]>(list: T[]): T[] =>
+    [...list].sort((a, b) => {
+      const [x, y] = [typeof a === "string" ? a : a[0]!, typeof b === "string" ? b : b[0]!];
+      return x < y ? -1 : x > y ? 1 : 0;
+    });
   const models = async (r: Gated) =>
     (await r.stub.connectionList(r.session())).connections[0]!.models;
   /**
@@ -1174,11 +1240,11 @@ describe("the models it reaches now", () => {
    * outcome.
    */
   const read = (r: Gated) => until(async () => (await r.sql(
-    "SELECT due FROM connection_models WHERE due > ?", Date.now() / 1000)).length === 1,
+    "SELECT due FROM connection_model_reads WHERE due > ?", Date.now() / 1000)).length === 1,
                                    "the models read");
   const again = async (r: Gated, answer: unknown) => {
     await r.gateway.arm("listing", { answer });
-    await r.sql("UPDATE connection_models SET due = 0");
+    await r.sql("UPDATE connection_model_reads SET due = 0");
     await lanes(r);
     await read(r);
   };
@@ -1193,8 +1259,8 @@ describe("the models it reaches now", () => {
     const connection = await r.connect("sk-good", OPENAI, "OpenRouter", undefined, OPENROUTER);
     await lanes(r);
     await read(r);
-    expect(await kept(r)).toEqual([{ models: [[one, 13.6], [two, null]], due: 1 }]);
-    expect(await models(r)).toEqual([one, two]);
+    expect(await kept(r)).toEqual([{ models: byId([[one, 13.6], [two, null]]), due: 1 }]);
+    expect(await models(r)).toEqual(byId([one!, two!]));
     // The read its record names, with the connection's blob.
     const [sent] = (await r.gateway.calls()).filter((call) => call.method === "listing");
     expect((sent!.args as unknown[]).slice(1)).toEqual([
@@ -1203,7 +1269,7 @@ describe("the models it reaches now", () => {
         score: ["benchmarks", "artificial_analysis", "intelligence_index"] }]);
     // A model its vendor stops serving goes, and one it serves again comes back.
     await again(r, { models: [{ id: two!, score: null }, { id: three!, score: 2 }] });
-    expect(await models(r)).toEqual([two, three]);
+    expect(await models(r)).toEqual(byId([two!, three!]));
     await again(r, { models: [{ id: one!, score: 13.6 }] });
     expect(await models(r)).toEqual([one]);
     // An answer of another shape, or one that lists none of its models, keeps what was read,
@@ -1220,6 +1286,8 @@ describe("the models it reaches now", () => {
     expect(await unmatched()).toBe(1);
     await r.stub.connectionRevoke(r.session(), { connection });
     expect(await kept(r)).toEqual([]);
+    expect(await r.sql("SELECT model FROM connection_records")).toEqual([]);
+    expect(await models(r)).toEqual([]);
   });
 
   it("is every model its blob reaches, read again daily, where its sealed endpoints hold no " +
@@ -1228,7 +1296,7 @@ describe("the models it reaches now", () => {
     await r.connect("sk-good", OPENAI, "OpenRouter", undefined, OPENROUTER);
     await lanes(r);
     await read(r);
-    const all = (await catalog(OPENAI)).map((model) => model.id);
+    const all = byId((await catalog(OPENAI)).map((model) => model.id));
     expect(await kept(r)).toEqual([{ models: all.map((id) => [id, null]), due: 1 }]);
     expect(await models(r)).toEqual(all);
   });
@@ -1244,10 +1312,9 @@ describe("the models it reaches now", () => {
     expect(await models(r)).not.toContain(gone!.id);
     await lanes(r);
     await read(r);
-    expect(await models(r)).toEqual(now.map((model) => model.id));
-    const [{ models: json }] = await r.sql("SELECT models FROM connection_models") as
-      [{ models: string }];
-    const records = (JSON.parse(json) as [ModelRecord, null][]).map(([model]) => model);
+    expect(await models(r)).toEqual(byId(now.map((model) => model.id)));
+    const records = (await r.sql("SELECT record FROM connection_records"))
+      .map(({ record }) => JSON.parse(String(record)) as ModelRecord);
     expect(records.find((model) => model.id === priced!.id)!.cost).toEqual(priced!.cost);
     // Each names the API its blob reaches it on.
     expect(new Set(records.map((model) => model.api))).toEqual(new Set(["anthropic-messages"]));
@@ -1261,13 +1328,83 @@ describe("the models it reaches now", () => {
     await r.gateway.arm("models", { refuse: { code: "internal", message: "internal" } });
     await r.connect("sk-good");
     await lanes(r);
-    const committed = (await catalog(ANTHROPIC)).map((model) => model.id);
-    await until(async () => (await r.sql("SELECT due FROM connection_models WHERE due > ?",
+    const committed = byId((await catalog(ANTHROPIC)).map((model) => model.id));
+    await until(async () => (await r.sql("SELECT due FROM connection_model_reads WHERE due > ?",
                                           Date.now() / 1000)).length === 1, "the failed read");
-    expect(await kept(r)).toEqual([{ models: null, due: 1 }]);
+    expect(await kept(r)).toEqual([{ models: committed.map((id) => [id, null]), due: 1 }]);
     expect(await models(r)).toEqual(committed);
-    const [{ due }] = await r.sql("SELECT due FROM connection_models") as [{ due: number }];
+    const [{ due }] = await r.sql("SELECT due FROM connection_model_reads") as [{ due: number }];
     expect(due - Date.now() / 1000).toBeLessThanOrEqual(CONNECTION_LIMITS.modelsRetryS);
+  });
+
+  it("follows a catalog of maxModels at the record's bound, and keeps what it has while one " +
+     "read would pass the owner's maxModelsKept", { tags: ["large"] }, async () => {
+    const { maxModels, maxModelsKept } = CONNECTION_LIMITS;
+    const full = (name: string, count = maxModels) => Array.from({ length: count }, (_, i) =>
+      sized(MODEL_RECORD_MAX, `${name}/${String(i).padStart(4, "0")}`));
+    const r = await gated();
+    /** Once `n` connections' reads are kept, each due again after now. */
+    const reads = (n: number) => until(async () => (await r.sql(
+      "SELECT due FROM connection_model_reads WHERE due > ?", Date.now() / 1000)).length === n,
+                                       "the models reads");
+    const committed = byId((await catalog(ANTHROPIC)).map((model) => model.id));
+    // The owner's other connections, each keeping its commit's records (its read refused),
+    // hold the rest of its limit.
+    const others = [...Array.from({ length: maxModelsKept / maxModels - 1 }, (_, at) =>
+      full(`m${at}`)), full("b", maxModels - committed.length)];
+    await unread(r, others.length);
+    const ids: string[] = [];
+    for (const list of others) {
+      ids.push(await r.connect("sk-good", ANTHROPIC, "Other", list));
+    }
+    await lanes(r);
+    await reads(others.length);
+    const connection = await r.connect("sk-good");
+    await lanes(r);
+    await reads(others.length + 1);
+    const listed = async () => (await r.stub.connectionList(r.session())).connections
+      .find((one) => one.connection === connection)!.models;
+    expect(await listed()).toEqual(committed);
+    const readAgain = async () => {
+      await r.gateway.arm("models", { answer: { models: full("a") } });
+      await r.sql("UPDATE connection_model_reads SET due = 0 WHERE connection = ?", connection);
+      await lanes(r);
+      await reads(ids.length + 1);
+    };
+    await readAgain();
+    expect(await listed()).toEqual(committed);
+    // The owner is told, once, and how to make room.
+    await readAgain();
+    expect((await r.stub.noticeList(r.bind())).notices
+      .filter((notice) => notice.type === "connection_models_limit")
+      .map((notice) => notice.detail)).toEqual([expect.stringContaining(
+        `(${maxModelsKept} in all), so it keeps the ones it had`)]);
+    // With room again, the same read is kept: each of its records whole.
+    await r.stub.connectionRevoke(r.session(), { connection: ids.pop()! });
+    await readAgain();
+    expect(await listed()).toEqual(full("a").map((model) => model.id));
+    expect((await r.sql("SELECT record FROM connection_records WHERE connection = ? " +
+                        "ORDER BY model", connection))
+      .map(({ record }) => JSON.parse(String(record)))).toEqual(full("a"));
+  });
+
+  it("is a connection's committed before migration 35 the records its row kept, until its " +
+     "first read", async () => {
+    const r = await gated();
+    await unread(r, 1);
+    const connection = await r.connect("sk-good");
+    await lanes(r);
+    await read(r);
+    const committed = await catalog(ANTHROPIC);
+    // As migration 35 leaves one: its records on its row, and none kept apart.
+    await r.sql("UPDATE connections SET models = ? WHERE id = ?",
+                JSON.stringify(committed.slice(1)), connection);
+    await r.sql("DELETE FROM connection_records");
+    expect(await models(r)).toEqual(committed.slice(1).map((model) => model.id));
+    await r.sql("UPDATE connection_model_reads SET due = 0");
+    await lanes(r);
+    await read(r);
+    expect(await models(r)).toEqual(byId(committed.map((model) => model.id)));
   });
 });
 
